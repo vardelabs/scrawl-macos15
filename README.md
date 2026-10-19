@@ -742,9 +742,10 @@ network use for it.
 
 `scripts/scrawl-parakeet.py` is a ready wrapper for NVIDIA's Parakeet TDT 0.6B v3
 (CC BY 4.0, 25 languages, word timestamps) through [parakeet-mlx](https://github.com/senstella/parakeet-mlx)
-on Apple silicon. It needs [uv](https://docs.astral.sh/uv/); the first run installs the
-dependencies and downloads the model (about 1.2 GB), after which a five-second recording
-transcribes in about three seconds.
+on Apple silicon. It needs [uv](https://docs.astral.sh/uv/) and ffmpeg (`brew install uv ffmpeg`;
+the script adds Homebrew's bin directories to its own `PATH`, since the app has none). The first
+run installs the dependencies and downloads the model (about 1.2 GB), after which a five-second
+recording transcribes in about three seconds.
 
 ## Helper
 

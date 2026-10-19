@@ -13,15 +13,22 @@ Reads the 16 kHz mono WAV Scrawl hands it and prints the transcript JSON Scrawl 
     "transcribeCommand": ["/opt/homebrew/bin/uv", "run", "--quiet", "--script",
                           "/path/to/scrawl-parakeet.py", "{audio}"]
 
-The first run resolves the dependencies and downloads the model (about 1.2 GB) from Hugging
-Face; later runs are offline. SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
+Needs uv and ffmpeg (brew install uv ffmpeg). The first run resolves the dependencies and
+downloads the model (about 1.2 GB) from Hugging Face; later runs are offline.
+SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
 """
 
 import json
 import os
 import sys
 
-from parakeet_mlx import from_pretrained
+# Scrawl.app runs this without a shell PATH, and parakeet-mlx decodes audio by finding ffmpeg
+# on it; Homebrew's prefixes are where a Mac has ffmpeg.
+os.environ["PATH"] = os.pathsep.join(
+    ["/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", "/usr/bin:/bin")]
+)
+
+from parakeet_mlx import from_pretrained  # noqa: E402
 
 DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 # Long recordings are decoded in windows so memory stays flat; the overlap keeps words whole.

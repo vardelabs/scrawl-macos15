@@ -38,7 +38,7 @@ impl Engine {
         }
     }
 
-    /// How the log and Settings call the engine.
+    /// How the log names the engine.
     pub fn title(self) -> &'static str {
         match self {
             Self::Apple => "Apple Speech",

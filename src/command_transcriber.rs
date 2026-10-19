@@ -23,6 +23,9 @@ use crate::model::{TranscriptData, TranscriptSegment, WordTiming};
 pub const AUDIO_PLACEHOLDER: &str = "{audio}";
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const MIN_TIMEOUT: Duration = Duration::from_secs(300);
+const EXIT_POLL: Duration = Duration::from_millis(50);
+/// A configured timeout past this is a mistake, and a huge one would overflow the deadline.
+const MAX_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
 /// A span may end this far past the audio before its whole array is distrusted.
 const END_SLACK_MS: u64 = 500;
 
@@ -33,7 +36,8 @@ pub struct Settings {
 }
 
 /// The usable form of the config keys: a non-empty argv whose first entry is an absolute path
-/// (the app runs without the user's shell `PATH`), and a timeout only when it is positive.
+/// (the app runs without the user's shell `PATH`), and a timeout only when it is positive,
+/// capped at a day.
 pub fn settings(command: Option<&[String]>, timeout_seconds: Option<u64>) -> Option<Settings> {
     let command = command?.to_vec();
     if !command.first().is_some_and(|program| program.starts_with('/')) {
@@ -43,7 +47,7 @@ pub fn settings(command: Option<&[String]>, timeout_seconds: Option<u64>) -> Opt
         command,
         timeout: timeout_seconds
             .filter(|&seconds| seconds > 0)
-            .map(Duration::from_secs),
+            .map(|seconds| Duration::from_secs(seconds.min(MAX_TIMEOUT_SECONDS))),
     })
 }
 
@@ -66,13 +70,15 @@ pub fn timeout(configured: Option<Duration>, audio_ms: u64) -> Duration {
     configured.unwrap_or_else(|| MIN_TIMEOUT.max(Duration::from_secs(60 + audio_ms / 100)))
 }
 
+/// `segments` and `words` stay raw JSON so a malformed array costs only that array, never the
+/// text beside it.
 #[derive(Deserialize)]
 struct Output {
     version: Option<i64>,
     model: Option<String>,
     text: Option<String>,
-    segments: Option<Vec<Span>>,
-    words: Option<Vec<Span>>,
+    segments: Option<serde_json::Value>,
+    words: Option<serde_json::Value>,
     estimated: Option<bool>,
 }
 
@@ -98,12 +104,27 @@ fn check_spans(spans: &[Span], name: &str, audio_ms: u64) -> Result<Vec<(u64, u6
                 return Err(format!("{name}[{index}] is reversed"));
             }
             if span.t1 > limit || span.t0 > limit {
-                return Err(format!("{name}[{index}].t1 out of range"));
+                return Err(format!("{name}[{index}] is past the end of the audio"));
             }
             let clamp = |time: i64| (time as u64).min(audio_ms);
             Ok((clamp(span.t0), clamp(span.t1), span.text.trim().to_owned()))
         })
         .collect()
+}
+
+/// An absent or `null` array is `None`; one of the wrong shape (a float time, a span without
+/// text) is unusable the same way a bad timestamp is.
+fn spans(
+    value: Option<&serde_json::Value>,
+    name: &str,
+    audio_ms: u64,
+) -> Option<Result<Vec<(u64, u64, String)>, String>> {
+    let value = value.filter(|value| !value.is_null())?;
+    let spans: Vec<Span> = match serde_json::from_value(value.clone()) {
+        Ok(spans) => spans,
+        Err(_) => return Some(Err(format!("{name} is malformed"))),
+    };
+    Some(check_spans(&spans, name, audio_ms))
 }
 
 /// Sentences cut where a word ends one, as `hex::spread_words` does for estimated text.
@@ -148,14 +169,12 @@ pub fn parse_output(stdout: &[u8], audio_ms: u64) -> Result<TranscriptData> {
         bail!("invalid JSON");
     };
     ensure!(output.version == Some(1), "version must be 1");
-    let text = output
-        .text
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let Some(text) = output.text else {
+        bail!("text is missing");
+    };
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut estimated = output.estimated.unwrap_or(true);
-    let segments: Vec<TranscriptSegment> = match output.segments.as_deref().map(|spans| check_spans(spans, "segments", audio_ms)) {
+    let segments: Vec<TranscriptSegment> = match spans(output.segments.as_ref(), "segments", audio_ms) {
         Some(Ok(spans)) => spans
             .into_iter()
             .filter(|(_, _, text)| !text.is_empty())
@@ -167,7 +186,7 @@ pub fn parse_output(stdout: &[u8], audio_ms: u64) -> Result<TranscriptData> {
         }
         None => Vec::new(),
     };
-    let words: Option<Vec<WordTiming>> = match output.words.as_deref().map(|spans| check_spans(spans, "words", audio_ms)) {
+    let words: Option<Vec<WordTiming>> = match spans(output.words.as_ref(), "words", audio_ms) {
         Some(Ok(spans)) => Some(
             spans
                 .into_iter()
@@ -213,7 +232,8 @@ pub fn parse_output(stdout: &[u8], audio_ms: u64) -> Result<TranscriptData> {
 }
 
 /// Runs the program on `wav` in its own process group and reads its transcript. The group is
-/// killed on timeout so a wrapper script never leaves a model process behind.
+/// killed on timeout, and again once the program exits, so a wrapper never leaves a model
+/// process behind or holding the stdout pipe open.
 pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<TranscriptData> {
     use std::os::unix::process::CommandExt;
     let argv = argv(&settings.command, wav);
@@ -249,15 +269,13 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
             let _ = child.wait();
             bail!("timeout");
         }
-        // Once stdout closes the program is about to exit on its own (a flood is cut off by the
-        // closed pipe), so poll briefly instead of waiting out the deadline.
-        let wait = if eof.load(Ordering::Acquire) {
-            Duration::from_millis(20)
-        } else {
-            deadline - now
-        };
-        std::thread::park_timeout(wait);
+        // Nothing wakes this thread when the program exits, only when its stdout closes, so the
+        // exit is polled; a program that exits while a child of its own holds stdout open would
+        // otherwise sit here until the deadline.
+        std::thread::park_timeout(EXIT_POLL.min(deadline - now));
     };
+    // Whatever the program left running dies with it; that is also what lets the reader finish.
+    kill_group(&mut child);
     let out = reader.join().unwrap_or_default();
     ensure!(out.len() <= OUTPUT_LIMIT, "output too large");
     ensure!(
@@ -268,10 +286,11 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
     parse_output(&out, audio_ms)
 }
 
-/// The child is the group leader, so a negative pid reaches everything it started.
+/// The child is the group leader, so a negative pid reaches everything it started. The group id
+/// stays reserved while any member lives, so this is safe after the leader itself is reaped.
 fn kill_group(child: &mut std::process::Child) {
     let pid = child.id() as i32;
-    // SAFETY: a plain signal to a process group this process created and still owns.
+    // SAFETY: a plain signal to a process group this process created.
     unsafe {
         libc::kill(-pid, libc::SIGKILL);
     }
@@ -309,6 +328,9 @@ mod tests {
         assert_eq!(ok.timeout, None);
         let timed = settings(Some(&strings(&["/bin/true"])), Some(90)).unwrap();
         assert_eq!(timed.timeout, Some(Duration::from_secs(90)));
+        let absurd = settings(Some(&strings(&["/bin/true"])), Some(u64::MAX)).unwrap();
+        assert_eq!(absurd.timeout, Some(Duration::from_secs(MAX_TIMEOUT_SECONDS)));
+        assert!(Instant::now().checked_add(absurd.timeout.unwrap()).is_some());
     }
 
     #[test]
@@ -381,13 +403,42 @@ mod tests {
     }
 
     #[test]
-    fn wrong_version_and_invalid_json_fail_without_echoing_the_text() {
+    fn malformed_spans_cost_only_their_array() {
+        let out = br#"{"version":1,"text":"a b","estimated":false,
+            "segments":[{"t0":0,"t1":1000,"text":"a b"}],
+            "words":[{"t0":0.5,"t1":100,"text":"a"},{"t0":100,"text":"b"}]}"#;
+        let transcript = parse_output(out, 1_000).unwrap();
+        assert_eq!(transcript.text, "a b");
+        assert!(transcript.estimated);
+        assert_eq!(transcript.words.len(), 2);
+        assert_eq!(transcript.segments.len(), 1);
+        let nulls = parse_output(br#"{"version":1,"text":"a","segments":null,"words":null}"#, 1_000).unwrap();
+        assert_eq!(nulls.words.len(), 1);
+    }
+
+    #[test]
+    fn wrong_version_missing_text_and_invalid_json_fail_without_echoing_the_text() {
         let spoken = "my secret";
         let version = parse_output(format!(r#"{{"version":2,"text":"{spoken}"}}"#).as_bytes(), 1_000).unwrap_err();
+        let no_text = parse_output(format!(r#"{{"version":1,"model":"{spoken}"}}"#).as_bytes(), 1_000).unwrap_err();
         let invalid = parse_output(format!("{spoken} not json").as_bytes(), 1_000).unwrap_err();
-        for error in [version, invalid] {
+        for error in [version, no_text, invalid] {
             assert!(!format!("{error:#}").contains(spoken), "{error:#}");
         }
+    }
+
+    #[test]
+    fn a_child_left_holding_stdout_does_not_hold_up_the_transcript() {
+        let wav = wav();
+        let started = Instant::now();
+        let transcript = transcribe(
+            &sh(r#"sleep 30 & printf '{"version":1,"text":"done"}'"#),
+            &wav,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(transcript.text, "done");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
