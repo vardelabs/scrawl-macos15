@@ -259,8 +259,8 @@ enum SettingsMotion {
 enum SettingsMetrics {
   static let width: CGFloat = 780
   static let height: CGFloat = 600
-  static let minWidth: CGFloat = 680
-  static let minHeight: CGFloat = 480
+  static let minWidth: CGFloat = width
+  static let minHeight: CGFloat = height
   static let sidebar: CGFloat = 210
   static let titlebar: CGFloat = 52
   static let inset: CGFloat = 20
@@ -1226,12 +1226,22 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     host.autoresizingMask = [.width, .height]
     window.minSize = NSSize(width: SettingsMetrics.minWidth, height: SettingsMetrics.minHeight)
     if !window.setFrameUsingName("ScrawlSettings") { window.center() }
+    // Saved frames can predate the minimum size. Clamp them explicitly too.
+    var restored = window.frame
+    restored.size.width = max(restored.width, SettingsMetrics.minWidth)
+    restored.size.height = max(restored.height, SettingsMetrics.minHeight)
+    window.setFrame(restored, display: false)
     window.setFrameAutosaveName("ScrawlSettings")
     self.window = window
     _ = keys
     model.send = { emit($0) }
     paneWatch = model.$pane.sink { [weak self] pane in self?.updateMeter(pane: pane) }
     readCommands()
+  }
+
+  func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+    NSSize(width: max(frameSize.width, SettingsMetrics.minWidth),
+           height: max(frameSize.height, SettingsMetrics.minHeight))
   }
 
   func windowDidChangeOcclusionState(_: Notification) {

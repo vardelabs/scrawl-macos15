@@ -65,6 +65,7 @@ left unchanged. No Automation permission or dependency is added.
 `scrawl-helper playback-volume --self-test` runs deterministic, silent ramp tests;
 `--inspect` reads the current device's writable volume controls without changing them.
 
-The Settings window opens at 780 × 600 points, can be resized down to 680 × 480,
-and remembers its frame between openings. The sidebar stays fixed while the pane
+The Settings window opens at 780 × 600 points and can only be resized larger.
+Previously saved smaller frames are clamped to this minimum. It
+remembers its frame between openings. The sidebar stays fixed while the pane
 uses the available width; Recording scrolls when its content exceeds the height.
