@@ -701,8 +701,50 @@ downloads or prepares a model: install it in Hex first.
   `"estimated": true`; because those times are approximate, spoken cues ("now", "here") don't cut
   keyframes from a Hex transcript. Marks, clicks, laser and scene changes still do.
 - `scrawl hex status` shows whether Hex is connected, its ready models and what the next recording
-  will use. `scrawl reprocess <bundle> --out … --transcriber hex|apple` (also `scrawl import`) picks
-  an engine for one run.
+  will use. `scrawl reprocess <bundle> --out … --transcriber hex|apple|command` (also
+  `scrawl import`) picks an engine for one run.
+
+### Your own model (command)
+
+A third engine runs a program you choose on each recording's audio and reads a JSON transcript from
+its stdout, so any local speech model works, with measured word times when the model has them. On
+macOS 15 this is the way to get a transcript at all. Scrawl adds no model code, dependencies or
+network use for it.
+
+```json
+{
+  "transcriber": "command",
+  "transcribeCommand": ["/opt/homebrew/bin/uv", "run", "--quiet", "--script",
+                        "/path/to/scrawl/scripts/scrawl-parakeet.py", "{audio}"],
+  "transcribeTimeoutSeconds": 600
+}
+```
+
+- `transcribeCommand` is an argv array, run without a shell. The first entry is an absolute path,
+  because the app does not have your shell's `PATH`. `{audio}` is replaced with the WAV's path;
+  without it, the path is added last. The program also gets `SCRAWL_AUDIO` and
+  `SCRAWL_TRANSCRIBE_VERSION=1` in its environment, and `/dev/null` on stdin.
+- `transcribeTimeoutSeconds` is optional. The default is `max(300, 60 + 10 × audio seconds)`,
+  counted from launch, model loading included.
+- **Command** appears in Settings › Recording › **Transcription** once `transcribeCommand` is set.
+- Input: the whole recording as a 16 kHz mono 16-bit WAV, the same audio Apple Speech gets.
+- Output: exit 0 and one JSON object on stdout. `version` (the integer 1) and `text` are required;
+  `model`, `segments` and `words` are optional and use the `{t0, t1, text}` shape of `scrawl.json`
+  (integer milliseconds from the start of the WAV). Set `"estimated": false` only when the word
+  times come from the model; without word times Scrawl spreads the text over the segments (or the
+  recording) and marks it estimated, as it does for Hex. The transcript says
+  `"source": "command:<model>"`.
+- Bad timestamps never throw away the text: an unusable `words` array is estimated instead, an
+  unusable `segments` array is dropped. A crash, non-zero exit, timeout, more than 8 MiB of output
+  or invalid JSON hands that recording to Apple Speech. Scrawl discards the program's stderr and
+  never logs its output; failures are logged as a short reason such as `timeout`.
+- The program runs in its own process group, and Scrawl kills the whole group on timeout.
+
+`scripts/scrawl-parakeet.py` is a ready wrapper for NVIDIA's Parakeet TDT 0.6B v3
+(CC BY 4.0, 25 languages, word timestamps) through [parakeet-mlx](https://github.com/senstella/parakeet-mlx)
+on Apple silicon. It needs [uv](https://docs.astral.sh/uv/); the first run installs the
+dependencies and downloads the model (about 1.2 GB), after which a five-second recording
+transcribes in about three seconds.
 
 ## Helper
 

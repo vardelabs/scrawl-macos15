@@ -317,13 +317,22 @@ pub struct Config {
     /// Feature flag: shows **Export Last Capture as Video…** in the menu (default off).
     #[serde(default)]
     pub video_export: Option<bool>,
-    /// `"apple"` (default) or `"hex"`: which engine transcribes recordings (`transcribe`).
+    /// `"apple"` (default), `"hex"` or `"command"`: which engine transcribes recordings
+    /// (`transcribe`).
     #[serde(default)]
     pub transcriber: Option<String>,
     /// The Hex model to use when `transcriber` is `"hex"` (default: the first ready one of
     /// `hex::PREFERRED_MODELS`).
     #[serde(default)]
     pub hex_model: Option<String>,
+    /// The program run on each recording's WAV when `transcriber` is `"command"`, as an argv
+    /// array (`command_transcriber`). Read leniently: a wrong shape here must not reset the
+    /// rest of the config.
+    #[serde(default, deserialize_with = "lenient")]
+    pub transcribe_command: Option<Vec<String>>,
+    /// How long that program may run, in seconds (default: grows with the recording).
+    #[serde(default, deserialize_with = "lenient")]
+    pub transcribe_timeout_seconds: Option<u64>,
     /// Whether to use the native Metal recording pill instead of GPUI's `HudPillWindow` (default `true`).
     #[serde(default)]
     pub native_pill: Option<bool>,
@@ -378,6 +387,28 @@ pub fn load_config_from(path: &Path) -> Config {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+/// A value of the wrong shape reads as absent instead of failing the whole config.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// The command transcriber's settings when `transcribeCommand` is usable.
+pub fn transcribe_command() -> Option<crate::command_transcriber::Settings> {
+    transcribe_command_from(&config())
+}
+
+pub fn transcribe_command_from(config: &Config) -> Option<crate::command_transcriber::Settings> {
+    crate::command_transcriber::settings(
+        config.transcribe_command.as_deref(),
+        config.transcribe_timeout_seconds,
+    )
 }
 
 fn config() -> Config {
@@ -1345,6 +1376,22 @@ mod tests {
         assert_eq!(config.hex_model.as_deref(), Some("parakeet_v3"));
         assert_eq!(config.ingest_token.as_deref(), Some("abc"));
         assert_eq!(config.auto_send, Some(false));
+        set_config_value_in(&path, "transcribeCommand", "not an array".into()).unwrap();
+        set_config_value_in(&path, "transcribeTimeoutSeconds", "soon".into()).unwrap();
+        let config = load_config_from(&path);
+        assert_eq!(config.ingest_token.as_deref(), Some("abc"));
+        assert_eq!(config.transcribe_command, None);
+        assert_eq!(transcribe_command_from(&config), None);
+        set_config_value_in(
+            &path,
+            "transcribeCommand",
+            serde_json::json!(["/opt/bin/whisper", "{audio}"]),
+        )
+        .unwrap();
+        set_config_value_in(&path, "transcribeTimeoutSeconds", 120.into()).unwrap();
+        let settings = transcribe_command_from(&load_config_from(&path)).unwrap();
+        assert_eq!(settings.command, vec!["/opt/bin/whisper", "{audio}"]);
+        assert_eq!(settings.timeout, Some(std::time::Duration::from_secs(120)));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

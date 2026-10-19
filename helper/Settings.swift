@@ -55,6 +55,8 @@ struct SettingsTranscriber: Decodable, Equatable {
   var hexTitle = "Hex (not running)"
   var hexEnabled = false
   var models: [SettingsModelOption] = []
+  var commandTitle = "Command (not set up)"
+  var commandEnabled = false
 }
 
 struct SettingsOption: Decodable, Equatable {
@@ -698,11 +700,17 @@ struct SettingsView: View {
     let t = state.transcriber
     var engines: [(id: String, title: String, enabled: Bool)] = [("apple", "Apple Speech", true)]
     engines.append(("hex", t.hexTitle, t.hexEnabled))
+    engines.append(("command", t.commandTitle, t.commandEnabled))
     let chosenModel = t.models.first(where: \.chosen)
+    let engineTitle = switch t.engine {
+    case "hex": "Hex"
+    case "command": "Command"
+    default: "Apple Speech"
+    }
     return VStack(spacing: 0) {
       SettingsGroup {
         SettingsRow(title: "Transcription") {
-          SettingsPopup(value: t.engine == "hex" ? "Hex" : "Apple Speech", options: engines, selected: t.engine) {
+          SettingsPopup(value: engineTitle, options: engines, selected: t.engine) {
             model.set("transcriber", $0)
           }
         }
@@ -717,9 +725,11 @@ struct SettingsView: View {
           }
         }
       }
-      SettingsCaption(text: t.hexEnabled || t.engine == "hex"
+      SettingsCaption(text: t.engine == "command"
+        ? "Command runs the program in transcribeCommand (config.json) on each recording and reads its transcript."
+        : t.hexEnabled || t.engine == "hex"
         ? "Apple Speech times each word. Hex uses a model you have in Hex, and its word times are estimates."
-        : "Apple Speech runs on this Mac and times each word. Hex shows up here while Hex is running.")
+        : "Apple Speech runs on this Mac and times each word. Hex shows up here while Hex is running. Command appears once transcribeCommand is set in config.json.")
       SettingsHeader("Experimental")
       SettingsGroup {
         SettingsRow(title: "Video export") {

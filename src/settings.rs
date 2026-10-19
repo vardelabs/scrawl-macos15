@@ -606,11 +606,14 @@ pub struct ShortcutView {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriberView {
-    /// What recordings use now: "apple" or "hex".
+    /// What recordings use now: "apple", "hex" or "command".
     pub engine: &'static str,
     pub hex_title: &'static str,
     pub hex_enabled: bool,
     pub models: Vec<ModelView>,
+    pub command_title: &'static str,
+    /// `transcribeCommand` in the config is usable.
+    pub command_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -973,6 +976,8 @@ impl Panel {
             .and_then(crate::transcribe::Engine::parse)
             .unwrap_or_default();
         let menu = crate::transcribe::menu_state(engine, hex.as_ref(), config.hex_model.as_deref());
+        let command_enabled = crate::handoff::transcribe_command_from(&config).is_some();
+        let command_checked = command_enabled && engine == crate::transcribe::Engine::Command;
         let policy = crate::retention::Policy::load_from(&host.config_path());
         let login = login_item();
         let order = [
@@ -1006,7 +1011,13 @@ impl Panel {
                 })
                 .collect(),
             transcriber: TranscriberView {
-                engine: if menu.hex_checked { "hex" } else { "apple" },
+                engine: if menu.hex_checked {
+                    "hex"
+                } else if command_checked {
+                    "command"
+                } else {
+                    "apple"
+                },
                 hex_title: menu.hex_title,
                 hex_enabled: menu.hex_enabled,
                 models: menu
@@ -1014,6 +1025,12 @@ impl Panel {
                     .into_iter()
                     .map(|(id, title, chosen)| ModelView { id, title, chosen })
                     .collect(),
+                command_title: if command_enabled {
+                    "Command"
+                } else {
+                    "Command (not set up)"
+                },
+                command_enabled,
             },
             video_export: config.video_export.unwrap_or(false),
             retention: RetentionView {
