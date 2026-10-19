@@ -126,7 +126,6 @@ struct SettingsState: Decodable, Equatable {
   ]
   var microphone = SettingsMicrophone()
   var transcriber = SettingsTranscriber()
-  var playbackControls = false
   var playbackMode = "unchanged"
   var playbackLevel = 20
   var videoExport = false
@@ -856,29 +855,27 @@ struct SettingsView: View {
           .transition(.opacity)
       }
       Color.clear.frame(height: 20)
-      if state.playbackControls {
-        SettingsGroup {
-          SettingsRow(title: "Playback during recording") {
-            SettingsPopup(value: state.playbackMode == "mute" ? "Mute" : state.playbackMode == "lower" ? "Lower volume" : "Unchanged",
-                          options: [("unchanged", "Unchanged", true), ("mute", "Mute", true), ("lower", "Lower volume", true)],
-                          selected: state.playbackMode) { model.set("playbackMode", $0) }
-          }
-          if state.playbackMode == "lower" {
-            SettingsSeparator()
-            SettingsRow(title: "Relative volume") {
-              HStack {
-                Slider(value: Binding(get: { Double(model.state.playbackLevel) }, set: {
-                  model.state.playbackLevel = Int($0.rounded())
-                  model.set("playbackLevel", Int($0.rounded()))
-                }), in: 0...100).frame(width: 150)
-                Text("\(state.playbackLevel)%").monospacedDigit().frame(width: 40)
-              }
+      SettingsGroup {
+        SettingsRow(title: "Playback during recording") {
+          SettingsPopup(value: state.playbackMode == "mute" ? "Mute" : state.playbackMode == "lower" ? "Lower volume" : "Unchanged",
+                        options: [("unchanged", "Unchanged", true), ("mute", "Mute", true), ("lower", "Lower volume", true)],
+                        selected: state.playbackMode) { model.set("playbackMode", $0) }
+        }
+        if state.playbackMode == "lower" {
+          SettingsSeparator()
+          SettingsRow(title: "Relative volume") {
+            HStack {
+              Slider(value: Binding(get: { Double(model.state.playbackLevel) }, set: {
+                model.state.playbackLevel = Int($0.rounded())
+                model.set("playbackLevel", Int($0.rounded()))
+              }), in: 0...100).frame(width: 150)
+              Text("\(state.playbackLevel)%").monospacedDigit().frame(width: 40)
             }
           }
         }
-        SettingsCaption(text: "Restores the previous volume after recording. Requires an output device with volume control.")
-          .padding(.bottom, 16)
       }
+      SettingsCaption(text: "Restores the previous volume after recording. Requires an output device with volume control.")
+        .padding(.bottom, 16)
       SettingsGroup {
         SettingsRow(title: "Transcription") {
           SettingsPopup(value: engineTitle, options: engines, selected: t.engine) {
@@ -1363,8 +1360,8 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var custom = base
     custom.shortcuts[0] = SettingsShortcut(kind: "record", title: "Record", label: "⌃⌥⌘R", key: "R", shift: false, control: true, option: true, command: true, isDefault: false)
     custom.login.on = true
-    base.playbackControls = true
-    base.playbackMode = "lower"
+    var lower = base
+    lower.playbackMode = "lower"
     var hex = base
     hex.transcriber = SettingsTranscriber(engine: "hex", hexTitle: "Hex", hexEnabled: true, models: [
       SettingsModelOption(id: "parakeet-tdt-0.6b-v3", title: "Parakeet TDT v3", chosen: true),
@@ -1414,6 +1411,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("general-recording-shortcut", .general, listening, [.control, .option]),
       ("general-refused", .general, refused, []),
       ("recording", .recording, base, []),
+      ("recording-lower", .recording, lower, []),
       ("recording-hex", .recording, hex, []),
       ("recording-mic-chosen", .recording, micChosen, []),
       ("recording-mic-missing", .recording, micMissing, []),

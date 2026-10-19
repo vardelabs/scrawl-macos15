@@ -42,9 +42,9 @@ Off by default (see Experiments in `AGENTS.md`). With it on and Apple Speech the
 
 To compare a summary experiment on real captures, `scripts/agent-eval.sh [--experiment NAME] [--out DIR] [bundle…]` reprocesses each bundle with and without it (Kit's own `experiments` removed from the baseline's config) and writes `before.md`, `after.md`, both contact sheets and frames per bundle, and an `index.md`, by default to `~/code/home/artifacts/scrawl-context/`. Both summaries come from the baseline run's transcript. What a capture recorded live (Accessibility lookups, page events) is kept as recorded, so those only show on captures made with the experiment on.
 
-## Experiment `recordingPlaybackVolume`
+## Playback during recording
 
-Off by default. Enables Settings › Recording › Playback during recording. `playbackMode`
+Settings › Recording › Playback during recording is always available. `playbackMode`
 is `unchanged` (default), `mute`, or `lower`; `playbackLevel` is 0–100 percent of the
 current output volume (default 20). Applies to Mac recordings and cabled iPhone
 recordings, not preview or imported bundles. See `docs/onboarding-and-settings.md`.

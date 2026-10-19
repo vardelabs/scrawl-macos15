@@ -577,7 +577,6 @@ pub struct View {
     pub shortcuts: Vec<ShortcutView>,
     pub microphone: MicrophoneView,
     pub transcriber: TranscriberView,
-    pub playback_controls: bool,
     pub playback_mode: String,
     pub playback_level: u8,
     pub video_export: bool,
@@ -1223,7 +1222,6 @@ impl Panel {
                 self.inputs.as_ref(),
                 self.status(Permission::Microphone) == Status::Granted,
             ),
-            playback_controls: crate::handoff::experiment("recordingPlaybackVolume"),
             playback_mode: config
                 .playback_mode
                 .clone()

@@ -39,18 +39,13 @@ fn command(line: Option<&str>) -> anyhow::Result<()> {
 }
 
 pub fn warm_up() {
-    if crate::handoff::experiment("recordingPlaybackVolume") {
-        if let Err(error) = command(None) {
-            crate::capture::scrawl_log(format!("Playback helper: {error:#}"));
-        }
+    if let Err(error) = command(None) {
+        crate::capture::scrawl_log(format!("Playback helper: {error:#}"));
     }
 }
 
 impl Guard {
     pub fn start() -> Option<Self> {
-        if !crate::handoff::experiment("recordingPlaybackVolume") {
-            return None;
-        }
         let config = crate::handoff::load_config_from(&crate::handoff::default_config_path());
         let percent = level(config.playback_mode.as_deref(), config.playback_level)?;
         match command(Some(&format!("start {percent}"))) {
