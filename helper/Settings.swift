@@ -729,7 +729,7 @@ struct SettingsView: View {
         ? "Command runs the program in transcribeCommand (config.json) on each recording and reads its transcript."
         : t.hexEnabled || t.engine == "hex"
         ? "Apple Speech times each word. Hex uses a model you have in Hex, and its word times are estimates."
-        : "Apple Speech runs on this Mac and times each word. Hex shows up here while Hex is running. Command is enabled once transcribeCommand is set in config.json.")
+        : "Apple Speech runs on this Mac and times each word. Hex shows up here while Hex is running. Command is enabled once transcribeCommand in config.json names a program by its absolute path.")
       SettingsHeader("Experimental")
       SettingsGroup {
         SettingsRow(title: "Video export") {

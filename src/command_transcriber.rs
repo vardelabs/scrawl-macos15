@@ -253,26 +253,27 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
         let _ = stdout.take((OUTPUT_LIMIT + 1) as u64).read_to_end(&mut out);
         let _ = sender.send(out);
     });
+    let pid = child.id() as libc::pid_t;
     let deadline = Instant::now() + timeout(settings.timeout, audio_ms);
+    // Nothing wakes this thread when the program exits, so the exit is polled. The group is
+    // killed before the leader is reaped: its zombie keeps the group id reserved, so the signal
+    // cannot land on a group another process claimed since.
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+        if has_exited(pid)? {
+            kill_group(pid);
+            break child.wait()?;
         }
         let now = Instant::now();
         if now >= deadline {
-            kill_group(&mut child);
+            kill_group(pid);
             let _ = child.wait();
             bail!("timeout");
         }
-        // Nothing wakes this thread when the program exits, so the exit is polled; a program
-        // that exits while a child of its own holds stdout open would otherwise wait out the
-        // deadline.
         std::thread::sleep(EXIT_POLL.min(deadline - now));
     };
-    // Whatever the program left running dies with it; that is also what lets the reader finish.
-    // A descendant that left the group (setsid) and still holds the pipe is beyond reach, so the
+    // Whatever the program left running died with it, which is what lets the reader finish. A
+    // descendant that left the group (setsid) and still holds the pipe is beyond reach, so the
     // deadline bounds the read too and the reader thread is left to end with the pipe.
-    kill_group(&mut child);
     let Ok(out) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) else {
         bail!("timeout");
     };
@@ -285,15 +286,31 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
     parse_output(&out, audio_ms)
 }
 
-/// The child is the group leader, so a negative pid reaches everything it started. The group id
-/// stays reserved while any member lives, so this is safe after the leader itself is reaped.
-fn kill_group(child: &mut std::process::Child) {
-    let pid = child.id() as i32;
-    // SAFETY: a plain signal to a process group this process created.
+/// Whether the program has exited, without reaping it: `Child::wait` still collects it after.
+fn has_exited(pid: libc::pid_t) -> std::io::Result<bool> {
+    // SAFETY: a zeroed siginfo_t is the documented input, and WNOWAIT leaves the child in place.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(info.si_pid != 0)
+}
+
+/// The child is the group leader, so a negative pid reaches everything it started. Called only
+/// while the leader is alive or still unreaped, when the group id is still its own.
+fn kill_group(pid: libc::pid_t) {
+    // SAFETY: a plain signal to a process group this process created and still holds.
     unsafe {
         libc::kill(-pid, libc::SIGKILL);
     }
-    let _ = child.kill();
 }
 
 #[cfg(test)]
@@ -426,12 +443,16 @@ mod tests {
         }
     }
 
+    /// macOS has no `setsid` binary, so perl's POSIX binding moves the descendant out of the
+    /// group; it inherits stdout and outlives the program, which exits at once.
     #[test]
     fn a_descendant_outside_the_group_still_hits_the_deadline() {
         let wav = wav();
         let escaped = Settings {
             timeout: Some(Duration::from_millis(500)),
-            ..sh(r#"/usr/bin/nohup /bin/sh -c 'setsid sleep 30' >/dev/null 2>&1 & sleep 30"#)
+            ..sh(
+                r#"/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 30' & printf '{"version":1,"text":"late"}'"#,
+            )
         };
         let started = Instant::now();
         assert_eq!(format!("{:#}", transcribe(&escaped, &wav, 1_000).unwrap_err()), "timeout");

@@ -13,9 +13,10 @@ Reads the 16 kHz mono WAV Scrawl hands it and prints the transcript JSON Scrawl 
     "transcribeCommand": ["/opt/homebrew/bin/uv", "run", "--quiet", "--script",
                           "/path/to/scrawl-parakeet.py", "{audio}"]
 
-Needs uv and ffmpeg (brew install uv ffmpeg). The first run resolves the dependencies and
-downloads the model (about 1.2 GB) from Hugging Face; once the model is in the hub cache the
-script runs offline. SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
+Needs uv and ffmpeg (brew install uv ffmpeg). Run it once by hand on any WAV before the first
+recording: that run resolves the dependencies and downloads the model (about 1.2 GB) from
+Hugging Face, which can outlast Scrawl's timeout. Once the model is in the hub cache the script
+runs offline. SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
 """
 
 import glob
@@ -37,9 +38,15 @@ os.environ["PATH"] = os.pathsep.join(
 
 
 def model_is_cached(name: str) -> bool:
+    """Both files parakeet-mlx fetches, in one snapshot. A download cut off after config.json
+    must not count, or every later run would go offline and fail on the missing weights."""
     hub = os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub")
-    snapshot = os.path.join(hub, "models--" + name.replace("/", "--"), "snapshots", "*", "config.json")
-    return bool(glob.glob(snapshot))
+    snapshots = os.path.join(hub, "models--" + name.replace("/", "--"), "snapshots")
+    return any(
+        os.path.exists(os.path.join(snapshot, "model.safetensors"))
+        for snapshot in glob.glob(os.path.join(snapshots, "*", "config.json"))
+        for snapshot in [os.path.dirname(snapshot)]
+    )
 
 
 # The hub client checks every cached file against huggingface.co on each download call unless

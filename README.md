@@ -727,7 +727,7 @@ network use for it.
 - `transcribeTimeoutSeconds` is optional. The default is `max(300, 60 + 10 × audio seconds)`,
   counted from launch, model loading included.
 - **Command** in Settings › Recording › **Transcription** is greyed out as "Command (not set up)"
-  until `transcribeCommand` is set.
+  until `transcribeCommand` is a non-empty array whose first entry is an absolute path.
 - Input: the whole recording as a 16 kHz mono 16-bit WAV, the same audio Apple Speech gets.
 - Output: exit 0 and one JSON object on stdout. `version` (the integer 1) and `text` are required;
   `model`, `segments` and `words` are optional and use the `{t0, t1, text}` shape of `scrawl.json`
@@ -744,9 +744,16 @@ network use for it.
 `scripts/scrawl-parakeet.py` is a ready wrapper for NVIDIA's Parakeet TDT 0.6B v3
 (CC BY 4.0, 25 languages, word timestamps) through [parakeet-mlx](https://github.com/senstella/parakeet-mlx)
 on Apple silicon. It needs [uv](https://docs.astral.sh/uv/) and ffmpeg (`brew install uv ffmpeg`;
-the script adds Homebrew's bin directories to its own `PATH`, since the app has none). The first
-run installs the dependencies and downloads the model (about 1.2 GB), after which a five-second
-recording transcribes in about three seconds.
+the script adds Homebrew's bin directories to its own `PATH`, since the app has none). Run it once
+by hand before the first recording, on any WAV:
+
+```sh
+uv run --script scripts/scrawl-parakeet.py some.wav
+```
+
+That run installs the dependencies and downloads the model (about 1.2 GB), which can take longer
+than Scrawl's timeout; after it, a five-second recording transcribes in about three seconds, and
+the script keeps the hub client offline so no recording makes a network request.
 
 ## Helper
 
