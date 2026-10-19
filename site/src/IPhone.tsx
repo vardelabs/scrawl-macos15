@@ -41,7 +41,7 @@ function Screen({ children }: { children?: ReactNode }) {
 
 function MirrorVisual() {
   return (
-    <div className="ip-visual">
+    <div className="ip-visual" aria-hidden>
       <div className="ip-stack">
         <Screen>
           <svg className="ip-ink" viewBox="0 0 160 330" aria-hidden>
@@ -66,7 +66,7 @@ function MirrorVisual() {
 
 function ScrawlKitVisual() {
   return (
-    <div className="ip-visual">
+    <div className="ip-visual" aria-hidden>
       <div className="ip-stack">
         <Screen>
           <svg className="ip-touch" viewBox="0 0 160 330" aria-hidden>

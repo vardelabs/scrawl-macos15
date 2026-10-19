@@ -1345,7 +1345,7 @@ mod tests {
         let mut prev = [false; 2];
         let not_scrawl = |_: f64, _: f64| false;
         let composer = (778.0, 1050.0);
-        // A Shift-drag is ink, not a click.
+        // A ⇧-click is a pin, not a click.
         poll_clicks(
             &telemetry,
             &mut prev,
@@ -1470,6 +1470,139 @@ mod tests {
             "{events:?}"
         );
         assert_eq!(MOUSE_MONITOR_MASK & (1 << EVENT_KEY_DOWN), 0, "keys need Accessibility");
+    }
+
+    /// A left click from the mouse monitor: down at `from` with `flags`, up at `to` with `up_flags`.
+    fn click(t: &SharedCaptureTelemetry, from: (f64, f64), to: (f64, f64), flags: [u64; 2]) {
+        for (kind, (x, y), flags) in [
+            (EVENT_LEFT_MOUSE_DOWN, from, flags[0]),
+            (EVENT_LEFT_MOUSE_UP, to, flags[1]),
+        ] {
+            let cg = unsafe { CGEventCreateMouseEvent(ptr::null(), kind, CGPoint { x, y }, 0) };
+            assert!(!cg.is_null());
+            unsafe { CGEventSetFlags(cg, flags) };
+            mouse_event(t, cg);
+            unsafe { CFRelease(cg.cast()) };
+        }
+    }
+
+    fn session(width: f64, height: f64) -> Arc<SharedCaptureTelemetry> {
+        let (sender, _receiver) = flume::unbounded();
+        let telemetry = SharedCaptureTelemetry::new(sender);
+        telemetry.reset_for_session(TargetFrame {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            scale: 2.0,
+        });
+        telemetry
+    }
+
+    /// Issue #9: ⇧-click is documented to drop a numbered pin, but the mouse monitor skipped
+    /// every ⇧ press (as ink) and nothing else made pins, so none ever landed.
+    #[test]
+    fn a_shift_click_drops_numbered_pins_and_is_not_a_click() {
+        let telemetry = session(1000.0, 1000.0);
+        let shift = [FLAG_SHIFT; 2];
+        // A few points of trackpad jitter.
+        click(&telemetry, (100.0, 200.0), (103.0, 202.0), shift);
+        click(&telemetry, (500.0, 500.0), (500.0, 500.0), shift);
+        // ⇧ let go before the button still drops the pin.
+        click(&telemetry, (700.0, 300.0), (700.0, 300.0), [FLAG_SHIFT, 0]);
+        // A ⇧-drag is ink (the poller's), not a pin; ⇧ with ⌘ is neither.
+        click(&telemetry, (100.0, 800.0), (300.0, 800.0), shift);
+        let cmd_shift = [FLAG_SHIFT | FLAG_COMMAND; 2];
+        click(&telemetry, (900.0, 900.0), (900.0, 900.0), cmd_shift);
+
+        let (events, strokes) = telemetry.finish_session();
+        let pins: Vec<_> = strokes
+            .iter()
+            .map(|s| (s.pin, s.normalized_points()[0]))
+            .collect();
+        assert_eq!(
+            pins,
+            vec![
+                (Some(1), [0.1, 0.2]),
+                (Some(2), [0.5, 0.5]),
+                (Some(3), [0.7, 0.3])
+            ]
+        );
+        let shape = crate::sketch::shape_of(&strokes[0]);
+        assert_eq!(shape, crate::model::Shape::Pin);
+        // Only the ⌘⇧-click is an ordinary click.
+        assert!(
+            matches!(events[..], [InteractionEvent::Click { x, .. }] if (x - 0.9).abs() < 1e-3),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_still_shift_press_drops_no_pin() {
+        let down = (1_000, 10.0, 10.0);
+        let slop = f64::from(CLICK_SLOP_PT);
+        assert!(is_pin_click(down, (1_150, 14.0, 13.0)));
+        assert!(is_pin_click(down, (1_000 + PIN_MAX_PRESS_MS, 10.0, 10.0)));
+        assert!(!is_pin_click(down, (2_500, 10.0, 10.0)));
+        assert!(!is_pin_click(down, (1_100, 10.0, 10.0 + slop)));
+    }
+
+    /// The poller draws ink while ⇧ is held, so the ⇧ goes down (and the cursor may wander)
+    /// before the click: ink from before the press stays a stroke, the click's jitter doesn't.
+    #[test]
+    fn a_shift_click_keeps_earlier_ink_and_drops_its_own_jitter() {
+        let telemetry = session(1000.0, 1000.0);
+        let ink = |pts: &[(i32, i32, i32)]| Stroke {
+            t0: 0,
+            t1: 0,
+            fw: 1000,
+            fh: 1000,
+            on: None,
+            pin: None,
+            laser: false,
+            pts: pts.iter().flat_map(|&(x, y, t)| [x, y, t]).collect(),
+        };
+        let press = telemetry.elapsed_ms() + 50;
+        let p = press as i32;
+        let s = SCALE;
+        // A line drawn while ⇧ was held, then the click's jitter at its end.
+        *telemetry.live_ink.lock().unwrap() = Some(ink(&[
+            (s / 10, s / 2, 0),
+            (s / 5, s / 2, p - 20),
+            (s / 5 + s / 500, s / 2, p + 5),
+        ]));
+        telemetry.shift_down(press, 200.0, 500.0);
+        assert!(telemetry.shift_up(press + 80, 201.0, 500.0));
+        assert!(telemetry.live_ink.lock().unwrap().is_none());
+
+        // A ⇧-click with only its own few points of jitter leaves no stroke.
+        let jitter = ink(&[(s / 2, s / 2, 0), (s / 2 + 2, s / 2, 30)]);
+        *telemetry.live_ink.lock().unwrap() = Some(jitter);
+        let t = telemetry.elapsed_ms();
+        telemetry.shift_down(t, 500.0, 500.0);
+        assert!(telemetry.shift_up(t + 60, 500.0, 500.0));
+
+        let (_, strokes) = telemetry.finish_session();
+        let kinds: Vec<_> = strokes.iter().map(|s| (s.pin, s.pts.len() / 3)).collect();
+        assert_eq!(kinds, vec![(None, 2), (Some(1), 1), (Some(2), 1)]);
+        assert_eq!(strokes[0].t1, press - 20);
+    }
+
+    #[test]
+    fn shift_clicks_drop_pins_from_polled_buttons_too() {
+        let telemetry = session(1000.0, 1000.0);
+        let mut prev = [false; 2];
+        // ⇧-clicks at a point, the second on Scrawl's own window.
+        for (at, on_scrawl) in [((250.0, 750.0), false), ((400.0, 400.0), true)] {
+            for buttons in [[true, false], [false, false]] {
+                poll_clicks(&telemetry, &mut prev, buttons, at, true, |_, _| on_scrawl);
+            }
+        }
+        let (events, strokes) = telemetry.finish_session();
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(strokes.len(), 1);
+        assert_eq!(strokes[0].pin, Some(1));
+        assert_eq!(strokes[0].normalized_points(), vec![[0.25, 0.75]]);
     }
 
     #[test]
@@ -2284,6 +2417,8 @@ pub struct SharedCaptureTelemetry {
     /// The `agentContext` experiment was on when this capture started: clicks and strokes are
     /// looked up in the Accessibility tree (`crate::ax`).
     agent_context: AtomicBool,
+    /// A ⇧-press inside the target: when, where (global points) and on which frame.
+    shift_press: Mutex<Option<(u64, f64, f64, TargetFrame)>>,
 }
 
 impl SharedCaptureTelemetry {
@@ -2328,6 +2463,7 @@ impl SharedCaptureTelemetry {
             last_shortcut_ms: AtomicU64::new(0),
             drag_start: Mutex::new(None),
             agent_context: AtomicBool::new(false),
+            shift_press: Mutex::new(None),
         })
     }
 
@@ -2465,6 +2601,10 @@ impl SharedCaptureTelemetry {
             .drag_start
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .shift_press
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.excluded_window_ids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2566,7 +2706,7 @@ impl SharedCaptureTelemetry {
         let (nx, ny, fw, fh) = self.normalize_point(screen_x, screen_y);
         let dist_px = ((nx - x0) * fw as f32).hypot((ny - y0) * fh as f32);
         let _ = self.ui_sender.try_send(LiveOverlayEvent::RequestSnapshot);
-        let event = if dist_px < 12.0 {
+        let event = if dist_px < CLICK_SLOP_PT {
             InteractionEvent::Click {
                 t: t0,
                 x: x0,
@@ -2592,6 +2732,79 @@ impl SharedCaptureTelemetry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(event);
+    }
+
+    /// The left button went down with only ⇧ held: a pin if it comes up as a click (`shift_up`).
+    fn shift_down(&self, t_ms: u64, screen_x: f64, screen_y: f64) {
+        if !self.contains_screen_point(screen_x, screen_y) {
+            return;
+        }
+        let frame = *self
+            .target_frame
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *self
+            .shift_press
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((t_ms, screen_x, screen_y, frame));
+    }
+
+    /// The button of a ⇧-press came up (with or without ⇧ still held). A ⇧-click drops the next
+    /// numbered pin where it went down; a ⇧-drag is left to the ink the poller is drawing.
+    /// Returns whether a ⇧-press was waiting, so the release isn't also taken as a click's.
+    fn shift_up(&self, t_ms: u64, screen_x: f64, screen_y: f64) -> bool {
+        let Some((t0, x0, y0, start_frame)) = self
+            .shift_press
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            return false;
+        };
+        let frame = *self
+            .target_frame
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !same_target_frame(start_frame, frame)
+            || !is_pin_click((t0, x0, y0), (t_ms, screen_x, screen_y))
+        {
+            return true;
+        }
+        let (nx, ny, fw, fh) = self.normalize_point(x0, y0);
+        // ⇧ draws as it's held, so the live ink ends in the click's jitter; what was drawn
+        // before the press is kept, and further ink starts a new stroke.
+        let earlier = self
+            .live_ink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|ink| ink_before(ink, t0))
+            .filter(is_real_ink);
+        let mut strokes = self
+            .strokes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        strokes.extend(earlier);
+        let number = strokes.iter().filter(|s| s.pin.is_some()).count() as u32 + 1;
+        strokes.push(Stroke {
+            t0,
+            t1: t_ms,
+            fw,
+            fh,
+            on: None,
+            pin: Some(number),
+            laser: false,
+            pts: vec![
+                (nx * SCALE as f32).round() as i32,
+                (ny * SCALE as f32).round() as i32,
+                0,
+            ],
+        });
+        drop(strokes);
+        self.window_log_request.store(true, Ordering::Release);
+        let _ = self.ui_sender.try_send(LiveOverlayEvent::RequestSnapshot);
+        true
     }
 
     /// Whether the topmost window at a global point is Scrawl's own (ignoring the click-through
@@ -2699,6 +2912,10 @@ impl SharedCaptureTelemetry {
             .drag_start
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .shift_press
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.finish_active_laser(None);
         if let Some(ink) = self
             .live_ink
@@ -2727,6 +2944,12 @@ impl SharedCaptureTelemetry {
         if self.agent_context.swap(false, Ordering::AcqRel) {
             let hits = crate::ax::Prober::shared().finish();
             crate::ax::apply(&hits, &mut events, &mut strokes);
+            if self.capture_mode.load(Ordering::Acquire) != 3 {
+                let end = crate::now_epoch_ms();
+                let start = end.saturating_sub(self.elapsed_ms());
+                let page = crate::page::between(start, end);
+                crate::page::apply(&page, start, &mut events, &mut strokes);
+            }
         }
         (events, strokes)
     }
@@ -2809,12 +3032,20 @@ fn mouse_event(telemetry: &SharedCaptureTelemetry, event: EventRef) {
     let t_ms = telemetry.elapsed_ms();
     let loc = unsafe { CGEventGetLocation(event) };
     match event_type {
-        // A ⇧-drag is ink (the poller), not a click.
-        EVENT_LEFT_MOUSE_DOWN | EVENT_RIGHT_MOUSE_DOWN if !pure_shift => {
-            telemetry.pointer_down(t_ms, loc.x, loc.y);
+        // A ⇧-press is never a click: a ⇧-click drops a pin, a ⇧-drag is ink (the poller's).
+        EVENT_LEFT_MOUSE_DOWN | EVENT_RIGHT_MOUSE_DOWN => {
+            if !pure_shift {
+                telemetry.pointer_down(t_ms, loc.x, loc.y);
+            } else if event_type == EVENT_LEFT_MOUSE_DOWN {
+                telemetry.shift_down(t_ms, loc.x, loc.y);
+            }
         }
-        EVENT_LEFT_MOUSE_UP | EVENT_RIGHT_MOUSE_UP if !pure_shift => {
-            telemetry.pointer_up(t_ms, loc.x, loc.y, event_type == EVENT_RIGHT_MOUSE_UP);
+        EVENT_LEFT_MOUSE_UP | EVENT_RIGHT_MOUSE_UP => {
+            let right = event_type == EVENT_RIGHT_MOUSE_UP;
+            let shift_press = !right && telemetry.shift_up(t_ms, loc.x, loc.y);
+            if !shift_press && !pure_shift {
+                telemetry.pointer_up(t_ms, loc.x, loc.y, right);
+            }
         }
         EVENT_SCROLL_WHEEL => {
             let dy =
@@ -2916,7 +3147,8 @@ fn spawn_key_tap(telemetry: Arc<SharedCaptureTelemetry>) {
 }
 
 /// Clicks from the mouse buttons' polled state, while the mouse monitor is missing: a press
-/// starts a click (unless it lands on Scrawl's own window), a release ends it.
+/// starts a click (unless it lands on Scrawl's own window), a release ends it. A ⇧-press may
+/// be a pin, as in `mouse_event`.
 fn poll_clicks(
     telemetry: &SharedCaptureTelemetry,
     prev: &mut [bool; 2],
@@ -2926,16 +3158,74 @@ fn poll_clicks(
     on_scrawl: impl Fn(f64, f64) -> bool,
 ) {
     let was = std::mem::replace(prev, now);
-    if telemetry.mouse_live.load(Ordering::Acquire) || pure_shift {
+    if telemetry.mouse_live.load(Ordering::Acquire) {
         return;
     }
     for (button, (&down, &before)) in now.iter().zip(&was).enumerate() {
+        let left = button == 0;
         if down && !before && !on_scrawl(x, y) {
-            telemetry.pointer_down(telemetry.elapsed_ms(), x, y);
+            if !pure_shift {
+                telemetry.pointer_down(telemetry.elapsed_ms(), x, y);
+            } else if left {
+                telemetry.shift_down(telemetry.elapsed_ms(), x, y);
+            }
         } else if !down && before {
-            telemetry.pointer_up(telemetry.elapsed_ms(), x, y, button == 1);
+            let shift_press = left && telemetry.shift_up(telemetry.elapsed_ms(), x, y);
+            if !shift_press && !pure_shift {
+                telemetry.pointer_up(telemetry.elapsed_ms(), x, y, !left);
+            }
         }
     }
+}
+
+/// A press that moves less than this (points) before it's let go is a click, not a drag.
+const CLICK_SLOP_PT: f32 = 12.0;
+/// A ⇧-press held still for longer than this drops no pin.
+const PIN_MAX_PRESS_MS: u64 = 1_000;
+/// Ink spanning less than this (points) is a stationary ⇧ tap, not a stroke.
+const MIN_INK_SPAN_PT: f32 = 6.0;
+
+/// Whether a ⇧-press (`t`, global `x`, `y`) let go at `up` is a ⇧-click, which drops a pin.
+fn is_pin_click(down: (u64, f64, f64), up: (u64, f64, f64)) -> bool {
+    up.0.saturating_sub(down.0) <= PIN_MAX_PRESS_MS
+        && ((up.1 - down.1).hypot(up.2 - down.2) as f32) < CLICK_SLOP_PT
+}
+
+/// How far (points) the ink reaches from where it started.
+fn ink_span_pt(stroke: &Stroke) -> f32 {
+    let Some(first) = stroke.pts.get(0..2) else {
+        return 0.0;
+    };
+    stroke
+        .pts
+        .chunks_exact(3)
+        .map(|p| {
+            let dx = (p[0] - first[0]) as f32 / SCALE as f32 * stroke.fw as f32;
+            let dy = (p[1] - first[1]) as f32 / SCALE as f32 * stroke.fh as f32;
+            dx.hypot(dy)
+        })
+        .fold(0.0_f32, f32::max)
+}
+
+/// Whether finished ink is worth keeping as a stroke.
+fn is_real_ink(stroke: &Stroke) -> bool {
+    stroke.pts.len() >= 6 && ink_span_pt(stroke) >= MIN_INK_SPAN_PT
+}
+
+/// The part of live ink drawn before `t_ms`.
+fn ink_before(mut stroke: Stroke, t_ms: u64) -> Stroke {
+    let t0 = stroke.t0;
+    let at = |p: &[i32]| t0.saturating_add(p[2].max(0) as u64);
+    let keep = stroke
+        .pts
+        .chunks_exact(3)
+        .take_while(|p| at(p) < t_ms)
+        .count();
+    stroke.pts.truncate(keep * 3);
+    if let Some(last) = stroke.pts.chunks_exact(3).last() {
+        stroke.t1 = at(last);
+    }
+    stroke
 }
 
 fn same_target_frame(a: TargetFrame, b: TargetFrame) -> bool {
@@ -3216,42 +3506,30 @@ fn run_global_hid_poller(telemetry: Arc<SharedCaptureTelemetry>) {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
-                && stroke.pts.len() >= 6
-            {
-                let first = &stroke.pts[0..2];
-                let max_span_px = stroke
-                    .pts
-                    .chunks_exact(3)
-                    .map(|p| {
-                        let dx = (p[0] - first[0]) as f32 / SCALE as f32 * stroke.fw as f32;
-                        let dy = (p[1] - first[1]) as f32 / SCALE as f32 * stroke.fh as f32;
-                        dx.hypot(dy)
-                    })
-                    .fold(0.0_f32, f32::max);
                 // Ignore stationary Shift taps (e.g. typing a capital letter without moving the mouse).
-                if max_span_px >= 6.0 {
-                    if telemetry.probing() {
-                        let frame = *telemetry
-                            .target_frame
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if let Some((x, y)) = crate::ax::stroke_probe_point(&stroke, frame) {
-                            crate::ax::Prober::shared().probe(
-                                crate::ax::Target::Stroke(stroke.t0),
-                                x,
-                                y,
-                            );
-                        }
-                    }
-                    telemetry
-                        .strokes
+                && is_real_ink(&stroke)
+            {
+                if telemetry.probing() {
+                    let frame = *telemetry
+                        .target_frame
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(stroke);
-                    let _ = telemetry
-                        .ui_sender
-                        .try_send(LiveOverlayEvent::RequestSnapshot);
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some((x, y)) = crate::ax::stroke_probe_point(&stroke, frame) {
+                        crate::ax::Prober::shared().probe(
+                            crate::ax::Target::Stroke(stroke.t0),
+                            x,
+                            y,
+                        );
+                    }
                 }
+                telemetry
+                    .strokes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(stroke);
+                let _ = telemetry
+                    .ui_sender
+                    .try_send(LiveOverlayEvent::RequestSnapshot);
             }
         }
 

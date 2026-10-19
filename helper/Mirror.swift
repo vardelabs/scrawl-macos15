@@ -75,9 +75,10 @@ enum Phone {
 ///   {"event":"warning", message}                         e.g. no microphone, so no narration
 /// Commands on stdin: `show`, `hide`, `start [PATH]`, `stop`, `cancel`. End of input means stop.
 final class Mirror: NSObject, NSApplicationDelegate, NSWindowDelegate, AVCaptureFileOutputRecordingDelegate {
-  static func run(output: URL?, previewOnly: Bool = false, hiddenPreview: Bool = false, deviceID: String?) -> Never {
+  static func run(output: URL?, previewOnly: Bool = false, hiddenPreview: Bool = false, deviceID: String?, microphone: (id: String, name: String)? = nil) -> Never {
     let app = NSApplication.shared
     let mirror = Mirror(output: output, previewOnly: previewOnly, hiddenPreview: hiddenPreview, deviceID: deviceID)
+    mirror.microphone = microphone
     app.setActivationPolicy(.accessory)
     app.delegate = mirror
     withExtendedLifetime(mirror) { app.run() }
@@ -88,6 +89,8 @@ final class Mirror: NSObject, NSApplicationDelegate, NSWindowDelegate, AVCapture
   var previewOnly: Bool
   var hiddenPreview: Bool
   let deviceID: String?
+  /// The microphone chosen in Settings (CoreAudio UID, which is `AVCaptureDevice.uniqueID`).
+  var microphone: (id: String, name: String)?
   lazy var session = AVCaptureSession()
   lazy var movieOutput = AVCaptureMovieFileOutput()
   let queue = DispatchQueue(label: "dev.kitlangton.scrawl.helper.session")
@@ -161,12 +164,21 @@ final class Mirror: NSObject, NSApplicationDelegate, NSWindowDelegate, AVCapture
 
     var mic: AVCaptureDeviceInput?
     if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
-      if let microphone = AVCaptureDevice.default(for: .audio) {
-        do { mic = try AVCaptureDeviceInput(device: microphone) } catch {
-          warn("Could not open the microphone (\(error.localizedDescription)); recording without narration")
-        }
-      } else {
+      // The chosen microphone, else the macOS default: a missing one never costs the narration.
+      let chosen = microphone.flatMap { AVCaptureDevice(uniqueID: $0.id) }
+      let fallback = AVCaptureDevice.default(for: .audio)
+      if let wanted = microphone, chosen == nil, let fallback {
+        warn("\(wanted.name) isn't connected. Using \(fallback.localizedName).")
+      }
+      let candidates = [chosen, fallback].compactMap { $0 }
+      var failure: Error?
+      for device in candidates where mic == nil {
+        do { mic = try AVCaptureDeviceInput(device: device) } catch { failure = error }
+      }
+      if candidates.isEmpty {
         warn("No microphone; recording without narration")
+      } else if mic == nil, let failure {
+        warn("Could not open the microphone (\(failure.localizedDescription)); recording without narration")
       }
     }
     queue.async {

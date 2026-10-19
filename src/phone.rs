@@ -138,6 +138,10 @@ impl PhoneSession {
         {
             command.arg("--device").arg(id);
         }
+        // Narration comes from the Mac's microphone: the chosen one, if any.
+        if let Some(choice) = crate::mic::choice() {
+            command.args(["--microphone", &choice.id, "--microphone-name", &choice.name]);
+        }
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

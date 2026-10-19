@@ -8,9 +8,8 @@
 //! Without the ingest token, only a page on a loopback origin, calling from this Mac, may
 //! register, and only for its own origin. Any other origin must send the token as a bearer.
 //!
-//! TODO: the script could also report clicks (element label, tag, epoch time) so the bundle's
-//! Mac clicks get element names. Skipped until the recording keeps its start on the epoch clock
-//! precisely enough to align them.
+//! With the `agentContext` experiment on, a loopback page also posts what it sees under clicks
+//! and marks, plus errors, failed requests and video playback, to `/web/context` (`crate::page`).
 
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -343,6 +342,38 @@ pub fn handle(stream: &mut TcpStream, header: &str, expected_token: &str) -> Res
                 );
             }
         }
+        ("POST", "/web/context") => {
+            let len: usize = header_value(header, "content-length")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            anyhow::ensure!(len <= 64 * 1024, "Page context too large");
+            let mut bytes = vec![0_u8; len];
+            stream.read_exact(&mut bytes)?;
+            // Loopback pages only, token or not.
+            let Some(page_origin) = origin
+                .filter(|o| peer_loopback && is_loopback_origin(o))
+                .and_then(parse_url)
+                .map(|u| u.origin())
+            else {
+                respond_json(
+                    stream,
+                    "403 Forbidden",
+                    &serde_json::json!({"ok": false, "error": "only loopback pages send context"}),
+                    None,
+                );
+                return Ok(true);
+            };
+            let wanted = crate::handoff::experiment(crate::handoff::AGENT_CONTEXT);
+            if wanted && let Ok(post) = serde_json::from_slice::<crate::page::Post>(&bytes) {
+                crate::page::record(&page_origin, post);
+            }
+            respond_json(
+                stream,
+                "200 OK",
+                &serde_json::json!({"ok": true, "context": wanted}),
+                origin,
+            );
+        }
         ("POST", "/web/register" | "/web/unregister") => {
             let len: usize = header_value(header, "content-length")
                 .and_then(|v| v.parse().ok())
@@ -373,11 +404,14 @@ pub fn handle(stream: &mut TcpStream, header: &str, expected_token: &str) -> Res
                         reg.session.as_deref().unwrap_or("-"),
                         reg.directory.as_deref().unwrap_or("-")
                     ));
+                    // `context`: the page may send what it sees (`crate::page`); loopback only.
+                    let context = origin.is_some_and(is_loopback_origin)
+                        && crate::handoff::experiment(crate::handoff::AGENT_CONTEXT);
                     registry().register(reg, crate::now_epoch_ms());
                     respond_json(
                         stream,
                         "200 OK",
-                        &serde_json::json!({"ok": true, "ttlMs": TTL_MS}),
+                        &serde_json::json!({"ok": true, "ttlMs": TTL_MS, "context": context}),
                         origin,
                     );
                 }
@@ -591,6 +625,28 @@ mod tests {
             "tok",
         );
         assert!(unregister.starts_with("HTTP/1.1 200"), "{unregister}");
+
+        // Page context is loopback-only even with the token, and ignored with the experiment off.
+        let context = r#"{"tab":"zz","events":[]}"#;
+        let refused = request(
+            &format!(
+                "POST /web/context HTTP/1.1\r\nOrigin: https://example.com\r\nAuthorization: Bearer tok\r\nContent-Length: {}\r\n\r\n{context}",
+                context.len()
+            ),
+            "tok",
+        );
+        assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+        let accepted = request(
+            &format!(
+                "POST /web/context HTTP/1.1\r\nOrigin: http://localhost:6123\r\nContent-Length: {}\r\n\r\n{context}",
+                context.len()
+            ),
+            "tok",
+        );
+        assert!(
+            accepted.starts_with("HTTP/1.1 200") && accepted.contains(r#""context":false"#),
+            "{accepted}"
+        );
         assert!(
             registry()
                 .lookup("http://localhost:6123/", crate::now_epoch_ms())

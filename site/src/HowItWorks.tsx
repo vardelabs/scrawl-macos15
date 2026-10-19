@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { BROKEN, MacWindow } from "./demo/apps"
 import { INK_SHADOW, InkPath, inkPath } from "./demo/ink"
 import { measureAnchors } from "./demo/measure"
@@ -6,6 +6,7 @@ import { smoother, springAt } from "./demo/motion"
 import { type Anchors, AREA, buildScript, lerp, NARRATION, progress, type Rect, type Script, STAGE, strokeAt, T } from "./demo/script"
 import { FrameBadge, KeyframeScene, MenuBar } from "./demo/stage-parts"
 import { Terminal } from "./demo/terminal"
+import { useAfterLoad } from "./idle"
 
 // Each diagram is drawn in a 480 × 288 box and scaled to its card. A diagram plays on a loop only
 // while it is on screen; reduced motion shows its settled pose and never moves.
@@ -44,7 +45,7 @@ const subscribeReduced = (cb: () => void) => {
   reduceQuery?.addEventListener("change", cb)
   return () => reduceQuery?.removeEventListener("change", cb)
 }
-const useReducedMotion = () => useSyncExternalStore(subscribeReduced, () => !!reduceQuery?.matches)
+const useReducedMotion = () => useSyncExternalStore(subscribeReduced, () => !!reduceQuery?.matches, () => false)
 
 function useLoop(length: number, settled: number) {
   const ref = useRef<HTMLDivElement>(null)
@@ -95,21 +96,23 @@ function useLoop(length: number, settled: number) {
 
 function Visual({ loop, settled, label, children }: { loop: number; settled: number; label: string; children: (t: number) => ReactNode }) {
   const { ref, t, scale } = useLoop(loop, settled)
+  const live = useAfterLoad(ref)
   return (
     <div ref={ref} className="how-visual" role="img" aria-label={label}>
-      <div className="how-box" style={{ width: W, height: H, transform: `scale(${scale})` }}>
-        {children(t)}
+      <div className="how-box" style={{ width: W, height: H, transform: `scale(${scale})` }} aria-hidden inert>
+        {live && children(t)}
       </div>
     </div>
   )
 }
 
-function useMacScript() {
+function useMacScript(section: RefObject<HTMLElement | null>) {
   const stageRef = useRef<HTMLDivElement>(null)
   const badgeRef = useRef<HTMLSpanElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLHeadingElement>(null)
   const [anchors, setAnchors] = useState<Anchors | null>(null)
+  const live = useAfterLoad(section)
 
   useLayoutEffect(() => {
     const measure = () => {
@@ -118,11 +121,11 @@ function useMacScript() {
     }
     measure()
     document.fonts?.ready.then(measure)
-  }, [])
+  }, [live])
 
   const script = useMemo(() => (anchors ? buildScript("mac", anchors) : null), [anchors])
-  const probe = (
-    <div className="how-probe" aria-hidden>
+  const probe = !live ? null : (
+    <div className="how-probe" aria-hidden inert>
       <div ref={stageRef} style={{ width: STAGE.w, height: STAGE.h }}>
         <MacWindow fix={BROKEN} refs={{ badge: badgeRef, actions: actionsRef, title: titleRef }} />
       </div>
@@ -481,9 +484,10 @@ function ZoomDiagram({ t }: { t: number }) {
 /* ---------- section ---------- */
 
 export function HowItWorks() {
-  const { script, probe } = useMacScript()
+  const section = useRef<HTMLElement>(null)
+  const { script, probe } = useMacScript(section)
   return (
-    <section id="how" className="how-section">
+    <section id="how" className="how-section" ref={section}>
       {probe}
       <h2>How it works</h2>
       <div className="feature-cards">

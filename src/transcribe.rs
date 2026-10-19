@@ -142,13 +142,42 @@ pub fn transcribe(wav: Option<&Path>, audio: Option<&RecordedAudio>) -> Transcri
             ..Default::default()
         };
     };
+    let live = audio.live.take();
     let engine = Engine::preferred();
     let external = || match engine {
         Engine::Hex => try_hex(audio),
         Engine::Command => try_command(wav, audio),
         Engine::Apple => Ok(None),
     };
-    run(engine, external, || apple(wav))
+    run(engine, external, || {
+        live.and_then(|live| finish_live(live, audio))
+            .unwrap_or_else(|| apple(wav))
+    })
+}
+
+/// The transcript made while recording, or `None` (logged) to transcribe the WAV instead.
+fn finish_live(
+    live: crate::live_transcribe::Live,
+    audio: &RecordedAudio,
+) -> Option<TranscriptData> {
+    match live.finish(&audio.wav_bytes) {
+        Ok(done) => {
+            crate::capture::scrawl_log(format!(
+                "Live transcription: {} words, {} of {} ms streamed, tail {} ms",
+                done.transcript.words.len(),
+                done.streamed_samples as u64 * 1_000 / 16_000,
+                audio.duration_ms,
+                done.tail_ms
+            ));
+            Some(done.transcript)
+        }
+        Err(error) => {
+            crate::capture::scrawl_log(format!(
+                "Live transcription failed, transcribing the recording: {error:#}"
+            ));
+            None
+        }
+    }
 }
 
 /// The preferred engine first, with Apple as the answer to anything it can't do. `external`

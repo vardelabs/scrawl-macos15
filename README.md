@@ -159,8 +159,8 @@ granted and each on-demand sheet: `target/debug/scrawl-helper onboarding --rende
 
 - **General**: Launch at login, Send dev-site captures to OpenCode, and the two shortcuts, Record
   (`⌥⇧S`) and Paste last capture (`⌥⇧V`).
-- **Recording**: the transcriber (Apple Speech, or Hex while it runs, with its model) and, under
-  Experimental, Video export.
+- **Recording**: the microphone, with its input level, the transcriber (Apple Speech, or Hex while
+  it runs, with its model) and, under Experimental, Video export.
 - **Storage**: how long recordings are kept, how much space the captures take, and Show in Finder.
 - **Permissions**: the onboarding checklist, so a permission can be turned on later.
 - **Agents**: Install or Uninstall the `scrawl` command (see [Agents](#agents)), and the skill's
@@ -174,6 +174,15 @@ heading puts the default back. While the recorder listens, Scrawl's own shortcut
 are saved as `"shortcuts"` in `~/.config/scrawl/config.json`. The menu keeps Record Screen, Choose
 What to Record…, Open Latest Capture, Export Last Capture as Video… (when on), Settings…, Check
 for Updates… and Quit.
+
+**Microphone** lists the connected inputs, with System default first, which follows whatever macOS
+uses as it changes. The list updates as devices are plugged in or out. A chosen device is saved by
+its CoreAudio UID as `"microphone": {"id", "name"}`; if it isn't connected when you record, Scrawl
+records from the default instead and says so under the popup (and once in the log). The level
+meter runs only while the Recording pane is on screen and Microphone is allowed. Cabled-iPhone
+narration uses the same microphone. From the terminal, `scrawl mic list` shows the inputs and the
+one recordings will use, `scrawl mic set <id|default>` chooses, and `scrawl mic watch` prints the
+list again on every change.
 
 Preview every pane, dark and light, with the recorder listening and a combination turned down:
 `target/debug/scrawl-helper settings --render /tmp/settings --icon assets/app-icon.png`.
@@ -196,6 +205,7 @@ Preview every pane, dark and light, with the recorder listening and a combinatio
 - `⌥⇧V`: Paste both `contact-sheet.png` and `summary.md` into the active app or terminal (`⌃⌥⇧V` also works while it's the default)
 - **Normal pointer**: Clicks and scrolls pass straight through to the app underneath
 - **Hold `⇧` (Shift) + move**: Draw a persistent red marker stroke (`#ff3b30`) on screen that fades out after release
+- **`⇧`-click**: Drop a numbered pin where you click (a press that moves under 12 pt and lets go within 1 s; longer is ink)
 - **`⌘Z`**: Undo the last stroke
 - **`Esc`**: Cancel the active selection or capture
 
@@ -754,6 +764,20 @@ uv run --script scripts/scrawl-parakeet.py some.wav
 That run installs the dependencies and downloads the model (about 1.2 GB), which can take longer
 than Scrawl's timeout; after it, a five-second recording transcribes in about three seconds, and
 the script keeps the hub client offline so no recording makes a network request.
+
+### Transcribing while recording (experiment)
+
+```json
+{ "experiments": { "liveTranscribe": true } }
+```
+
+With this in `~/.config/scrawl/config.json`, a Mac recording transcribed by Apple Speech streams the
+microphone to `scrawl-helper transcribe-stream` as it records, so finishing only waits for the last
+words (tens of milliseconds) instead of transcribing the whole recording. The streamed samples are
+exactly the ones `audio.wav` holds, so word times are on the same clock. If the stream fails, the
+speech model isn't installed yet, or it takes too long, the recording is transcribed afterwards as
+usual; the log says which (`Live transcription: …`). Hex and iPhone recordings are unaffected.
+`scrawl reprocess <bundle> --out … --bench 1 --live-speed 1` replays a bundle's audio through it.
 
 ## Helper
 

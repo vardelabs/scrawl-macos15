@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useState } from "react"
 
 export type Platform =
   | { kind: "mac"; macos?: number }
@@ -75,8 +75,14 @@ async function refine(p: Platform): Promise<Platform> {
 let first: Platform | undefined
 let refined: Promise<Platform> | undefined
 
+// The prerendered HTML shows the Mac download; the visitor's own platform
+// replaces it before the first paint after hydration.
 export function usePlatform(): Platform {
-  const [platform, setPlatform] = useState(() => (first ??= guess()))
+  const [platform, setPlatform] = useState<Platform>({ kind: "mac" })
+  useLayoutEffect(() => {
+    const p = (first ??= guess())
+    setPlatform((prev) => (prev.kind === p.kind ? prev : p))
+  }, [])
   useEffect(() => {
     let live = true
     ;(refined ??= refine(first ??= guess())).then((p) => {

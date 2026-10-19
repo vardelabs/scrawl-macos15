@@ -1,5 +1,7 @@
+import AVFoundation
 import AppKit
 import Carbon.HIToolbox
+import Combine
 import SwiftUI
 
 // `scrawl-helper settings [--pane P] [--icon PNG] [--render DIR]`: the Settings window.
@@ -7,7 +9,9 @@ import SwiftUI
 //   {"type":"state","version":"0.3.2","login":{"on":false,"available":true,"needsApproval":false},
 //    "autoSend":true,"shortcuts":[{"kind":"record","title":"Record","label":"⌥⇧S","key":"S",
 //    "shift":true,"control":false,"option":true,"command":false,"isDefault":true,
-//    "recording":false,"error":null},…],"transcriber":{…},"videoExport":false,
+//    "recording":false,"error":null},…],"microphone":{"selected":"default","value":"System default",
+//    "options":[{"id":"default","title":"System default (…)","enabled":true},{"id":"-",…},…],
+//    "note":null,"meter":"BuiltInMicrophoneDevice"},"transcriber":{…},"videoExport":false,
 //    "retention":{"preset":"week","options":[{"id":"week","label":"…"}],"note":"…"},
 //    "capturesSize":"1.2 GB","permissions":[{"permission":"microphone","status":"granted",…}],
 //    "updates":true}
@@ -48,6 +52,23 @@ struct SettingsModelOption: Decodable, Equatable {
   var id: String
   var title: String
   var chosen: Bool
+}
+
+struct SettingsMenuOption: Decodable, Equatable {
+  var id: String
+  var title: String
+  var enabled = true
+}
+
+struct SettingsMicrophone: Decodable, Equatable {
+  /// "default" or a device's CoreAudio UID.
+  var selected = "default"
+  var value = "System default"
+  /// An `id` of "-" is a separator.
+  var options: [SettingsMenuOption] = [SettingsMenuOption(id: "default", title: "System default")]
+  var note: String?
+  /// The device to show the level of; nil until Microphone is allowed.
+  var meter: String?
 }
 
 struct SettingsTranscriber: Decodable, Equatable {
@@ -102,6 +123,7 @@ struct SettingsState: Decodable, Equatable {
     SettingsShortcut(),
     SettingsShortcut(kind: "paste", title: "Paste last capture", label: "⌥⇧V", key: "V"),
   ]
+  var microphone = SettingsMicrophone()
   var transcriber = SettingsTranscriber()
   var videoExport = false
   var retention = SettingsRetention()
@@ -161,6 +183,7 @@ final class SettingsModel: ObservableObject {
   let icon: NSImage?
   /// Rendering to PNGs: draw stand-in traffic lights where the window's would be.
   var rendering = false
+  let meter = MicMeter()
   var send: ([String: Any]) -> Void = { _ in }
 
   init(pane: SettingsPane, icon: NSImage?) {
@@ -310,6 +333,9 @@ struct SettingsPopup: View {
         Text(value)
           .font(.system(size: 14))
           .foregroundStyle(theme.text.opacity(0.85))
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .frame(maxWidth: 190, alignment: .trailing)
         Image(systemName: "chevron.up.chevron.down")
           .font(.system(size: 9, weight: .bold))
           .foregroundStyle(theme.secondary)
@@ -327,6 +353,10 @@ struct SettingsPopup: View {
     let target = MenuPick(pick)
     var current: NSMenuItem?
     for option in options {
+      if option.id == "-" {
+        menu.addItem(.separator())
+        continue
+      }
       let item = NSMenuItem(title: option.title, action: #selector(MenuPick.pick(_:)), keyEquivalent: "")
       item.target = target
       item.representedObject = option.id
@@ -445,6 +475,84 @@ struct SettingsCaption: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 8)
       .padding(.top, 7)
+  }
+}
+
+// MARK: Input level
+
+/// The level of the microphone recordings will use, only while the Recording pane is on screen
+/// and only once Microphone is allowed (Scrawl sends `meter` then). Its own object, so the level
+/// redraws the meter and nothing else.
+final class MicMeter: NSObject, ObservableObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+  /// 0…1, rising at once and falling at `release` a tick, like a level meter.
+  @Published var level: Float = 0
+  private var device: String?
+  private var session: AVCaptureSession?
+  private var output: AVCaptureAudioDataOutput?
+  private var timer: Timer?
+  private let queue = DispatchQueue(label: "dev.kitlangton.scrawl.helper.meter")
+  private static let floor: Float = -50
+  private static let release: Float = 0.035
+
+  /// Meters `id` (a CoreAudio UID), or stops with nil.
+  func meter(_ id: String?) {
+    guard id != device else { return }
+    device = id
+    timer?.invalidate()
+    timer = nil
+    output = nil
+    if let old = session {
+      queue.async { old.stopRunning() }
+      session = nil
+    }
+    level = 0
+    guard let id, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+    let session = AVCaptureSession()
+    let output = AVCaptureAudioDataOutput()
+    output.setSampleBufferDelegate(self, queue: queue)
+    self.session = session
+    self.output = output
+    queue.async {
+      guard let device = AVCaptureDevice(uniqueID: id), let input = try? AVCaptureDeviceInput(device: device) else { return }
+      session.beginConfiguration()
+      if session.canAddInput(input) { session.addInput(input) }
+      if session.canAddOutput(output) { session.addOutput(output) }
+      session.commitConfiguration()
+      session.startRunning()
+    }
+    timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
+  }
+
+  private func tick() {
+    let channels = output?.connections.first?.audioChannels ?? []
+    let db = channels.map(\.averagePowerLevel).max() ?? -160
+    let target = max(0, min(1, (db - Self.floor) / -Self.floor))
+    let next = target >= level ? target : max(target, level - Self.release)
+    if next != level { level = next }
+  }
+
+  /// The connection's channels carry the levels; the samples themselves aren't needed.
+  func captureOutput(_: AVCaptureOutput, didOutput _: CMSampleBuffer, from _: AVCaptureConnection) {}
+}
+
+/// Sixteen segments, lit left to right with the level.
+struct LevelMeter: View {
+  @Environment(\.settingsTheme) private var theme
+  @ObservedObject var meter: MicMeter
+  static let segments = 16
+
+  var body: some View {
+    let lit = Int((meter.level * Float(Self.segments)).rounded())
+    HStack(spacing: 3) {
+      ForEach(0..<Self.segments, id: \.self) { i in
+        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+          .fill(i < lit ? theme.text.opacity(0.7) : theme.track)
+          .frame(width: 5, height: 12)
+      }
+    }
+    .accessibilityElement()
+    .accessibilityLabel("Input level")
+    .accessibilityValue("\(Int(meter.level * 100)) percent")
   }
 }
 
@@ -707,7 +815,24 @@ struct SettingsView: View {
     case "command": "Command"
     default: "Apple Speech"
     }
+    let mic = state.microphone
     return VStack(spacing: 0) {
+      SettingsGroup {
+        SettingsRow(title: "Microphone") {
+          SettingsPopup(value: mic.value, options: mic.options.map { ($0.id, $0.title, $0.enabled) }, selected: mic.selected) {
+            model.set("microphone", $0)
+          }
+        }
+        if mic.meter != nil {
+          SettingsSeparator()
+          SettingsRow(title: "Input level") { LevelMeter(meter: model.meter) }
+        }
+      }
+      if let note = mic.note {
+        SettingsCaption(text: note)
+          .transition(.opacity)
+      }
+      Color.clear.frame(height: 20)
       SettingsGroup {
         SettingsRow(title: "Transcription") {
           SettingsPopup(value: engineTitle, options: engines, selected: t.engine) {
@@ -738,6 +863,7 @@ struct SettingsView: View {
       }
       SettingsCaption(text: "Adds Export Last Capture as Video… to the menu.")
     }
+    .animation(SettingsMotion.state, value: mic)
   }
 
   private var storage: some View {
@@ -1016,6 +1142,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
   )
   private var monitor: Any?
   private var presented = false
+  private var paneWatch: AnyCancellable?
 
   init(model: SettingsModel) {
     self.model = model
@@ -1052,7 +1179,19 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     self.window = window
     _ = keys
     model.send = { emit($0) }
+    paneWatch = model.$pane.sink { [weak self] pane in self?.updateMeter(pane: pane) }
     readCommands()
+  }
+
+  func windowDidChangeOcclusionState(_: Notification) {
+    updateMeter()
+  }
+
+  /// The level shows only while someone can see it: the Recording pane, on screen.
+  private func updateMeter(pane: SettingsPane? = nil) {
+    let onScreen = window?.occlusionState.contains(.visible) == true && window?.isMiniaturized == false
+    let showing = (pane ?? model.pane) == .recording && onScreen
+    model.meter.meter(showing ? model.state.microphone.meter : nil)
   }
 
   func windowWillClose(_: Notification) {
@@ -1119,6 +1258,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let state else { return }
             self.model.state = state
             self.listen(state.recording != nil)
+            self.updateMeter()
             if !self.presented {
               self.presented = true
               self.present(nil)
@@ -1149,6 +1289,12 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       if row.permission == "camera" { row.status = "denied" }
       return row
     }
+    let devices = [
+      SettingsMenuOption(id: "BuiltInMicrophoneDevice", title: "MacBook Pro Microphone"),
+      SettingsMenuOption(id: "AppleUSBAudioEngine:Shure:MV7", title: "Shure MV7"),
+    ]
+    let micOptions = [SettingsMenuOption(id: "default", title: "System default (MacBook Pro Microphone)"), SettingsMenuOption(id: "-", title: "", enabled: false)] + devices
+    base.microphone = SettingsMicrophone(selected: "default", value: "System default", options: micOptions, note: nil, meter: "BuiltInMicrophoneDevice")
     var listening = base
     listening.shortcuts[0].recording = true
     var refused = base
@@ -1187,6 +1333,16 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var cliDev = base
     cliDev.commandLine = SettingsCommandLine(
       enabled: false, caption: "The command-line tool works in the installed Scrawl.app.")
+    var micChosen = base
+    micChosen.microphone = SettingsMicrophone(selected: devices[1].id, value: "Shure MV7", options: micOptions, note: nil, meter: devices[1].id)
+    var micMissing = base
+    micMissing.microphone = SettingsMicrophone(
+      selected: "airpods", value: "AirPods Pro",
+      options: micOptions + [SettingsMenuOption(id: "airpods", title: "AirPods Pro (not connected)", enabled: false)],
+      note: "AirPods Pro isn't connected. Using MacBook Pro Microphone.", meter: devices[0].id
+    )
+    var micNotAllowed = base
+    micNotAllowed.microphone.meter = nil
     let samples: [(String, SettingsPane, SettingsState, NSEvent.ModifierFlags)] = [
       ("general", .general, base, []),
       ("general-custom", .general, custom, []),
@@ -1194,6 +1350,9 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("general-refused", .general, refused, []),
       ("recording", .recording, base, []),
       ("recording-hex", .recording, hex, []),
+      ("recording-mic-chosen", .recording, micChosen, []),
+      ("recording-mic-missing", .recording, micMissing, []),
+      ("recording-mic-not-allowed", .recording, micNotAllowed, []),
       ("storage", .storage, base, []),
       ("permissions", .permissions, base, []),
       ("permissions-missing", .permissions, missing, []),
@@ -1209,11 +1368,12 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var index = 0
     for scheme in [ColorScheme.dark, .light] {
       for (name, pane, state, live) in samples {
-        if scheme == .light && name.contains("-") && name != "general-recording-shortcut" { continue }
+        if scheme == .light && name.contains("-") && name != "general-recording-shortcut" && !name.hasPrefix("recording-mic") { continue }
         index += 1
         model.state = state
         model.pane = pane
         model.liveModifiers = live
+        model.meter.level = 0.44
         let view = SettingsView(model: model)
           .environment(\.colorScheme, scheme)
           .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))

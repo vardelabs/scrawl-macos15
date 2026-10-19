@@ -592,6 +592,7 @@ fn draw_keyframe_badge(
 fn draw_mark_numbers(frame: &mut RgbaFrame, marks: &[&Mark], strokes: &[Stroke], k: f32) {
     let (w, h) = (frame.width as f32, frame.height as f32);
     let radius = 11.0 * k;
+    let mut placed: Vec<[f32; 2]> = Vec::new();
     for (n, mark) in marks.iter().enumerate() {
         let start = mark
             .strokes
@@ -603,10 +604,20 @@ fn draw_mark_numbers(frame: &mut RgbaFrame, marks: &[&Mark], strokes: &[Stroke],
             continue;
         };
         let lift = radius * 1.1;
-        let center = [
-            (x * w - lift).clamp(radius + 2.0, (w - radius - 2.0).max(radius + 2.0)),
-            (y * h - lift).clamp(radius + 2.0, (h - radius - 2.0).max(radius + 2.0)),
-        ];
+        let clamp_x = |v: f32| v.clamp(radius + 2.0, (w - radius - 2.0).max(radius + 2.0));
+        let clamp_y = |v: f32| v.clamp(radius + 2.0, (h - radius - 2.0).max(radius + 2.0));
+        let mut center = [clamp_x(x * w - lift), clamp_y(y * h - lift)];
+        // Marks that start in one place would hide each other's numbers; step along instead.
+        for _ in 0..marks.len() {
+            let crowded = placed
+                .iter()
+                .any(|p: &[f32; 2]| (p[0] - center[0]).hypot(p[1] - center[1]) < radius * 2.3);
+            if !crowded {
+                break;
+            }
+            center = [clamp_x(center[0] + radius * 2.5), center[1]];
+        }
+        placed.push(center);
         circle(frame, center, radius + 1.6 * k, WHITE);
         circle(frame, center, radius, [14, 15, 18, 255]);
         let label = (n + 1).to_string();

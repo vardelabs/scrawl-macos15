@@ -6,6 +6,15 @@
 //! 2. The tab is on a loopback host: the process listening on that port, its working directory,
 //!    that directory's git root, and the most recently active root session in it.
 //! 3. Otherwise nothing: the capture stays on the clipboard.
+//!
+//! With `"experiments": {"smartRouting": true}`, [`smart`] decides instead, from clues
+//! [`look`] gathers (`docs/routing.md`).
+
+pub mod look;
+pub mod smart;
+
+/// The experiment that routes Mac captures with [`smart`] (`handoff::experiment`).
+pub const SMART_ROUTING: &str = "smartRouting";
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -394,6 +403,136 @@ pub fn route_capture(
             None
         }
     }
+}
+
+/// Smart routing's first half for a capture that just finished: the tab, terminal and sessions,
+/// or `None` when routing is off.
+pub fn look_capture(
+    front_bundle_id: Option<&str>,
+    target_bundle_id: Option<&str>,
+) -> Option<look::Live> {
+    if !crate::handoff::auto_send() || std::env::var_os("SCRAWL_NO_OPENCODE").is_some() {
+        return None;
+    }
+    Some(look::look_live(
+        front_bundle_id,
+        target_bundle_id,
+        &look::Senses::default(),
+    ))
+}
+
+/// Smart routing's second half, once the bundle is built: decides, saves the evidence beside
+/// the bundle (`RECORD`), and logs the outcome.
+pub fn judge_capture(
+    dir: &Path,
+    bundle: &ScrawlBundle,
+    live: look::Live,
+) -> (smart::Judgement, Option<String>) {
+    let url = live.url.clone();
+    if let Some(error) = &live.error {
+        scrawl_log(format!("routing: {error}"));
+    }
+    let evidence = look::evidence_for(bundle, dir, live);
+    let judgement = smart::decide(&evidence, smart::Policy::Weigh);
+    if let Err(err) = write_record(dir, &evidence, &judgement) {
+        scrawl_log(format!("routing: couldn't save {RECORD}: {err:#}"));
+    }
+    let outcome = match &judgement.decision {
+        smart::Decision::Send { to } => {
+            format!("send to {} ({})", to.candidate.label(), to.candidate.id)
+        }
+        smart::Decision::Offer { choices } => format!(
+            "offer {}",
+            choices
+                .iter()
+                .map(|c| c.candidate.label())
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
+        smart::Decision::Keep { reason } => format!("clipboard only: {reason}"),
+    };
+    scrawl_log(format!(
+        "routing (smart): {} clues, {} sessions → {outcome}",
+        evidence.clues.len(),
+        evidence.candidates.len()
+    ));
+    (judgement, url)
+}
+
+/// `scrawl route --explain`: what smart routing sees for a bundle and what it decides, beside
+/// what the ladder (smart routing off) does. Read-only.
+pub fn explain_bundle(bundle: &Path, url: Option<&str>) -> Result<String> {
+    use std::fmt::Write as _;
+    let dir = crate::handoff::resolve_bundle_dir(bundle)?;
+    let (_, loaded) = crate::handoff::load_bundle(&dir)?;
+    let (evidence, error, replayed) =
+        look::evidence_for_bundle(&dir, &loaded, url, &look::Senses::default());
+    let judgement = smart::decide(&evidence, smart::Policy::Weigh);
+    let mut out = String::new();
+    let target = &loaded.target;
+    let _ = writeln!(
+        out,
+        "Capture   {} · {}{} · {}:{:02}",
+        dir.file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        target.app.as_deref().unwrap_or("?"),
+        target
+            .window_title
+            .as_deref()
+            .map(|t| format!(" “{t}”"))
+            .unwrap_or_default(),
+        loaded.duration_ms / 60_000,
+        loaded.duration_ms / 1000 % 60
+    );
+    let tab = url
+        .map(str::to_owned)
+        .or_else(|| loaded.destination.as_ref().and_then(|d| d.url.clone()));
+    if replayed {
+        let _ = writeln!(out, "Evidence  saved at capture time ({RECORD})");
+    } else {
+        let _ = writeln!(
+            out,
+            "Evidence  gathered now: sessions as they are today{}",
+            if tab.is_none() {
+                "; no tab URL (pass --url)"
+            } else {
+                ""
+            }
+        );
+    }
+    if let Some(error) = error {
+        let _ = writeln!(out, "Warning   {error}");
+    }
+    out.push_str(&smart::explain(&evidence, &judgement));
+    let today = match tab.as_deref() {
+        Some(tab) => match route(tab, &Hooks::default()) {
+            Ok(dest) => format!("send to {} ({}) via {}", dest.title, dest.session, dest.via),
+            Err(reason) => format!("clipboard only: {reason}"),
+        },
+        None => "clipboard only: not a browser tab".into(),
+    };
+    let _ = writeln!(out, "Flag off  {today}");
+    Ok(out)
+}
+
+/// The evidence and decision behind a capture's routing, saved beside it so
+/// `scrawl route --explain` replays the same decision.
+pub const RECORD: &str = "routing.json";
+
+pub fn write_record(
+    dir: &Path,
+    evidence: &smart::Evidence,
+    judgement: &smart::Judgement,
+) -> Result<()> {
+    let body = serde_json::json!({ "evidence": evidence, "decision": judgement.decision });
+    std::fs::write(dir.join(RECORD), serde_json::to_vec_pretty(&body)?)?;
+    Ok(())
+}
+
+pub fn read_record(dir: &Path) -> Option<smart::Evidence> {
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join(RECORD)).ok()?).ok()?;
+    serde_json::from_value(value.get("evidence")?.clone()).ok()
 }
 
 /// Writes `dest` into the bundle's `scrawl.json` and `summary.md`.

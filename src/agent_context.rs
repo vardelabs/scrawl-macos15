@@ -2,9 +2,11 @@
 //! it was said (marks, clicks, drags, shortcuts, windows opening and closing, app events), so the
 //! agent reads "this part" next to the mark drawn as it was said. Marks sharing a keyframe are
 //! numbered ①②③ in drawing order, matching the badges `render` draws at each mark's start.
+//! Nothing here gives raw coordinates: the images show where, so a place is only written when
+//! something names it (an Accessibility label, the dev page's element).
 
 use crate::model::*;
-use crate::sketch::{describe_event, describe_mark, marks_on, settled_events};
+use crate::sketch::{describe_event, direction, marks_on, quote_label, settled_events};
 
 /// One keyframe's text: `head` follows `- #N (M:SS)` on the bullet line, `lines` go under it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,11 +24,17 @@ const CLAUSE_SNAP_AFTER_MS: u64 = 1_200;
 /// A pause this long ends a clause (`keyframes::CLAUSE_GAP_MS`).
 const CLAUSE_GAP_MS: u64 = 1_500;
 
-/// Drags that moved less than this (normalized) are a held click's jitter, not a drag.
-const MIN_DRAG: f32 = 0.01;
+/// How long before a click keyframe its click can be.
+const CLICK_ANCHOR_MS: u64 = 1_500;
 
-/// Repeats of one shortcut closer together than this read as one line (`pressed ⌘T ×3`).
-const KEY_REPEAT_MS: u64 = 2_000;
+/// An unnamed drag shorter than this (normalized) says nothing the images don't.
+const MIN_DRAG: f32 = 0.15;
+
+/// How close a drag is to the dev page's report of a video scrub it caused.
+const SCRUB_MS: u64 = 1_500;
+
+/// Repeats of one thing closer together than this read as one line (`pressed ⌘T ×3`).
+const REPEAT_MS: u64 = 3_000;
 
 /// More on-screen windows than this changing at once (a Space switch) is one line.
 const WINDOW_BURST: usize = 4;
@@ -107,7 +115,7 @@ pub fn keyframe_texts(bundle: &ScrawlBundle) -> Vec<FrameText> {
                 };
             }
             if text.head.is_empty() && text.lines.is_empty() {
-                text.head = frame.event.clone();
+                text.head = without_positions(&frame.event);
             }
             text
         })
@@ -161,7 +169,24 @@ fn frame_starts(bundle: &ScrawlBundle, words: Option<&[Vec<&WordTiming>]>) -> Ve
     for (i, frame) in bundle.keyframes.iter().enumerate() {
         let first_word = words.and_then(|w| w[i].first().map(|w| w.t0));
         let first_mark = marks_on(frame, &bundle.marks).first().map(|m| m.t0);
-        let start = [Some(frame.t), first_word, first_mark]
+        // A click keyframe is cut a moment after its click.
+        let click = (frame.reason == KeyframeReason::Click)
+            .then(|| {
+                bundle
+                    .events
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            InteractionEvent::Click { .. } | InteractionEvent::Drag { .. }
+                        )
+                    })
+                    .map(InteractionEvent::timestamp_ms)
+                    .filter(|&t| t <= frame.t + 200 && frame.t.saturating_sub(t) <= CLICK_ANCHOR_MS)
+                    .max()
+            })
+            .flatten();
+        let start = [Some(frame.t), first_word, first_mark, click]
             .into_iter()
             .flatten()
             .min()
@@ -172,47 +197,51 @@ fn frame_starts(bundle: &ScrawlBundle, words: Option<&[Vec<&WordTiming>]>) -> Ve
     starts
 }
 
-/// Everything besides marks that the summary shows inline, in time order.
+/// Everything besides marks that the summary shows inline, in time order, with repeats of one
+/// thing (a shortcut, a click on one control) folded into `×N` and a run of drags into one line.
 fn events(bundle: &ScrawlBundle) -> Vec<(u64, String)> {
+    let settled = settled_events(&bundle.events);
+    // On a Mac capture these come from the dev page (`crate::page`), not an app.
+    let page_scrubs: Vec<u64> = settled
+        .iter()
+        .filter_map(|e| match e {
+            InteractionEvent::AppEvent { t, label }
+                if bundle.device.is_none() && label.contains(" scrubbed to ") =>
+            {
+                Some(*t)
+            }
+            _ => None,
+        })
+        .collect();
     let mut out: Vec<(u64, String)> = Vec::new();
-    let mut last_key: Option<(u64, String, usize)> = None;
-    fn flush_key(out: &mut Vec<(u64, String)>, key: Option<(u64, String, usize)>) {
-        if let Some((t, shortcut, count)) = key {
-            let times = if count > 1 {
-                format!(" ×{count}")
-            } else {
-                String::new()
-            };
-            out.push((t, format!("pressed {shortcut}{times}")));
-        }
-    }
-    let mut key_t = 0;
-    for event in settled_events(&bundle.events) {
-        match &event {
-            InteractionEvent::Key { t, shortcut } => {
-                match &mut last_key {
-                    Some((_, prev, count))
-                        if prev == shortcut && t.saturating_sub(key_t) < KEY_REPEAT_MS =>
-                    {
-                        *count += 1;
-                    }
+    let mut drags: Option<DragRun> = None;
+    for event in &settled {
+        if let InteractionEvent::Drag { t, t1, .. } = event {
+            let reported = page_scrubs
+                .iter()
+                .any(|&s| s + SCRUB_MS >= *t && s <= t1 + SCRUB_MS);
+            if let Some(drag) = drag_text(event).filter(|_| !reported) {
+                match &mut drags {
+                    Some(run) if run.joins(&drag, *t) => run.add(drag, *t1),
                     _ => {
-                        flush_key(&mut out, last_key.take());
-                        last_key = Some((*t, shortcut.clone(), 1));
+                        out.extend(drags.take().map(DragRun::line));
+                        drags = Some(DragRun::new(drag, *t, *t1));
                     }
                 }
-                key_t = *t;
             }
-            InteractionEvent::AppChange { t, app, .. } => {
-                // Window titles stay in scrawl.json; the summary names apps only.
-                out.push((*t, format!("switched to {app}")));
-            }
-            InteractionEvent::Drag { x0, y0, x1, y1, .. }
-                if (x1 - x0).hypot(y1 - y0) < MIN_DRAG => {}
-            other => out.push((other.timestamp_ms(), describe_event(other))),
+            continue;
         }
+        let line = match event {
+            InteractionEvent::AppEvent { t, label } if bundle.device.is_none() => {
+                Some((*t, label.clone()))
+            }
+            // Window titles stay in scrawl.json; the summary names apps only.
+            InteractionEvent::AppChange { t, app, .. } => Some((*t, format!("switched to {app}"))),
+            other => event_text(other).map(|text| (other.timestamp_ms(), text)),
+        };
+        out.extend(line);
     }
-    flush_key(&mut out, last_key);
+    out.extend(drags.map(DragRun::line));
     out.extend(window_changes(&bundle.windows));
     out.extend(bundle.context_changes.iter().map(|change| {
         let text = match &change.value {
@@ -222,6 +251,215 @@ fn events(bundle: &ScrawlBundle) -> Vec<(u64, String)> {
         (change.t, text)
     }));
     out.sort_by_key(|(t, _)| *t);
+    fold_repeats(out)
+}
+
+fn fold_repeats(items: Vec<(u64, String)>) -> Vec<(u64, String)> {
+    let mut out: Vec<(u64, String, u64, usize)> = Vec::new();
+    for (t, text) in items {
+        match out.last_mut() {
+            Some((_, prev, last, count)) if *prev == text && t - *last < REPEAT_MS => {
+                *last = t;
+                *count += 1;
+            }
+            _ => out.push((t, text, t, 1)),
+        }
+    }
+    out.into_iter()
+        .map(|(t, text, _, count)| {
+            if count > 1 {
+                (t, format!("{text} ×{count}"))
+            } else {
+                (t, text)
+            }
+        })
+        .collect()
+}
+
+/// A drag worth a line: one that names what it moved, or an unnamed one that went far.
+#[derive(Clone, Debug, PartialEq)]
+struct Drag {
+    verb: &'static str,
+    name: Option<String>,
+    direction: String,
+}
+
+fn drag_text(event: &InteractionEvent) -> Option<Drag> {
+    let InteractionEvent::Drag {
+        x0,
+        y0,
+        x1,
+        y1,
+        label,
+        button,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    let label = label.as_deref().map(str::trim).filter(|l| !l.is_empty());
+    if let Some(rest) = label.and_then(|l| l.strip_prefix("long press")) {
+        let name = rest.trim_start_matches(':').trim();
+        return Some(Drag {
+            verb: "long-pressed",
+            name: (!name.is_empty()).then(|| name.to_owned()),
+            direction: String::new(),
+        });
+    }
+    let touch = button.as_deref() == Some("touch");
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    match label {
+        Some(name) => {
+            let lower = name.to_lowercase();
+            let scrub = ["slider", "scroll bar", "scrubber", "timeline", "progress"]
+                .iter()
+                .any(|word| lower.contains(word));
+            Some(Drag {
+                verb: if scrub {
+                    "scrubbed"
+                } else if touch {
+                    "swiped"
+                } else {
+                    "dragged"
+                },
+                name: Some(name.to_owned()),
+                direction: direction(dx, dy, 0.04),
+            })
+        }
+        None if dx.hypot(dy) >= MIN_DRAG => Some(Drag {
+            verb: if touch { "swiped" } else { "dragged" },
+            name: None,
+            direction: direction(dx, dy, 0.04),
+        }),
+        None => None,
+    }
+}
+
+/// Drags of one thing in quick succession, as one line.
+struct DragRun {
+    t: u64,
+    end: u64,
+    drags: Vec<Drag>,
+}
+
+impl DragRun {
+    fn new(drag: Drag, t: u64, end: u64) -> Self {
+        Self {
+            t,
+            end,
+            drags: vec![drag],
+        }
+    }
+
+    fn joins(&self, drag: &Drag, t: u64) -> bool {
+        let first = &self.drags[0];
+        first.verb == drag.verb && first.name == drag.name && t <= self.end + REPEAT_MS
+    }
+
+    fn add(&mut self, drag: Drag, end: u64) {
+        self.end = self.end.max(end);
+        self.drags.push(drag);
+    }
+
+    fn line(self) -> (u64, String) {
+        let first = &self.drags[0];
+        let mut text = first.verb.to_owned();
+        if let Some(name) = &first.name {
+            text.push(' ');
+            text.push_str(&quote_label(name));
+        }
+        let count = self.drags.len();
+        let same_way = self.drags.iter().all(|d| d.direction == first.direction);
+        // A scrub's direction and count say nothing; the dev page reports where it landed.
+        if first.verb != "scrubbed" && first.verb != "long-pressed" {
+            if same_way && first.direction != "a little" {
+                text.push(' ');
+                text.push_str(&first.direction);
+            } else if !same_way {
+                text.push_str(" back and forth");
+            }
+        }
+        if count > 1 && first.verb != "scrubbed" {
+            text.push_str(&format!(" ×{count}"));
+        }
+        (self.t, text)
+    }
+}
+
+/// A click, scroll, point or key press without coordinates; `None` for a point nothing names.
+fn event_text(event: &InteractionEvent) -> Option<String> {
+    match event {
+        InteractionEvent::Click {
+            label,
+            button,
+            role,
+            ..
+        } => {
+            let mut text = if button.as_deref() == Some("touch") {
+                "tapped"
+            } else {
+                "clicked"
+            }
+            .to_owned();
+            if let Some(role) = role.as_deref().filter(|r| !r.is_empty()) {
+                text.push(' ');
+                text.push_str(role);
+            }
+            if let Some(label) = label.as_deref().filter(|l| !l.is_empty()) {
+                text.push(' ');
+                text.push_str(&quote_label(label));
+            }
+            Some(text)
+        }
+        InteractionEvent::Point { label, .. } => label
+            .as_deref()
+            .filter(|l| !l.is_empty())
+            .map(|l| format!("pointed at {}", quote_label(l))),
+        other => Some(describe_event(other)),
+    }
+}
+
+/// What a mark is: its shape, what it was drawn on when something names that, and its stroke
+/// count when more than one.
+fn mark_text(mark: &Mark) -> String {
+    let mut text = match mark.shape {
+        Shape::Circle => "circled".to_owned(),
+        Shape::Underline => "underlined".to_owned(),
+        Shape::Line => "drew a line".to_owned(),
+        Shape::Arrow => "drew an arrow".to_owned(),
+        Shape::Pin => format!("pin {}", mark.pin.unwrap_or(1)),
+        Shape::Tap => "tapped".to_owned(),
+        Shape::Mark => "marked".to_owned(),
+        Shape::Flag => "flagged this moment".to_owned(),
+    };
+    if let Some(on) = mark.on.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        text.push_str(match mark.shape {
+            Shape::Arrow => " pointing to ",
+            Shape::Pin | Shape::Line => " on ",
+            _ => " ",
+        });
+        text.push_str(&quote_label(on));
+    }
+    if mark.strokes.len() > 1 {
+        text.push_str(&format!(" ({} strokes)", mark.strokes.len()));
+    }
+    text
+}
+
+/// A keyframe's own description without its `(x 0.50, y 0.70)` positions.
+fn without_positions(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(" (x ") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find(')') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -309,7 +547,7 @@ fn label(item: &Timed) -> String {
     match &item.item {
         Item::Mark { mark, number } => {
             let n = number.map(circled).unwrap_or_default();
-            format!("✎{n} {clock} {}", describe_mark(mark))
+            format!("✎{n} {clock} {}", mark_text(mark))
         }
         Item::Event { text } => format!("· {clock} {text}"),
     }
@@ -356,9 +594,16 @@ fn split_point(t: u64, words: &[&WordTiming], clauses: &[usize]) -> u64 {
     if t.saturating_sub(words[start].t0) <= CLAUSE_SNAP_MS {
         return words[start].t0;
     }
-    match clauses.iter().find(|&&c| c > inside) {
-        Some(&end) if words[end].t0.saturating_sub(t) <= CLAUSE_SNAP_AFTER_MS => words[end].t0,
-        _ => t,
+    // Forward to just after the clause's last word, if it ends soon.
+    let end = clauses
+        .iter()
+        .find(|&&c| c > inside)
+        .copied()
+        .unwrap_or(words.len());
+    if words[end - 1].t1.saturating_sub(t) <= CLAUSE_SNAP_AFTER_MS {
+        words.get(end).map_or(words[end - 1].t1 + 1, |w| w.t0)
+    } else {
+        t
     }
 }
 
@@ -414,35 +659,20 @@ fn interleave_unsplit(said: Option<&str>, items: &[Timed]) -> FrameText {
     }
 }
 
-/// Where a scene-change keyframe differs from the one before (autocrop's change boxes), merged
-/// and largest first.
+/// What changed on a scene-change keyframe, when it can be named: for now only a change of the
+/// whole screen (autocrop's change boxes). Smaller regions have no names yet and the image shows
+/// them.
 fn changed_regions(bundle: &ScrawlBundle, index: usize) -> Option<String> {
     let frame = bundle.keyframes.get(index)?;
     if frame.reason != KeyframeReason::SceneChange {
         return None;
     }
     let boxes = bundle.autocrop.as_ref()?.changes.get(index)?;
-    let mut merged = merge_boxes(boxes);
-    if merged.is_empty() {
-        return None;
-    }
     let area = |b: &[f32; 4]| (b[2] - b[0]) * (b[3] - b[1]);
-    merged.sort_by(|a, b| area(b).total_cmp(&area(a)));
-    if area(&merged[0]) >= 0.9 {
-        return Some("the whole screen".into());
-    }
-    let shown: Vec<String> = merged
+    merge_boxes(boxes)
         .iter()
-        .take(2)
-        .map(|[x0, y0, x1, y1]| format!("x {x0:.2}–{x1:.2}, y {y0:.2}–{y1:.2}"))
-        .collect();
-    let rest = merged.len().saturating_sub(2);
-    let more = if rest > 0 {
-        format!(" +{rest} smaller")
-    } else {
-        String::new()
-    };
-    Some(format!("{}{more}", shown.join("; ")))
+        .any(|b| area(b) >= 0.9)
+        .then(|| "the whole screen".into())
 }
 
 fn merge_boxes(boxes: &[[f32; 4]]) -> Vec<[f32; 4]> {
@@ -648,7 +878,9 @@ mod tests {
             key(2_400),
             key(2_900),
             drag(3_000, 0.503),
+            drag(3_200, 0.56),
             drag(3_500, 0.8),
+            drag(4_000, 0.9),
         ];
         let window = |id, title: &str| WindowEntry {
             id,
@@ -677,12 +909,13 @@ mod tests {
         let text = &keyframe_texts(&b)[0];
         let all = format!("{}\n{}", text.head, text.lines.join("\n"));
         assert!(all.contains("pressed ⇧⌘B ×3"), "{all}");
-        assert!(all.contains("0:03 dragged right"), "{all}");
+        assert!(all.contains("0:03 dragged right ×2"), "{all}");
         assert_eq!(
             all.matches("dragged").count(),
             1,
-            "jitter is no drag: {all}"
+            "short drags are dropped and a run is one line: {all}"
         );
+        assert!(!all.contains("x 0."), "no coordinates: {all}");
         assert!(
             all.contains("· 0:04 OpenCode window closed “The whole window closes.”"),
             "{all}"
@@ -714,13 +947,72 @@ mod tests {
         });
         let texts = keyframe_texts(&b);
         assert_eq!(texts[0].head, "[changed: the whole screen]");
-        assert_eq!(
-            texts[1].head,
-            "[changed: x 0.70–0.96, y 0.02–0.12; x 0.10–0.12, y 0.50–0.52]"
-        );
+        assert_eq!(texts[1].head, "scene changed", "unnamed regions aren't listed");
         assert_eq!(
             texts[2].head, "scene changed",
             "clicks don't describe changes"
+        );
+    }
+
+    #[test]
+    fn places_appear_only_with_a_name() {
+        let mut b = bundle(
+            Vec::new(),
+            vec![keyframe(1, 9_000, KeyframeReason::Mark, "")],
+        );
+        b.strokes = vec![
+            Stroke {
+                on: Some("button “Window”".into()),
+                ..stroke(1_000, 0.1, 0.2)
+            },
+            stroke(3_000, 0.4, 0.5),
+            stroke(3_100, 0.4, 0.52),
+        ];
+        b.marks = crate::sketch::marks_of(&b.strokes);
+        for mark in &mut b.marks {
+            mark.frame = Some("frames/frame-01.png".into());
+        }
+        let slider = |t, x1| InteractionEvent::Drag {
+            t,
+            t1: t + 300,
+            x0: 0.5,
+            y0: 0.9,
+            x1,
+            y1: 0.9,
+            label: Some("slider “Playback”".into()),
+            button: None,
+            path: Vec::new(),
+        };
+        b.events = vec![
+            InteractionEvent::Click {
+                t: 5_000,
+                x: 0.3,
+                y: 0.3,
+                button: None,
+                label: Some("“Area”".into()),
+                role: Some("button".into()),
+            },
+            slider(6_000, 0.6),
+            slider(6_800, 0.4),
+            slider(7_500, 0.45),
+            InteractionEvent::Point {
+                t: 8_500,
+                x: 0.2,
+                y: 0.2,
+                label: None,
+            },
+        ];
+        let text = &keyframe_texts(&b)[0];
+        let marks: Vec<&str> = text.lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            marks,
+            [
+                "✎① 0:01 underlined button “Window”",
+                "✎② 0:03 underlined (2 strokes)",
+                "· 0:05 clicked button “Area”",
+                "· 0:06 scrubbed slider “Playback”",
+            ],
+            "{text:?}"
         );
     }
 
@@ -762,5 +1054,34 @@ mod tests {
             on.contains("- #1 (0:01)\n  · 0:00 pressed ⌘K “Look here.”\n"),
             "{on}"
         );
+    }
+
+    #[test]
+    fn repeated_clicks_fold_and_a_click_keyframe_owns_its_click() {
+        let click = |t, x| InteractionEvent::Click {
+            t,
+            x,
+            y: 0.5,
+            button: None,
+            label: None,
+            role: None,
+        };
+        let mut b = bundle(
+            Vec::new(),
+            vec![
+                keyframe(1, 500, KeyframeReason::SceneChange, ""),
+                keyframe(2, 9_300, KeyframeReason::Click, ""),
+            ],
+        );
+        b.events = vec![
+            click(1_000, 0.63),
+            click(2_500, 0.63),
+            click(4_000, 0.63),
+            click(9_000, 0.2),
+        ];
+        let texts = keyframe_texts(&b);
+        assert_eq!(texts[0].lines, vec!["· 0:01 clicked ×3".to_owned()]);
+        assert_eq!(texts[1].lines, vec!["· 0:09 clicked".to_owned()]);
+        assert_eq!(texts[1].head, "");
     }
 }

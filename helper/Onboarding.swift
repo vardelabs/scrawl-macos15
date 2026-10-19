@@ -8,12 +8,13 @@ import SwiftUI
 // (`src/onboarding.rs`) and sends it as JSON lines on stdin:
 //   {"type":"state","step":"permissions","index":2,"count":4,"rows":[{"permission":"microphone",
 //     "status":"not-determined","requested":false,"required":true,"reopening":false,
-//     "relaunch":false},…],"ready":false,"fix":false}
+//     "relaunch":false},…],"ready":false,"fix":false,"tutorial":null|"skipped"|"watched"|"practiced"}
 //   {"type":"request","permission":"microphone"}      ask macOS (the system prompt)
 //   {"type":"open-settings","permission":"camera"}    its System Settings pane
 //   {"type":"hide"} {"type":"show"} {"type":"close"}
-// Buttons come back on stdout as {"action":"continue"|"back"|"later"|"close"|"settings"} or
-// {"action":"grant","permission":"microphone"} for a row's button.
+// Buttons come back on stdout as {"action":"continue"|"back"|"later"|"close"|"settings"|"skip"} or
+// {"action":"grant","permission":"microphone"} for a row's button; the how-it-works demo also
+// sends {"action":"watched"} after one play-through and {"action":"practiced"} after a mark.
 //
 // `scrawl-helper permissions` prints what Scrawl has been granted, and
 // `scrawl-helper onboarding --render DIR` writes every step as a PNG.
@@ -92,6 +93,11 @@ struct OnboardingState: Decodable, Equatable {
   var rows: [PermissionRow] = []
   var ready = false
   var fix = false
+  /// The demo on how-it-works: nil, "skipped", "watched" or "practiced".
+  var tutorial: String?
+
+  /// The demo has played through (or been drawn on): its button reads Continue, not Skip.
+  var tutorialSeen: Bool { tutorial == "watched" || tutorial == "practiced" }
 
   /// A fix is shorter than the tour: it has no art or page dots.
   var height: CGFloat {
@@ -226,18 +232,25 @@ struct Keycaps: View {
 struct PrimaryButton: View {
   let title: String
   var enabled = true
+  /// A neutral fill instead of red (Skip under the demo).
+  var quiet = false
   let action: () -> Void
 
   var body: some View {
+    let red = enabled && !quiet
     Button(action: action) {
-      Text(title)
+      ZStack {
+        Text(title)
+          .id(title)
+          .transition(Motion.swap)
+      }
         .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(.white)
+        .foregroundStyle(quiet ? Palette.text : .white)
         .padding(.horizontal, 22)
         .frame(minWidth: 180, minHeight: 34)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(enabled ? Palette.ink : Palette.raised))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(enabled ? 0.16 : 0.08), lineWidth: 1))
-        .shadow(color: Palette.ink.opacity(enabled ? 0.35 : 0), radius: 10, y: 3)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(red ? Palette.ink : quiet ? Color.white.opacity(0.10) : Palette.raised))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(red || quiet ? 0.16 : 0.08), lineWidth: 1))
+        .shadow(color: Palette.ink.opacity(red ? 0.35 : 0), radius: 10, y: 3)
         .opacity(enabled ? 1 : 0.55)
         .contentShape(Rectangle())
     }
@@ -347,28 +360,6 @@ struct DoneArt: View {
     .opacity(shown ? 1 : 0)
     .frame(height: 164)
     .onAppear { withAnimation(Motion.state) { shown = true } }
-  }
-}
-
-// MARK: How it works
-
-struct HowRow<Keys: View>: View {
-  let text: String
-  @ViewBuilder let keys: () -> Keys
-
-  var body: some View {
-    HStack(spacing: 16) {
-      keys()
-        .frame(width: 132, alignment: .center)
-      Text(text)
-        .font(.system(size: 13.5))
-        .lineSpacing(2.5)
-        .foregroundStyle(Palette.soft.opacity(0.9))
-        .fixedSize(horizontal: false, vertical: true)
-      Spacer(minLength: 0)
-    }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 14)
   }
 }
 
@@ -505,6 +496,7 @@ struct OnboardingView: View {
     .animation(Motion.page, value: state.step)
     .animation(Motion.state, value: state.rows)
     .animation(Motion.state, value: state.ready)
+    .animation(Motion.state, value: state.tutorialSeen)
     .frame(width: 620, height: state.height)
     .preferredColorScheme(.dark)
   }
@@ -582,24 +574,13 @@ struct OnboardingView: View {
   }
 
   private var howItWorks: some View {
-    let s = model.shortcut
-    let (mods, key) = model.shortcutParts
-    return VStack(spacing: 0) {
-      heading("How Scrawl works", nil)
-      card {
-        HowRow(text: "Tap \(s) to record the screen under your pointer. Hold \(mods) and press \(key) again to pick a window, an area or your iPhone.") {
-          Keycaps(shortcut: s, size: 26)
-        }
-        divider
-        HowRow(text: "Talk as you go, and hold ⇧ and drag to draw in red. Scrawl records your clicks too.") {
-          Keycap(label: "⇧", lit: true, size: 26)
-        }
-        divider
-        HowRow(text: "Tap \(s) again to finish. The capture is on your clipboard, ready to paste into your agent with ⌘V.") {
-          Keycaps(shortcut: "⌘V", size: 26)
-        }
-      }
-      .padding(.top, 24)
+    VStack(spacing: 0) {
+      Text("How Scrawl works")
+        .font(.system(size: 22, weight: .semibold))
+        .foregroundStyle(Palette.text)
+        .padding(.top, 34)
+      HowItWorksDemo(shortcut: model.shortcut, paste: model.paste, tutorial: state.tutorial, send: model.send)
+        .padding(.top, 16)
     }
   }
 
@@ -637,7 +618,7 @@ struct OnboardingView: View {
   private var primary: (title: String, action: String, enabled: Bool)? {
     switch state.step {
     case "welcome": return ("Get Started", "continue", true)
-    case "how-it-works": return ("Continue", "continue", true)
+    case "how-it-works": return state.tutorialSeen ? ("Continue", "continue", true) : ("Skip", "skip", true)
     case "permissions":
       return (state.fix ? "Done" : "Continue", "continue", state.ready)
     case "done": return ("Done", "continue", true)
@@ -657,7 +638,7 @@ struct OnboardingView: View {
   private var footer: some View {
     VStack(spacing: 10) {
       if let primary {
-        PrimaryButton(title: primary.title, enabled: primary.enabled) { model.send(primary.action) }
+        PrimaryButton(title: primary.title, enabled: primary.enabled, quiet: primary.action == "skip") { model.send(primary.action) }
       }
       if let secondary {
         QuietButton(title: secondary) {
@@ -749,7 +730,13 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
       icon: loadIcon(option("--icon", in: arguments))
     )
     if let dir = option("--render", in: arguments) {
-      MainActor.assumeIsolated { render(model: model, to: URL(filePath: dir)) }
+      MainActor.assumeIsolated {
+        if let fps = option("--demo-frames", in: arguments).flatMap(Double.init) {
+          renderDemo(model: model, fps: fps, to: URL(filePath: dir))
+        } else {
+          render(model: model, to: URL(filePath: dir))
+        }
+      }
       exit(0)
     }
     let app = NSApplication.shared
@@ -873,6 +860,22 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
     return window.convertToScreen(local)
   }
 
+  /// One loop of the how-it-works demo as `demo-NNNN.png` at `fps`, for a video of it.
+  @MainActor static func renderDemo(model: OnboardingModel, fps: Double, to dir: URL) {
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let frames = Int(DemoScript.loop * fps)
+    for i in 0..<frames {
+      let t = Double(i) / fps
+      onboardingFixedPhase = t / DemoScript.loop
+      model.state = OnboardingState(step: "how-it-works", index: 1, tutorial: t >= DemoScript.end ? "watched" : nil)
+      let renderer = ImageRenderer(content: OnboardingView(model: model))
+      renderer.scale = 2
+      guard let image = renderer.cgImage else { continue }
+      let url = dir.appending(path: String(format: "demo-%04d.png", i))
+      try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: url)
+    }
+  }
+
   /// Every step as `NN-step.png`, for review without running the app.
   @MainActor static func render(model: OnboardingModel, to dir: URL) {
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -891,6 +894,12 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let samples: [(String, OnboardingState, Double)] = [
       ("welcome", OnboardingState(step: "welcome", index: 0), 0.25),
       ("how-it-works", OnboardingState(step: "how-it-works", index: 1), 0),
+      ("how-it-works-recording", OnboardingState(step: "how-it-works", index: 1), 1.6 / DemoScript.loop),
+      ("how-it-works-mark", OnboardingState(step: "how-it-works", index: 1), 3.4 / DemoScript.loop),
+      ("how-it-works-click", OnboardingState(step: "how-it-works", index: 1), 4.95 / DemoScript.loop),
+      ("how-it-works-finish", OnboardingState(step: "how-it-works", index: 1), 6.4 / DemoScript.loop),
+      ("how-it-works-paste", OnboardingState(step: "how-it-works", index: 1), 7.35 / DemoScript.loop),
+      ("how-it-works-fixed", OnboardingState(step: "how-it-works", index: 1, tutorial: "watched"), 9.6 / DemoScript.loop),
       ("permissions-none", OnboardingState(step: "permissions", index: 2, rows: none), 0),
       ("permissions-screen-waiting", OnboardingState(step: "permissions", index: 2, rows: waiting), 0.3),
       ("permissions-screen-reopening", OnboardingState(step: "permissions", index: 2, rows: reopening), 0.3),
@@ -905,7 +914,30 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("fix-screen-reopening", OnboardingState(step: "permissions", index: 0, count: 1, rows: reopening, fix: true), 0.3),
       ("fix-camera", OnboardingState(step: "permissions", index: 0, count: 1, rows: [row("camera", requested: true)], fix: true), 0.3),
     ]
-    for (i, (name, state, phase)) in samples.enumerated() {
+    let practice: [CGPoint] = (0...40).map { i in
+      let a = Double(i) / 40 * 2.1 * Double.pi + 3.4
+      return CGPoint(x: 292 + 44 * cos(a), y: 189 + 25 * sin(a))
+    }
+    var extras: [(String, OnboardingState, Double, () -> Void)] = [
+      ("how-it-works-trying", OnboardingState(step: "how-it-works", index: 1), 2.0 / DemoScript.loop, {
+        onboardingDemoPractice = ([Array(practice.prefix(26))], true, false)
+      }),
+      ("how-it-works-tried", OnboardingState(step: "how-it-works", index: 1, tutorial: "practiced"), 2.0 / DemoScript.loop, {
+        onboardingDemoPractice = ([practice], false, true)
+      }),
+      ("how-it-works-reduced-motion", OnboardingState(step: "how-it-works", index: 1, tutorial: "watched"), 0, {
+        onboardingDemoPractice = nil
+        onboardingDemoStoryboard = true
+      }),
+    ]
+    extras.append(("how-it-works-skipped-earlier", OnboardingState(step: "how-it-works", index: 1, tutorial: "skipped"), 0.5 / DemoScript.loop, {
+      onboardingDemoStoryboard = false
+    }))
+    let howCount = samples.firstIndex { $0.0 == "permissions-none" } ?? 1
+    var pages: [(String, OnboardingState, Double, () -> Void)] = samples.map { ($0.0, $0.1, $0.2, {}) }
+    pages.insert(contentsOf: extras, at: howCount)
+    for (i, (name, state, phase, setup)) in pages.enumerated() {
+      setup()
       onboardingFixedPhase = phase
       model.state = state
       let renderer = ImageRenderer(content: OnboardingView(model: model))

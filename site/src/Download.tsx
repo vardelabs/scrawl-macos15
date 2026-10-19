@@ -49,7 +49,7 @@ function Unavailable({ icon, label }: { icon: React.ReactNode; label: string }) 
 
 function SendLink() {
   const [copied, setCopied] = useState(false)
-  const canShare = typeof navigator.share === "function"
+  const canShare = typeof window !== "undefined" && typeof navigator.share === "function"
   return (
     <button
       className="btn-primary"
@@ -109,7 +109,7 @@ function meta(platform: Platform): string {
     case "linux":
       return "Scrawl is Mac-only today."
     case "mobile":
-      return "Scrawl runs on your Mac. Open this page there to download it."
+      return "Scrawl runs on your Mac."
   }
 }
 
@@ -169,7 +169,9 @@ export function Download({ brew = true }: { brew?: boolean }) {
   return (
     <div className="download" data-platform={platform.kind}>
       <Primary platform={platform} />
-      <p className="download-meta">{meta(platform)}</p>
+      <p className="download-meta" key={platform.kind}>
+        {meta(platform)}
+      </p>
       <button
         className="download-more"
         aria-expanded={open}

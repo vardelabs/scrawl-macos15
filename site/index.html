@@ -3,32 +3,40 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Scrawl: show an agent the problem on your Mac</title>
+    <meta name="description" content="Scrawl is a Mac app for showing an AI coding agent a problem. Record your screen, voice, clicks and drawings, then paste one compact capture into your agent." />
     <meta name="color-scheme" content="dark" />
-    <meta name="description" content="Show an agent a problem instead of describing it." />
     <meta name="theme-color" content="#0a0a0b" />
-    <link rel="icon" type="image/png" href="/app-icon.png" />
-    <link rel="apple-touch-icon" href="/app-icon.png" />
     <link rel="canonical" href="https://scrawl.kitlangton.com/" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" type="image/png" href="/icon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt" />
     <link rel="preconnect" href="https://fonts.bunny.net" crossorigin />
-    <link rel="stylesheet" href="https://fonts.bunny.net/css?family=jetbrains-mono:400,700&display=swap" />
+    <!-- The terminal font only styles the demo, so it loads without blocking the first paint. -->
+    <link rel="preload" as="style" href="https://fonts.bunny.net/css?family=jetbrains-mono:400,700&display=swap" onload="this.onload=null;this.rel='stylesheet'" />
+    <noscript><link rel="stylesheet" href="https://fonts.bunny.net/css?family=jetbrains-mono:400,700&display=swap" /></noscript>
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Scrawl" />
-    <meta property="og:title" content="Scrawl — Show an agent the problem." />
-    <meta property="og:description" content="Show an agent a problem instead of describing it." />
+    <meta property="og:title" content="Scrawl: show an agent the problem" />
+    <meta property="og:description" content="Record your screen, voice, clicks and drawings on a Mac, then paste one compact capture into your AI coding agent." />
     <meta property="og:url" content="https://scrawl.kitlangton.com/" />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:image" content="https://scrawl.kitlangton.com/og.png" />
+    <meta property="og:image:type" content="image/png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Scrawl: a red circle and arrow drawn over an app, with the spoken note beside them." />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Scrawl — Show an agent the problem." />
-    <meta name="twitter:description" content="Show an agent a problem instead of describing it." />
+    <meta name="twitter:creator" content="@kitlangton" />
+    <meta name="twitter:title" content="Scrawl: show an agent the problem" />
+    <meta name="twitter:description" content="Record your screen, voice, clicks and drawings on a Mac, then paste one compact capture into your AI coding agent." />
     <meta name="twitter:image" content="https://scrawl.kitlangton.com/og.png" />
-    <title>Scrawl</title>
+    <meta name="twitter:image:alt" content="Scrawl: a red circle and arrow drawn over an app, with the spoken note beside them." />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><!--app--></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

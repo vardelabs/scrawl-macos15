@@ -1,6 +1,6 @@
 import { defineConfig, type Plugin } from "vite"
 import react from "@vitejs/plugin-react"
-import { agentFiles, jsonLd } from "./scripts/agent-files"
+import { agentFiles, jsonLd } from "./scripts/agent-files.ts"
 
 const TYPES: Record<string, string> = { ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8" }
 
@@ -19,6 +19,7 @@ function forAgents(): Plugin {
       })
     },
     generateBundle() {
+      if (this.environment?.config.build.ssr) return
       for (const [fileName, source] of Object.entries(agentFiles())) this.emitFile({ type: "asset", fileName, source })
     },
   }

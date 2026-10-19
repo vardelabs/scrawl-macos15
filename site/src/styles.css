@@ -690,6 +690,7 @@ kbd {
 .stage-wrap {
   position: relative;
   width: 100%;
+  aspect-ratio: 5 / 3;
   border-radius: 16px;
   overflow: hidden;
   outline: none;
@@ -720,6 +721,25 @@ kbd {
   overflow: hidden;
   font-family: var(--sans);
   letter-spacing: -0.003em;
+}
+
+/* The mock apps arrive after the page loads (useAfterLoad); fade them over the wallpaper. */
+.stage-live {
+  position: absolute;
+  inset: 0;
+  animation: stage-live-in 0.25s ease-out both;
+}
+
+@keyframes stage-live-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-live {
+    animation: none;
+  }
 }
 
 .wallpaper {

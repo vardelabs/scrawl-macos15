@@ -481,6 +481,7 @@ pub struct View {
     pub login: LoginView,
     pub auto_send: bool,
     pub shortcuts: Vec<ShortcutView>,
+    pub microphone: MicrophoneView,
     pub transcriber: TranscriberView,
     pub video_export: bool,
     pub retention: RetentionView,
@@ -604,6 +605,80 @@ pub struct ShortcutView {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MicrophoneView {
+    /// `"default"` or the chosen device's id.
+    pub selected: String,
+    /// What the popup says.
+    pub value: String,
+    /// "System default (…)", a separator (`id` "-"), then each input; a chosen device that
+    /// isn't connected comes last, disabled.
+    pub options: Vec<MenuOptionView>,
+    /// Why another device is recording.
+    pub note: Option<String>,
+    /// The device whose level the window shows, only once Microphone is allowed.
+    pub meter: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MenuOptionView {
+    pub id: String,
+    pub title: String,
+    pub enabled: bool,
+}
+
+fn microphone_view(
+    choice: Option<&crate::mic::Choice>,
+    inputs: Option<&crate::mic::Inputs>,
+    allowed: bool,
+) -> MicrophoneView {
+    use crate::mic::Pick;
+    let option = |id: &str, title: String, enabled: bool| MenuOptionView {
+        id: id.to_owned(),
+        title,
+        enabled,
+    };
+    let empty = crate::mic::Inputs::default();
+    let pick = Pick::new(choice, inputs.unwrap_or(&empty));
+    let default_title = match inputs.and_then(crate::mic::Inputs::default_input) {
+        Some(input) => format!("System default ({})", input.name),
+        None => "System default".to_owned(),
+    };
+    let mut options = vec![option("default", default_title, true)];
+    if let Some(inputs) = inputs.filter(|i| !i.devices.is_empty()) {
+        options.push(option("-", String::new(), false));
+        options.extend(
+            inputs
+                .devices
+                .iter()
+                .map(|input| option(&input.id, input.name.clone(), true)),
+        );
+    }
+    // Until the first list arrives, a choice is shown as it was saved, not as missing.
+    let loaded = inputs.is_some();
+    if let (Some(choice), true, Pick::Missing { .. }) = (choice, loaded, &pick) {
+        options.push(option(
+            &choice.id,
+            format!("{} (not connected)", choice.name),
+            false,
+        ));
+    }
+    MicrophoneView {
+        selected: choice.map_or_else(|| "default".to_owned(), |c| c.id.clone()),
+        value: match (choice, &pick) {
+            (_, Pick::Chosen(input)) => input.name.clone(),
+            (Some(choice), _) => choice.name.clone(),
+            (None, _) => "System default".to_owned(),
+        },
+        options,
+        note: if loaded { pick.note() } else { None },
+        meter: pick
+            .device()
+            .filter(|_| allowed && loaded)
+            .map(|input| input.id.clone()),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriberView {
     /// What recordings use now: "apple", "hex" or "command".
@@ -704,8 +779,9 @@ fn shortcut_view(
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
-    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport` (bool), `transcriber`
-    /// ("apple"/"hex"), `hexModel` (an id), `retention` (a preset id).
+    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport` (bool), `microphone`
+    /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
+    /// `retention` (a preset id).
     Set {
         key: String,
         value: serde_json::Value,
@@ -781,6 +857,8 @@ pub struct Panel {
     requested: BTreeSet<Permission>,
     grants: Option<Grants>,
     captures_size: Option<u64>,
+    /// The connected microphones, once listed (`mic::Watch` keeps them fresh).
+    inputs: Option<crate::mic::Inputs>,
 }
 
 impl Panel {
@@ -795,6 +873,10 @@ impl Panel {
 
     pub fn set_captures_size(&mut self, bytes: u64) {
         self.captures_size = Some(bytes);
+    }
+
+    pub fn set_inputs(&mut self, inputs: crate::mic::Inputs) {
+        self.inputs = Some(inputs);
     }
 
     pub fn on(&mut self, action: Action, host: &mut dyn Host) -> Effect {
@@ -914,6 +996,12 @@ impl Panel {
                 }
             }
             ("autoSend" | "videoExport", serde_json::Value::Bool(on)) => write(key, (*on).into()),
+            ("microphone", serde_json::Value::String(id)) => {
+                let inputs = self.inputs.clone().unwrap_or_default();
+                if let Err(error) = crate::mic::save_in(&path, id, &inputs) {
+                    crate::capture::scrawl_log(format!("Saving microphone failed: {error:#}"));
+                }
+            }
             ("transcriber", serde_json::Value::String(name)) => {
                 if let Some(engine) = crate::transcribe::Engine::parse(name) {
                     write("transcriber", engine.name().into());
@@ -1010,6 +1098,11 @@ impl Panel {
                     )
                 })
                 .collect(),
+            microphone: microphone_view(
+                crate::mic::choice_in(&host.config_path()).as_ref(),
+                self.inputs.as_ref(),
+                self.status(Permission::Microphone) == Status::Granted,
+            ),
             transcriber: TranscriberView {
                 engine: if menu.hex_checked {
                     "hex"
@@ -1111,6 +1204,7 @@ pub enum Event {
     Action(Action),
     Grants(Grants),
     CapturesSize(u64),
+    Microphones(crate::mic::Inputs),
     /// Something outside the window may have changed (Hex, the login item): redraw.
     Tick,
     Exited,
@@ -1124,6 +1218,7 @@ pub struct Session {
     polling: std::sync::Arc<std::sync::atomic::AtomicBool>,
     events: std::sync::Arc<dyn Fn(Event) + Send + Sync>,
     last_view: String,
+    _microphones: crate::mic::Watch,
 }
 
 impl Session {
@@ -1198,6 +1293,10 @@ impl Session {
             }
         });
 
+        let list = std::sync::Arc::clone(&events);
+        let microphones =
+            crate::mic::Watch::start(move || list(Event::Microphones(crate::mic::inputs())));
+
         let mut panel = Panel::default();
         if let Some(grants) = grants {
             panel.set_grants(grants);
@@ -1209,6 +1308,7 @@ impl Session {
             polling,
             events,
             last_view: String::new(),
+            _microphones: microphones,
         })
     }
 
@@ -1226,6 +1326,10 @@ impl Session {
             }
             Event::CapturesSize(bytes) => {
                 self.panel.set_captures_size(bytes);
+                Effect::None
+            }
+            Event::Microphones(inputs) => {
+                self.panel.set_inputs(inputs);
                 Effect::None
             }
             Event::Tick => Effect::None,
@@ -1751,6 +1855,103 @@ mod tests {
         set(&mut panel, &mut host, "retention", "forever".into());
         // "Forever" says it all; no caption.
         assert_eq!(panel.view(&host).retention.note, "");
+    }
+
+    #[test]
+    fn the_microphone_popup_follows_what_is_plugged_in() {
+        use crate::mic::{Input, Inputs};
+        let dir = TempDir::new("mic");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        let built_in = Input {
+            id: "BuiltInMicrophoneDevice".into(),
+            name: "MacBook Pro Microphone".into(),
+        };
+        let shure = Input {
+            id: "usb-1".into(),
+            name: "Shure MV7".into(),
+        };
+        let both = Inputs {
+            devices: vec![built_in.clone(), shure.clone()],
+            default: Some(built_in.id.clone()),
+        };
+        let pick = |panel: &mut Panel, host: &mut Fake, id: &str| {
+            panel.on(
+                Action::Set {
+                    key: "microphone".into(),
+                    value: id.into(),
+                },
+                host,
+            )
+        };
+
+        let mic = panel.view(&host).microphone;
+        assert_eq!(
+            (mic.selected.as_str(), mic.value.as_str()),
+            ("default", "System default")
+        );
+        assert_eq!((mic.note, mic.meter), (None, None), "nothing listed yet");
+
+        panel.set_inputs(both.clone());
+        let mic = panel.view(&host).microphone;
+        let titles: Vec<_> = mic.options.iter().map(|o| o.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "System default (MacBook Pro Microphone)",
+                "",
+                "MacBook Pro Microphone",
+                "Shure MV7"
+            ]
+        );
+        assert_eq!(mic.options[1].id, "-");
+        assert_eq!(mic.meter, None, "no level before Microphone is allowed");
+
+        let mut grants = Grants::default();
+        grants
+            .statuses
+            .insert(Permission::Microphone, Status::Granted);
+        panel.set_grants(grants);
+        assert_eq!(
+            panel.view(&host).microphone.meter.as_deref(),
+            Some("BuiltInMicrophoneDevice")
+        );
+
+        pick(&mut panel, &mut host, "usb-1");
+        assert_eq!(
+            read_json(&host.path)["microphone"],
+            serde_json::json!({"id": "usb-1", "name": "Shure MV7"})
+        );
+        let mic = panel.view(&host).microphone;
+        assert_eq!(
+            (mic.selected.as_str(), mic.value.as_str()),
+            ("usb-1", "Shure MV7")
+        );
+        assert_eq!(mic.meter.as_deref(), Some("usb-1"));
+
+        // Unplugged: still chosen, said once in the caption, and the default stands in.
+        panel.set_inputs(Inputs {
+            devices: vec![built_in.clone()],
+            default: Some(built_in.id.clone()),
+        });
+        let mic = panel.view(&host).microphone;
+        assert_eq!(mic.value, "Shure MV7");
+        assert_eq!(
+            mic.note.as_deref(),
+            Some("Shure MV7 isn't connected. Using MacBook Pro Microphone.")
+        );
+        let last = mic.options.last().unwrap();
+        assert_eq!(
+            (last.id.as_str(), last.title.as_str(), last.enabled),
+            ("usb-1", "Shure MV7 (not connected)", false)
+        );
+        assert_eq!(mic.meter.as_deref(), Some("BuiltInMicrophoneDevice"));
+
+        panel.set_inputs(both);
+        assert_eq!(panel.view(&host).microphone.note, None, "back again");
+        pick(&mut panel, &mut host, "default");
+        assert_eq!(read_json(&host.path).get("microphone"), None);
+        assert_eq!(panel.view(&host).microphone.selected, "default");
     }
 
     #[test]

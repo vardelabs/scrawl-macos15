@@ -1,8 +1,10 @@
 // scrawl-helper: the parts of Scrawl that need Swift-only Apple frameworks.
 //
 //   scrawl-helper devices                               cabled iPhones/iPads (USB registry) as JSON
-//   scrawl-helper mirror --out FILE.mov [--device ID]   live mirror window + native recording (JSON lines)
+//   scrawl-helper mirror --out FILE.mov [--device ID] [--microphone UID --microphone-name NAME]
+//                                                       live mirror window + native recording (JSON lines)
 //   scrawl-helper transcribe FILE                       SpeechAnalyzer transcript with word timings
+//   scrawl-helper transcribe-stream                     the same while recording: PCM on stdin, JSON lines (LiveTranscribe.swift)
 //   scrawl-helper frames MOVIE --out-dir DIR (--every MS | --at MS,MS…) [--max-edge PX]
 //   scrawl-helper audio MOVIE OUT.wav                   16 kHz mono PCM of every audio track, mixed
 //   scrawl-helper probe MOVIE                           duration and video size
@@ -109,10 +111,15 @@ case "mirror":
   let hidden = arguments.contains("--hidden")
   let out = option("--out", in: arguments).map { URL(filePath: $0) }
   if !preview && out == nil { fail("mirror needs --out FILE.mov or --preview") }
-  Mirror.run(output: out, previewOnly: preview, hiddenPreview: hidden, deviceID: option("--device", in: arguments))
+  Mirror.run(
+    output: out, previewOnly: preview, hiddenPreview: hidden, deviceID: option("--device", in: arguments),
+    microphone: option("--microphone", in: arguments).map { ($0, option("--microphone-name", in: arguments) ?? $0) }
+  )
 case "transcribe":
   guard arguments.count >= 2 else { fail("transcribe needs a file") }
   runAsync { emit(try await Transcriber.transcribe(URL(filePath: arguments[1]))) }
+case "transcribe-stream":
+  runAsync { try await LiveTranscriber.run() }
 case "frames":
   guard arguments.count >= 2, let dir = option("--out-dir", in: arguments) else {
     fail("frames needs MOVIE --out-dir DIR (--every MS | --at MS,MS…)")
@@ -156,5 +163,5 @@ case "qr":
   }
   emit(["qr": qr])
 default:
-  fail("usage: scrawl-helper devices|mirror|transcribe|frames|audio|probe|export|shrink|permission-panel|permissions|sck-probe|onboarding|settings|qr …")
+  fail("usage: scrawl-helper devices|mirror|transcribe|transcribe-stream|frames|audio|probe|export|shrink|permission-panel|permissions|sck-probe|onboarding|settings|qr …")
 }

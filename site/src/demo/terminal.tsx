@@ -26,7 +26,7 @@ function LogoLine({ line, cls }: { line: string; cls: string }) {
 
 const Logo = memo(function Logo() {
   return (
-    <div className="tui-logo" aria-label="opencode">
+    <div className="tui-logo" role="img" aria-label="opencode">
       {LOGO_LEFT.map((l, i) => (
         <div key={i}>
           <LogoLine line={l} cls="lg-open" />

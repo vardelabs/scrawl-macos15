@@ -84,6 +84,9 @@ const reduce = (v: MotionValues): MotionValues => {
   return to
 }
 
+// What the prerendered HTML used, so hydration starts from the same values.
+export const motionServer = (): MotionValues => fixed ?? motionControls.get()
+
 export const motion = (): MotionValues => {
   const v = fixed ?? motionControls.get()
   return reduceQuery?.matches ? reduce(v) : v

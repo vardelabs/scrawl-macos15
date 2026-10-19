@@ -2,9 +2,10 @@ import { type ComponentType, type CSSProperties, useCallback, useEffect, useLayo
 import { flushSync } from "react-dom"
 import { MacWindow, PhoneMirror } from "./apps"
 import type { StageGpuOverlay as StageGpuOverlayType } from "./gpu-fx"
+import { afterLoad, useAfterLoad, useHydrated } from "../idle"
 import { INK_SHADOW, InkPath, inkPath } from "./ink"
 import { measureAnchors, sameAnchors } from "./measure"
-import { motion, motionControls } from "./motion"
+import { motion, motionControls, motionServer } from "./motion"
 import { AGENT, type Anchors, BEATS, buildScript, cursorAt, type Mode, STAGE, T } from "./script"
 import * as sfx from "./sfx"
 import { Caption, Cursor, fixState, Island, Ink, Keys, MenuBar, phoneLive, Ripples, Selection, terminalActive } from "./stage-parts"
@@ -79,13 +80,6 @@ const TIMESCALE = (() => {
   const v = Number(new URLSearchParams(window.location.search).get("timescale"))
   return v > 0 && v <= 4 ? v : 1
 })()
-
-function initialScale() {
-  if (typeof window === "undefined") return 1
-  const pad = window.innerWidth <= 760 ? 20 : 40
-  const avail = Math.min(window.innerWidth, 1240) - pad
-  return Math.min(1, Math.max(0.25, avail / STAGE.w))
-}
 
 // `stepClock` advances t each animation frame and locks to the WebAudio narration clock while it plays.
 function usePlayback(duration: number, stepClock: (prevT: number, dt: number) => number, onSync: (t: number, playing: boolean) => void) {
@@ -192,7 +186,9 @@ export function Demo() {
   const badgeRef = useRef<HTMLSpanElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLHeadingElement>(null)
-  const [scale, setScale] = useState(initialScale)
+  const [scale, setScale] = useState(1)
+  const lens = useHydrated() ? LENS_DATA_URL : null
+  const ready = useAfterLoad(wrapRef)
   const [anchors, setAnchors] = useState<Anchors | null>(null)
   const [user, setUser] = useState<UserStroke[]>([])
   const [shiftDown, setShiftDown] = useState(false)
@@ -204,21 +200,21 @@ export function Demo() {
   useEffect(() => {
     if (window.innerWidth < 700) return
     let cancelled = false
-    const raf = requestAnimationFrame(() => {
+    const cancel = afterLoad(() => {
       import("./gpu-fx").then((mod) => {
         if (!cancelled) setGpuOverlay(() => mod.StageGpuOverlay)
       })
     })
     return () => {
       cancelled = true
-      cancelAnimationFrame(raf)
+      cancel()
     }
   }, [])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => sfx.preloadNarration(), 120)
+    const cancel = afterLoad(() => sfx.preloadNarration())
     return () => {
-      clearTimeout(timer)
+      cancel()
       sfx.stopNarration()
     }
   }, [])
@@ -267,7 +263,7 @@ export function Demo() {
     return () => ro.disconnect()
   }, [])
 
-  const look = useSyncExternalStore(motionControls.subscribe, motion, motion)
+  const look = useSyncExternalStore(motionControls.subscribe, motion, motionServer)
   // CSS-driven reveals (blocks entering the terminal, diff lines, contact-sheet cards) read these.
   const lookVars = {
     "--m-enter-ms": `${look.enterMs}ms`,
@@ -299,7 +295,7 @@ export function Demo() {
     }
     measure()
     document.fonts?.ready.then(measure)
-  }, [mode, broken])
+  }, [mode, broken, ready])
 
   useEffect(() => {
     const down = (e: PointerEvent) => {
@@ -469,8 +465,8 @@ export function Demo() {
     !!cursor && cursor.at[0] > AGENT.x && cursor.at[0] < AGENT.x + AGENT.w && cursor.at[1] > AGENT.y + 28 && cursor.at[1] < AGENT.y + AGENT.h
 
   return (
-    <div className={`demo${LENS_DATA_URL ? " svg-glass" : ""}`} style={lookVars}>
-      {LENS_DATA_URL && (
+    <div className={`demo${lens ? " svg-glass" : ""}`} style={lookVars}>
+      {lens && (
         <svg className="liquid-glass-defs" aria-hidden>
           <defs>
             <filter
@@ -484,7 +480,7 @@ export function Demo() {
               colorInterpolationFilters="sRGB"
             >
               <feGaussianBlur in="SourceGraphic" stdDeviation="0.06 0.2" edgeMode="duplicate" result="preblur" />
-              <feImage href={LENS_DATA_URL} x="0" y="0" width="1" height="1" preserveAspectRatio="none" result="lens" />
+              <feImage href={lens} x="0" y="0" width="1" height="1" preserveAspectRatio="none" result="lens" />
               <feDisplacementMap in="preblur" in2="lens" scale="0.075" xChannelSelector="R" yChannelSelector="G" result="refracted" />
               <feGaussianBlur in="refracted" stdDeviation="0.015 0.05" edgeMode="duplicate" result="blurred" />
               <feColorMatrix in="blurred" type="saturate" values="2.05" result="saturated" />
@@ -501,7 +497,6 @@ export function Demo() {
       <div
         ref={wrapRef}
         className={`stage-wrap${drawing ? " drawing" : ""}`}
-        style={{ height: STAGE.h * scale }}
         tabIndex={0}
         onKeyDown={onKeyDown}
         onPointerDown={onPointerDown}
@@ -510,29 +505,39 @@ export function Demo() {
         onPointerCancel={onPointerUp}
         aria-label="Scrawl demo"
       >
-        <div ref={stageRef} className="stage wallpaper" style={{ width: STAGE.w, height: STAGE.h, transform: `scale(${scale})` }}>
-          <MenuBar t={t} />
-          {mode === "mac" ? (
-            <MacWindow fix={fix} sheen={look.sheen} refs={refs} inactive={terminalActive(t)} />
-          ) : (
-            <PhoneMirror fix={fix} sheen={look.sheen} refs={refs} live={live} />
+        <div
+          ref={stageRef}
+          className="stage wallpaper"
+          style={{ width: STAGE.w, height: STAGE.h, transform: `scale(${scale})` }}
+          aria-hidden
+          inert
+        >
+          {ready && (
+            <div className="stage-live">
+              <MenuBar t={t} />
+              {mode === "mac" ? (
+                <MacWindow fix={fix} sheen={look.sheen} refs={refs} inactive={terminalActive(t)} />
+              ) : (
+                <PhoneMirror fix={fix} sheen={look.sheen} refs={refs} live={live} />
+              )}
+              {script && <Terminal t={t} mode={mode} script={script} />}
+              {script && <Selection t={t} script={script} cursor={cursor} />}
+              {script && <Ink t={t} script={script} />}
+              {script && <Caption t={t} script={script} />}
+              <Keys t={t} mode={mode} />
+              <Island t={t} mode={mode} />
+              {script && <Ripples t={t} script={script} />}
+              {user.length > 0 && (
+                <svg className="ink" viewBox={`0 0 ${STAGE.w} ${STAGE.h}`} style={INK_SHADOW}>
+                  {user.map((s, i) => (
+                    <InkPath key={i} d={inkPath(s.points, 4.5, 0.5)} />
+                  ))}
+                </svg>
+              )}
+              {GpuOverlay && <GpuOverlay t={t} script={script} intensity={look.inkSheen} stageRef={stageRef} />}
+              {cursor && <Cursor c={cursor} crosshair={mode === "mac" && t >= T.select && t < T.record} ibeam={overTerminal && t >= T.promptClick - 400 && t < T.paste + 120} />}
+            </div>
           )}
-          {script && <Terminal t={t} mode={mode} script={script} />}
-          {script && <Selection t={t} script={script} cursor={cursor} />}
-          {script && <Ink t={t} script={script} />}
-          {script && <Caption t={t} script={script} />}
-          <Keys t={t} mode={mode} />
-          <Island t={t} mode={mode} />
-          {script && <Ripples t={t} script={script} />}
-          {user.length > 0 && (
-            <svg className="ink" viewBox={`0 0 ${STAGE.w} ${STAGE.h}`} style={INK_SHADOW}>
-              {user.map((s, i) => (
-                <InkPath key={i} d={inkPath(s.points, 4.5, 0.5)} />
-              ))}
-            </svg>
-          )}
-          {GpuOverlay && <GpuOverlay t={t} script={script} intensity={look.inkSheen} stageRef={stageRef} />}
-          {cursor && <Cursor c={cursor} crosshair={mode === "mac" && t >= T.select && t < T.record} ibeam={overTerminal && t >= T.promptClick - 400 && t < T.paste + 120} />}
         </div>
         {!started && (
           <button

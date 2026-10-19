@@ -4,7 +4,7 @@
 // into dist and serves them in dev.
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
-import { latestRelease } from "../src/appcast"
+import { latestRelease } from "../src/appcast.ts"
 
 const SITE = "https://scrawl.kitlangton.com"
 const REPO = "https://github.com/kitlangton/scrawl"
@@ -146,7 +146,7 @@ ${section(readme, "## Keeping captures small")}
 
 ## The agent skill
 
-This is ${SITE}/skill.md, the skill that \`bunx skills add kitlangton/scrawl\` installs.
+This is the skill that \`bunx skills add kitlangton/scrawl\` installs, also served at <${SITE}/skill.md>.
 
 ${shift(unfrontmatter(skill), 2).trim()}
 `

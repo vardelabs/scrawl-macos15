@@ -1,9 +1,10 @@
-import { lazy, Suspense } from "react"
+import { lazy, Suspense, useEffect, useState } from "react"
 import { BrushFallback } from "./brush-paths"
 import { Copy } from "./Copy"
 import { Demo } from "./demo/Demo"
 import { Download, useDownloadHref } from "./Download"
 import { HowItWorks } from "./HowItWorks"
+import { afterLoad } from "./idle"
 import { IPhoneSection } from "./IPhone"
 import { BREW, MAC_ZIP, SKILL } from "./release"
 
@@ -28,11 +29,13 @@ const CONTROLS: [string[], string][] = [
 
 export function App() {
   const downloadHref = useDownloadHref()
+  const [brush, setBrush] = useState(false)
+  useEffect(() => afterLoad(() => setBrush(true)), [])
   return (
     <>
       <header className="nav">
         <a className="brand" href="#">
-          <img src="/app-icon.png" width={26} height={26} decoding="async" alt="" />
+          <img src="/app-icon-64.png" width={26} height={26} decoding="async" alt="" />
           Scrawl
         </a>
         <nav>
@@ -48,9 +51,13 @@ export function App() {
 
       <main>
         <section className="hero">
-          <Suspense fallback={<BrushFallback />}>
-            <Brush3D />
-          </Suspense>
+          {brush ? (
+            <Suspense fallback={<BrushFallback />}>
+              <Brush3D />
+            </Suspense>
+          ) : (
+            <BrushFallback />
+          )}
           <h1>Show an agent the problem.</h1>
           <p className="lede">
             Press <kbd>⌥</kbd>
@@ -139,7 +146,7 @@ export function App() {
       </main>
 
       <footer className="foot">
-        <img src="/app-icon.png" width={20} height={20} decoding="async" alt="" />
+        <img src="/app-icon-64.png" width={20} height={20} decoding="async" alt="" />
         <span>Scrawl</span>
         <a href={REPO}>GitHub</a>
       </footer>

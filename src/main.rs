@@ -16,9 +16,12 @@ mod icons;
 mod inbox;
 mod keyframes;
 mod laser_overlay;
+mod live_transcribe;
+mod mic;
 mod model;
 mod native;
 mod onboarding;
+mod page;
 mod phone;
 mod render;
 mod retention;
@@ -114,6 +117,36 @@ fn hex_status() {
             _ => "Apple Speech".to_owned(),
         }
     );
+}
+
+#[derive(Subcommand)]
+enum MicCommand {
+    /// The connected microphones (id, name), marking the default and the one recordings use.
+    List,
+    /// Record from this device id, or `default` to follow macOS.
+    Set { id: String },
+    /// Print the list again whenever an input is plugged in or out or the default changes.
+    Watch,
+}
+
+fn mic_list() {
+    let inputs = mic::inputs();
+    let choice = mic::choice();
+    let pick = mic::Pick::new(choice.as_ref(), &inputs);
+    let using = pick.device().map(|d| d.id.clone());
+    for input in &inputs.devices {
+        let mut tags = Vec::new();
+        if inputs.default.as_deref() == Some(input.id.as_str()) {
+            tags.push("default");
+        }
+        if using.as_deref() == Some(input.id.as_str()) {
+            tags.push("recording");
+        }
+        println!("{}\t{}\t{}", input.id, input.name, tags.join(","));
+    }
+    if let Some(note) = pick.note() {
+        println!("{note}");
+    }
 }
 
 #[derive(Subcommand)]
@@ -238,6 +271,10 @@ enum Command {
         /// captures) to benchmark finish-to-done wall clock.
         #[arg(long, hide = true)]
         bench: Option<u32>,
+        /// With `--bench` on a Screen capture: play the audio into a live transcription at this
+        /// many times real time first, as if recording, so the finish only transcribes the tail.
+        #[arg(long, hide = true, requires = "bench")]
+        live_speed: Option<f64>,
         /// Transcribe with `apple`, `hex` or `command` instead of the configured transcriber.
         #[arg(long, value_parser = parse_engine)]
         transcriber: Option<crate::transcribe::Engine>,
@@ -259,6 +296,11 @@ enum Command {
     Tune {
         #[command(subcommand)]
         command: Option<TuneCommand>,
+    },
+    /// List microphones or choose the one Mac captures record from (Settings › Recording).
+    Mic {
+        #[command(subcommand)]
+        command: MicCommand,
     },
     /// Check the Hex transcriber: is it running, which models are ready, which one Scrawl uses.
     Hex {
@@ -452,6 +494,10 @@ enum Command {
     },
     /// Print which OpenCode session a capture of a browser tab would be sent to, without
     /// sending: a page registered through `/sdk.js`, else the project serving a localhost port.
+    ///
+    /// With `--explain <bundle>`, prints the evidence smart routing sees for that capture, the
+    /// sessions it weighed and their scores, and its decision (read-only). `--url` stands in for
+    /// the tab when the bundle didn't save one.
     Route {
         /// The tab's URL.
         #[arg(long, conflicts_with = "browser")]
@@ -459,6 +505,9 @@ enum Command {
         /// Read the front tab of this browser instead (bundle ID, e.g. `com.brave.Browser`).
         #[arg(long)]
         browser: Option<String>,
+        /// A `.scrawl` bundle (or `latest`) to explain.
+        #[arg(long, value_name = "BUNDLE")]
+        explain: Option<PathBuf>,
     },
     /// Open a `.scrawl` bundle in the native GPUI review window.
     Preview {
@@ -1508,6 +1557,7 @@ fn main() -> Result<()> {
             bundle,
             out,
             bench,
+            live_speed,
             transcriber,
             experiments,
         } => {
@@ -1623,10 +1673,20 @@ fn main() -> Result<()> {
                             ..Default::default()
                         };
                         let iter_wav = wav_bytes.clone();
+                        let live = match (live_speed, &iter_wav) {
+                            (Some(speed), Some(wav)) => {
+                                Some(live_transcribe::simulate(wav, speed)?)
+                            }
+                            _ => None,
+                        };
                         let t0 = std::time::Instant::now();
                         let recorded = iter_wav
                             .map(audio::recorded_audio_from_wav)
-                            .transpose()?;
+                            .transpose()?
+                            .map(|mut recorded| {
+                                recorded.live = live_transcribe::Slot::new(live);
+                                recorded
+                            });
                         iter_activity.stop_started = Some(t0);
                         iter_activity.stop_ms = Some(t0.elapsed().as_millis() as u64);
                         finalize_capture_bundle(
@@ -1787,6 +1847,34 @@ fn main() -> Result<()> {
             TuneCommand::Reset => ui::TuneAction::Reset,
             TuneCommand::Rust => ui::TuneAction::Rust,
         }),
+        Command::Mic {
+            command: MicCommand::List,
+        } => {
+            mic_list();
+            Ok(())
+        }
+        Command::Mic {
+            command: MicCommand::Watch,
+        } => {
+            let _watch = mic::Watch::start(|| {
+                println!("[{}]", now_epoch_ms());
+                mic_list();
+            });
+            loop {
+                std::thread::park();
+            }
+        }
+        Command::Mic {
+            command: MicCommand::Set { id },
+        } => {
+            let inputs = mic::inputs();
+            if id != "default" && inputs.find(&id).is_none() {
+                anyhow::bail!("No connected microphone has id {id}; see `scrawl mic list`");
+            }
+            mic::save_in(&handoff::default_config_path(), &id, &inputs)?;
+            mic_list();
+            Ok(())
+        }
         Command::Hex {
             command: HexCommand::Status,
         } => {
@@ -2102,7 +2190,26 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Route { url, browser } => {
+        Command::Route {
+            url,
+            browser,
+            explain: Some(bundle),
+        } => {
+            let url = match browser {
+                Some(browser) => Some(
+                    routing::browser_tab_url(&browser)
+                        .with_context(|| format!("Couldn't read the front tab of {browser}"))?,
+                ),
+                None => url,
+            };
+            print!("{}", routing::explain_bundle(&bundle, url.as_deref())?);
+            Ok(())
+        }
+        Command::Route {
+            url,
+            browser,
+            explain: None,
+        } => {
             let url = match (url, browser) {
                 (Some(url), _) => url,
                 (None, Some(browser)) => routing::browser_tab_url(&browser)

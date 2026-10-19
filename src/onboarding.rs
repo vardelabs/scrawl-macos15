@@ -60,7 +60,9 @@ impl Permission {
 #[serde(rename_all = "kebab-case")]
 pub enum Step {
     Welcome,
-    /// Tap ⌥⇧S to record, talk and draw with ⇧, tap again to finish and paste.
+    /// A short silent demo on a pretend app: tap ⌥⇧S, talk, hold ⇧ and move to mark, click,
+    /// tap ⌥⇧S to finish, paste into the agent. It can be skipped, and a mark can be tried on
+    /// it (drawn in the window only, nothing is recorded). See `Tutorial`.
     #[serde(alias = "record", alias = "draw", alias = "finish")]
     HowItWorks,
     /// Every permission on one screen.
@@ -93,6 +95,19 @@ impl Step {
     fn next(self) -> Step {
         Self::TOUR[(self.position() + 1).min(Self::TOUR.len() - 1)]
     }
+}
+
+/// What happened with the demo on the how-it-works screen. Later variants win: a demo skipped
+/// and then watched after Back is `Watched`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Tutorial {
+    /// Skip was pressed before the demo had played through.
+    Skipped,
+    /// The demo played through once: the button reads Continue.
+    Watched,
+    /// The user drew a mark of their own on the demo.
+    Practiced,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +177,12 @@ pub enum Input {
     Closed,
     /// "Open Settings" on the last screen.
     Settings,
+    /// "Skip" under the demo, before it has played through: goes on like Continue.
+    Skip,
+    /// The demo played through once.
+    Watched,
+    /// The user drew a mark on the demo.
+    Practiced,
     Grants {
         grants: Grants,
         now_ms: u64,
@@ -221,6 +242,8 @@ pub struct View {
     /// Everything the permissions screen needs works: Continue is enabled.
     pub ready: bool,
     pub fix: bool,
+    /// The demo's outcome so far; until it's `Watched` the button under it reads Skip.
+    pub tutorial: Option<Tutorial>,
 }
 
 #[derive(Clone, Debug)]
@@ -239,6 +262,7 @@ pub struct Flow {
     stale_since: Option<u64>,
     /// A relaunch was asked for; never twice from one window.
     relaunching: bool,
+    tutorial: Option<Tutorial>,
 }
 
 impl Flow {
@@ -277,6 +301,7 @@ impl Flow {
             auto_relaunch: true,
             stale_since: None,
             relaunching: false,
+            tutorial: None,
         }
     }
 
@@ -284,6 +309,21 @@ impl Flow {
     pub fn with_auto_relaunch(mut self, allowed: bool) -> Self {
         self.auto_relaunch = allowed;
         self
+    }
+
+    /// The demo's outcome from an earlier launch (`Progress::tutorial`).
+    pub fn with_tutorial(mut self, tutorial: Option<Tutorial>) -> Self {
+        self.tutorial = tutorial;
+        self
+    }
+
+    pub fn tutorial(&self) -> Option<Tutorial> {
+        self.tutorial
+    }
+
+    /// Records `outcome` unless something later already happened.
+    fn note_tutorial(&mut self, outcome: Tutorial) {
+        self.tutorial = self.tutorial.max(Some(outcome));
     }
 
     pub fn step(&self) -> Step {
@@ -309,6 +349,23 @@ impl Flow {
             Input::Later | Input::Closed => Effect::Close,
             Input::Settings if self.step == Step::Done => Effect::Settings,
             Input::Settings => Effect::None,
+            Input::Skip | Input::Watched | Input::Practiced
+                if self.step != Step::HowItWorks || self.mode == Mode::Fix =>
+            {
+                Effect::None
+            }
+            Input::Skip => {
+                self.note_tutorial(Tutorial::Skipped);
+                self.advance()
+            }
+            Input::Watched => {
+                self.note_tutorial(Tutorial::Watched);
+                Effect::None
+            }
+            Input::Practiced => {
+                self.note_tutorial(Tutorial::Practiced);
+                Effect::None
+            }
             Input::Grant(permission) => self.grant(permission),
             Input::Grants { grants, now_ms } => {
                 self.grants = Some(grants);
@@ -365,6 +422,7 @@ impl Flow {
                 .collect(),
             ready: self.done(),
             fix: self.mode == Mode::Fix,
+            tutorial: self.tutorial,
         }
     }
 
@@ -594,6 +652,9 @@ pub struct Progress {
     /// A permissions fix was open when Scrawl relaunched itself; it opens again at launch.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reopen_fix: bool,
+    /// The how-it-works demo was skipped, watched or drawn on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tutorial: Option<Tutorial>,
 }
 
 impl Progress {
@@ -709,6 +770,7 @@ pub struct Session {
     polling: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_view: String,
     saved_resume: Option<Step>,
+    saved_tutorial: Option<Tutorial>,
     clock: std::time::Instant,
 }
 
@@ -773,14 +835,18 @@ impl Session {
             }
         });
 
-        let allowed = relaunch_allowed(&Progress::load(), unix_ms());
+        let progress = Progress::load();
+        let allowed = relaunch_allowed(&progress, unix_ms());
         let mut session = Self {
-            flow: flow.with_auto_relaunch(allowed),
+            flow: flow
+                .with_auto_relaunch(allowed)
+                .with_tutorial(progress.tutorial),
             child,
             stdin,
             polling,
             last_view: String::new(),
             saved_resume: None,
+            saved_tutorial: progress.tutorial,
             clock: std::time::Instant::now(),
         };
         session.sync();
@@ -832,6 +898,9 @@ impl Session {
             "later" => Input::Later,
             "close" => Input::Closed,
             "settings" => Input::Settings,
+            "skip" => Input::Skip,
+            "watched" => Input::Watched,
+            "practiced" => Input::Practiced,
             other => match other
                 .strip_prefix("grant:")
                 .and_then(|p| serde_json::from_value(serde_json::Value::String(p.into())).ok())
@@ -862,11 +931,17 @@ impl Session {
         }
         // Remember the step, so whatever quits Scrawl, the tour comes back here.
         let resume = self.flow.resume_point();
-        if resume.is_some() && resume != self.saved_resume {
+        let tutorial = self.flow.tutorial();
+        let new_resume = resume.is_some() && resume != self.saved_resume;
+        if new_resume || tutorial != self.saved_tutorial {
             let mut progress = Progress::load();
-            progress.resume = resume;
+            if new_resume {
+                progress.resume = resume;
+            }
+            progress.tutorial = tutorial;
             progress.save();
-            self.saved_resume = resume;
+            self.saved_resume = resume.or(self.saved_resume);
+            self.saved_tutorial = tutorial;
         }
     }
 
@@ -980,6 +1055,66 @@ mod tests {
         assert_eq!(flow.step(), Step::Permissions);
         assert_eq!(flow.on(Input::Back), Effect::None);
         assert_eq!(flow.step(), Step::HowItWorks);
+    }
+
+    #[test]
+    fn the_demo_can_be_skipped_and_adds_no_screen() {
+        let mut flow = Flow::tour(Step::HowItWorks, Some(grants(&[])));
+        assert_eq!(flow.view().count, 4);
+        assert_eq!(flow.view().tutorial, None);
+        // Skip goes straight on, like Continue, and is remembered.
+        assert_eq!(flow.on(Input::Skip), Effect::None);
+        assert_eq!(flow.step(), Step::Permissions);
+        assert_eq!(flow.tutorial(), Some(Tutorial::Skipped));
+        // Skip, Watched and Practiced mean nothing on another screen.
+        assert_eq!(flow.on(Input::Skip), Effect::None);
+        assert_eq!(flow.on(Input::Practiced), Effect::None);
+        assert_eq!(flow.step(), Step::Permissions);
+        assert_eq!(flow.tutorial(), Some(Tutorial::Skipped));
+        // Back to it and watched through: the button reads Continue from then on.
+        flow.on(Input::Back);
+        assert_eq!(flow.step(), Step::HowItWorks);
+        flow.on(Input::Watched);
+        assert_eq!(flow.view().tutorial, Some(Tutorial::Watched));
+        assert_eq!(flow.step(), Step::HowItWorks, "watching doesn't move on");
+        // A mark drawn on the demo wins over watching, and watching again doesn't undo it.
+        flow.on(Input::Practiced);
+        flow.on(Input::Watched);
+        assert_eq!(flow.tutorial(), Some(Tutorial::Practiced));
+        // Skip after watching moves on without forgetting the mark.
+        flow.on(Input::Skip);
+        assert_eq!(flow.step(), Step::Permissions);
+        assert_eq!(flow.tutorial(), Some(Tutorial::Practiced));
+        // With every permission on, Skip passes the permissions screen too.
+        let mut flow = Flow::tour(Step::HowItWorks, Some(grants(&ALL)));
+        flow.on(Input::Skip);
+        assert_eq!(flow.step(), Step::TryIt);
+        // A fix never shows the demo.
+        let mut fix = Flow::fix(Permission::REQUIRED.to_vec(), Some(grants(&[])));
+        assert_eq!(fix.on(Input::Skip), Effect::None);
+        assert_eq!(fix.tutorial(), None);
+    }
+
+    #[test]
+    fn the_demo_outcome_comes_back_after_a_quit() {
+        let progress = Progress {
+            resume: Some(Step::HowItWorks),
+            tutorial: Some(Tutorial::Watched),
+            ..Progress::default()
+        };
+        let flow = launch_plan(&progress, &grants(&[]))
+            .expect("the tour")
+            .with_tutorial(progress.tutorial);
+        assert_eq!(flow.step(), Step::HowItWorks);
+        assert_eq!(flow.view().tutorial, Some(Tutorial::Watched));
+        // The view carries it to the helper as kebab-case, or null before anything happened.
+        let json = serde_json::to_value(flow.view()).unwrap();
+        assert_eq!(json["tutorial"], "watched");
+        let fresh = serde_json::to_value(Flow::tour(Step::Welcome, None).view()).unwrap();
+        assert!(fresh["tutorial"].is_null());
+        // An older config without the key loads as nothing yet.
+        let old: Progress = serde_json::from_str(r#"{"seen":false,"resume":"how-it-works"}"#).unwrap();
+        assert_eq!(old.tutorial, None);
     }
 
     #[test]
@@ -1359,6 +1494,7 @@ mod tests {
             granted: [Microphone].into_iter().collect(),
             relaunched_at: Some(1_792_000_000_000),
             reopen_fix: true,
+            tutorial: Some(Tutorial::Practiced),
         };
         progress.save_to(&path).unwrap();
         assert_eq!(Progress::load_from(&path), progress);
@@ -1369,6 +1505,7 @@ mod tests {
         assert_eq!(config["onboarding"]["resume"], "permissions");
         assert_eq!(config["onboarding"]["relaunchedAt"], 1_792_000_000_000_u64);
         assert_eq!(config["onboarding"]["reopenFix"], true);
+        assert_eq!(config["onboarding"]["tutorial"], "practiced");
         // A resume point saved by 0.3.2's one-permission-per-step tour still loads.
         std::fs::write(
             &path,
