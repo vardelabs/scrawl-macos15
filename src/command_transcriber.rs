@@ -229,6 +229,7 @@ pub fn parse_output(stdout: &[u8], audio_ms: u64) -> Result<TranscriptData> {
         segments,
         words,
         estimated,
+        missing: None,
     })
 }
 

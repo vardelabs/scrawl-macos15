@@ -94,6 +94,15 @@ impl CandidateBuffer {
         self.interval *= 2;
     }
 
+    /// Forgets frames taken after `t_ms`, except the first.
+    pub fn drop_since(&mut self, t_ms: u64) {
+        let mut index = 0;
+        self.frames.retain(|(frame, _)| {
+            index += 1;
+            index == 1 || frame.t_ms <= t_ms
+        });
+    }
+
     pub fn into_frames(self) -> Vec<RgbaFrame> {
         self.frames.into_iter().map(|(f, _)| f).collect()
     }
@@ -1811,6 +1820,21 @@ mod tests {
     }
 
     #[test]
+    fn frames_that_may_show_a_system_prompt_are_dropped_but_never_the_first() {
+        let mut buffer = CandidateBuffer::new(1 << 20);
+        for t in [0, 220, 440, 660, 880] {
+            buffer.push(RgbaFrame::new(t, 4, 4, vec![0; 64]), false);
+        }
+        buffer.drop_since(440);
+        let times: Vec<u64> = buffer.into_frames().iter().map(|f| f.t_ms).collect();
+        assert_eq!(times, [0, 220, 440]);
+        let mut buffer = CandidateBuffer::new(1 << 20);
+        buffer.push(RgbaFrame::new(500, 4, 4, vec![0; 64]), false);
+        buffer.drop_since(0);
+        assert_eq!(buffer.len(), 1);
+    }
+
+    #[test]
     fn candidates_are_small_and_recordings_keep_full_size() {
         let target = |mode, width, height| TargetInfo {
             mode,
@@ -2078,14 +2102,24 @@ impl ScreenCaptureSession {
                     .checked_sub(FRAME_SAMPLE_INTERVAL)
                     .unwrap_or_else(Instant::now);
                 let mut phase = 0_u32;
-                let mut last_excluded_len = initial_excluded.len();
+                let mut last_excluded = initial_excluded.clone();
+                let mut prompts = SystemPrompts::new(&sampler_target);
                 while !thread_stopping.load(Ordering::Acquire) {
-                    let cur_excluded = excluded_window_ids
+                    let mut cur_excluded = excluded_window_ids
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
-                    if cur_excluded.len() != last_excluded_len {
-                        last_excluded_len = cur_excluded.len();
+                    if prompts.check(started_at) {
+                        // Frames since the last look may show the prompt.
+                        thread_frames
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .drop_since(prompts.clear_until_ms);
+                    }
+                    cur_excluded.extend(&prompts.ids);
+                    if cur_excluded != last_excluded {
+                        last_excluded.clone_from(&cur_excluded);
+                        prompts.hidden = sck_lists_windows(&prompts.ids);
                         if let Some((new_filter, _)) =
                             build_sck_filter_and_config(&sampler_target, &cur_excluded)
                         {
@@ -2105,6 +2139,12 @@ impl ScreenCaptureSession {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .interval();
+                    // A system prompt ScreenCaptureKit can't leave out: no candidates until
+                    // it's answered.
+                    if prompts.showing() {
+                        thread::park_timeout(Duration::from_millis(30));
+                        continue;
+                    }
                     if urgent || last_sample.elapsed() >= interval {
                         last_sample = Instant::now();
                         let t_ms = started_at.elapsed().as_millis() as u64;
@@ -2365,6 +2405,83 @@ fn capture_sck_frame(
         return None;
     }
     Some(RgbaFrame::new(t_ms, width, height, rgba))
+}
+
+/// macOS prompts over a capture (`windows::system_prompts_over`): ScreenCaptureKit's "bypass
+/// the system private window picker" question shows a second or two after the first capture
+/// starts. They're left out of the recording when ScreenCaptureKit lists them, and frames that
+/// could show one are never candidates, so a prompt doesn't become a keyframe.
+struct SystemPrompts {
+    frame: Option<TargetFrame>,
+    ids: Vec<u32>,
+    /// Which of `ids` the content filter leaves out.
+    hidden: Vec<u32>,
+    checked: Option<Instant>,
+    /// The capture time of the last look that found nothing new.
+    clear_until_ms: u64,
+}
+
+impl SystemPrompts {
+    fn new(target: &TargetInfo) -> Self {
+        Self {
+            // A single window's capture never shows a prompt.
+            frame: target.window_id.is_none().then_some(target.frame),
+            ids: Vec::new(),
+            hidden: Vec::new(),
+            checked: None,
+            clear_until_ms: 0,
+        }
+    }
+
+    /// Looks again (four times a second for the first 10 s, then every second). Returns whether
+    /// a prompt appeared since the last look.
+    fn check(&mut self, started_at: Instant) -> bool {
+        let Some(frame) = self.frame else {
+            return false;
+        };
+        let elapsed = started_at.elapsed();
+        let every = if elapsed < Duration::from_secs(10) {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_secs(1)
+        };
+        if self.checked.is_some_and(|at| at.elapsed() < every) {
+            return false;
+        }
+        self.checked = Some(Instant::now());
+        let raw = objc2::rc::autoreleasepool(|_| crate::windows::raw_windows());
+        let ids = crate::windows::system_prompts_over(&raw, frame);
+        let appeared = ids.iter().any(|id| !self.ids.contains(id));
+        if appeared {
+            scrawl_log(format!("system prompt over the capture: windows {ids:?}"));
+        } else {
+            self.clear_until_ms = elapsed.as_millis() as u64;
+        }
+        self.ids = ids;
+        appeared
+    }
+
+    /// A prompt is on screen that the recording can't leave out.
+    fn showing(&self) -> bool {
+        self.ids.iter().any(|id| !self.hidden.contains(id))
+    }
+}
+
+/// Which of `ids` ScreenCaptureKit lists (and so can leave out of a recording).
+fn sck_lists_windows(ids: &[u32]) -> Vec<u32> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    SCShareableContent::get()
+        .map(|content| {
+            content
+                .windows()
+                .into_iter()
+                .map(|w| w.window_id())
+                .filter(|id| ids.contains(id))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Shared state collected by the global input monitor during an active capture session.
@@ -2668,6 +2785,10 @@ impl SharedCaptureTelemetry {
     /// A mouse button went down at a global point.
     fn pointer_down(&self, t_ms: u64, screen_x: f64, screen_y: f64) {
         if !self.contains_screen_point(screen_x, screen_y) {
+            return;
+        }
+        let raw = objc2::rc::autoreleasepool(|_| crate::windows::raw_windows());
+        if crate::windows::system_prompt_at(&raw, screen_x, screen_y) {
             return;
         }
         let (nx, ny, _, _) = self.normalize_point(screen_x, screen_y);

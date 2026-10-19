@@ -547,6 +547,11 @@ pub fn summary_markdown_with(
             crop.label, crop.full_frames
         ));
     }
+    if let Some(missing) = &bundle.transcript.missing
+        && bundle.transcript.text.trim().is_empty()
+    {
+        out.push_str(&format!("No transcript: {}\n", missing.reason));
+    }
     // App events and context changes nest under the keyframe on screen when they happened.
     let mut app_events: Vec<(u64, String)> = bundle
         .events
@@ -1440,6 +1445,19 @@ mod tests {
         assert!(summary.starts_with("[scrawl 0:14 · App “Window” · /recordings/test]"));
         assert!(summary.contains("Note: Simplify it."));
         assert!(summary.contains("- #1 (0:05) “This row is too dense.”"));
+        assert!(!summary.contains("No transcript"));
+
+        // Audio but no speech model yet: the summary says so instead of staying quiet.
+        let mut silent = bundle.clone();
+        silent.transcript = TranscriptData {
+            source: "offline".into(),
+            missing: Some(crate::speech_model::missing("downloading", "en_US", None)),
+            ..Default::default()
+        };
+        let summary = summary_markdown(&silent, std::path::Path::new("/recordings/test"));
+        assert!(summary.contains(
+            "No transcript: Apple's speech model (en_US) was still downloading. The audio is saved"
+        ));
 
         // A phone bundle: device header, a flagged keyframe, and app events under the keyframe
         // that was on screen when they happened.

@@ -2,94 +2,148 @@
 import CoreGraphics
 import Speech
 
-/// On-device transcription with macOS 26's SpeechAnalyzer: finalized results only, each word with
-/// its own audio time range. Older systems get an error, and Scrawl keeps the recording without a
-/// transcript. `SCRAWL_MACOS26_SDK` is set by `build.rs` when the SDK declares these types.
+#if SCRAWL_MACOS26_SDK
+/// The on-device model that transcribes: SpeechTranscriber where this Mac supports it, else
+/// DictationTranscriber (Macs, and virtual machines, without SpeechTranscriber), for the user's
+/// locale, the nearest supported one in the same language, or en-US.
+@available(macOS 26, *)
+struct SpeechChoice {
+  let dictation: Bool
+  let locale: Locale
+
+  var name: String { dictation ? "DictationTranscriber" : "SpeechTranscriber" }
+
+  func module() -> any SpeechModule {
+    dictation
+      ? DictationTranscriber(locale: locale, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [], attributeOptions: [.audioTimeRange])
+      : SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
+  }
+}
+
+/// Apple's speech assets are installed per app: `AssetInventory` reserves the locale for this
+/// bundle id (`dev.kitlangton.scrawl.helper`) and downloads the model if the Mac doesn't have it.
+/// A fresh Mac has none, so Scrawl installs it in the background at launch
+/// (`scrawl-helper speech-model --install`) rather than in the middle of a capture.
+@available(macOS 26, *)
+enum SpeechModel {
+  static func choose() async -> SpeechChoice? {
+    if SpeechTranscriber.isAvailable,
+       let locale = pick(await SpeechTranscriber.supportedLocales, equivalent: await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current))
+    {
+      return SpeechChoice(dictation: false, locale: locale)
+    }
+    if let locale = pick(await DictationTranscriber.supportedLocales, equivalent: await DictationTranscriber.supportedLocale(equivalentTo: Locale.current)) {
+      return SpeechChoice(dictation: true, locale: locale)
+    }
+    return nil
+  }
+
+  /// `equivalent` only counts when it's really in `supported` (macOS 26 names en_US even where
+  /// SpeechTranscriber supports nothing).
+  private static func pick(_ supported: [Locale], equivalent: Locale?) -> Locale? {
+    let ids = supported.map { $0.identifier(.bcp47) }
+    if let equivalent, ids.contains(equivalent.identifier(.bcp47)) { return equivalent }
+    let language = Locale.current.language.languageCode
+    let region = Locale.current.region
+    let sameLanguage = supported.filter { $0.language.languageCode == language }
+    if let match = sameLanguage.first(where: { $0.region == region }) ?? sameLanguage.first { return match }
+    return supported.first { $0.identifier(.bcp47) == "en-US" }
+  }
+
+  static func status(_ choice: SpeechChoice) async -> String {
+    switch await AssetInventory.status(forModules: [choice.module()]) {
+    case .installed: return "installed"
+    case .downloading: return "downloading"
+    case .supported: return "supported"
+    case .unsupported: return "unsupported"
+    @unknown default: return "unsupported"
+    }
+  }
+
+  static func describe(_ choice: SpeechChoice?, status: String) -> [String: Any] {
+    guard let choice else { return ["status": "unsupported"] }
+    return ["engine": choice.name, "locale": choice.locale.identifier, "status": status]
+  }
+
+  /// `speech-model [--install]`: one status line; with `--install`, installs the model if it
+  /// isn't, with progress lines about once a second and a last line that's `installed` or
+  /// `failed` (with `error`).
+  static func run(install: Bool) async {
+    let choice = await choose()
+    guard let choice else {
+      emit(describe(nil, status: "unsupported"))
+      return
+    }
+    let status = await status(choice)
+    emit(describe(choice, status: status))
+    guard install, status != "installed", status != "unsupported" else { return }
+    do {
+      try await self.install(choice) { fraction in
+        var line = describe(choice, status: "downloading")
+        line["progress"] = fraction
+        emit(line)
+      }
+      emit(describe(choice, status: "installed"))
+    } catch {
+      var line = describe(choice, status: "failed")
+      line["error"] = error.localizedDescription
+      emit(line)
+    }
+  }
+
+  static func install(_ choice: SpeechChoice, progress: @escaping @Sendable (Double) -> Void) async throws {
+    guard let request = try await AssetInventory.assetInstallationRequest(supporting: [choice.module()]) else { return }
+    let reporter = Task {
+      while !Task.isCancelled {
+        progress(request.progress.fractionCompleted)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+      }
+    }
+    defer { reporter.cancel() }
+    try await request.downloadAndInstall()
+  }
+}
+
+#endif
+
+/// `speech-model` and `transcribe` on any macOS: Apple's speech models exist only on macOS 26
+/// and later (`SCRAWL_MACOS26_SDK` is set by `build.rs` when the SDK declares them), so older
+/// systems report the model unsupported and an empty transcript that says so in `missing`,
+/// which is what the Rust side already shows for a Mac without a model.
+enum SpeechModelCommand {
+  static func run(install: Bool) async {
+    #if SCRAWL_MACOS26_SDK
+    if #available(macOS 26, *) {
+      await SpeechModel.run(install: install)
+      return
+    }
+    #endif
+    emit(["status": "unsupported"])
+  }
+}
+
+
+/// On-device transcription with SpeechAnalyzer: finalized results only, each word with its own
+/// audio time range. Without a usable model the output says why in `missing` (`downloading`,
+/// `unsupported` or `failed`, with `error`) and has no text, rather than failing.
 enum Transcriber {
   static let unavailable = HelperError("SpeechAnalyzer needs macOS 26 or later")
 
   static func transcribe(_ url: URL) async throws -> [String: Any] {
     #if SCRAWL_MACOS26_SDK
-    guard #available(macOS 26, *) else { throw unavailable }
-    var found = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current)
-    if found == nil { found = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "en-US")) }
-    guard let locale = found else { throw HelperError("SpeechTranscriber has no supported locale") }
-    let probeTranscriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
-    if let request = try await AssetInventory.assetInstallationRequest(supporting: [probeTranscriber]) {
-      try await request.downloadAndInstall()
-    }
-    if let chunks = try? splitWavAtSilences(url), chunks.files.count > 1 {
-      defer { try? FileManager.default.removeItem(at: chunks.dir) }
-      let ordered = try await withThrowingTaskGroup(of: (Int, [[String: Any]], [[String: Any]]).self) { group in
-        for (idx, item) in chunks.files.enumerated() {
-          group.addTask {
-            let (segs, wrds) = try await transcribeSingle(item.url, locale: locale, offsetMs: item.offsetMs)
-            return (idx, segs, wrds)
-          }
-        }
-        var collected: [(Int, [[String: Any]], [[String: Any]])] = []
-        for try await res in group {
-          collected.append(res)
-        }
-        return collected.sorted { $0.0 < $1.0 }
-      }
-      var segments: [[String: Any]] = []
-      var words: [[String: Any]] = []
-      for (_, segs, wrds) in ordered {
-        segments.append(contentsOf: segs)
-        words.append(contentsOf: wrds)
-      }
-      return [
-        "locale": locale.identifier,
-        "text": segments.compactMap { $0["text"] as? String }.joined(separator: " "),
-        "segments": segments,
-        "words": words,
-      ]
-    }
-    let (segments, words) = try await transcribeSingle(url, locale: locale, offsetMs: 0)
-    return [
-      "locale": locale.identifier,
-      "text": segments.compactMap { $0["text"] as? String }.joined(separator: " "),
-      "segments": segments,
-      "words": words,
-    ]
-    #else
-    throw unavailable
+    if #available(macOS 26, *) { return try await AppleTranscriber.transcribe(url) }
     #endif
+    return ["locale": Locale.current.identifier, "text": "", "segments": [], "words": [], "missing": "unsupported"]
   }
 
-  #if SCRAWL_MACOS26_SDK
-  @available(macOS 26, *)
-  private static func transcribeSingle(_ url: URL, locale: Locale, offsetMs: Int) async throws -> ([[String: Any]], [[String: Any]]) {
-    let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
-    let file = try AVAudioFile(forReading: url)
-    let analyzer = try await SpeechAnalyzer(inputAudioFile: file, modules: [transcriber], finishAfterFile: true)
-    var segments: [[String: Any]] = []
-    var words: [[String: Any]] = []
-    for try await result in transcriber.results {
-      let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.isEmpty else { continue }
-      for run in result.text.runs {
-        guard let range = run.audioTimeRange else { continue }
-        let word = String(result.text[run.range].characters).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !word.isEmpty else { continue }
-        words.append(["t0": ms(range.start) + offsetMs, "t1": ms(range.end) + offsetMs, "text": word])
-      }
-      segments.append(["t0": ms(result.range.start) + offsetMs, "t1": ms(result.range.end) + offsetMs, "text": text])
-    }
-    withExtendedLifetime(analyzer) {}
-    return (segments, words)
-  }
-  #endif
-
-  private struct WavChunks {
+  fileprivate struct WavChunks {
     let dir: URL
     let files: [(offsetMs: Int, url: URL)]
   }
 
   /// Splits a 16 kHz mono 16-bit WAV longer than 22 s at silence midpoints (>= 300 ms) so
   /// long recordings transcribe across concurrent SpeechAnalyzer instances without cutting words.
-  private static func splitWavAtSilences(_ url: URL) throws -> WavChunks? {
+  fileprivate static func splitWavAtSilences(_ url: URL) throws -> WavChunks? {
     let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
     guard let fileSize = attrs[.size] as? Int, fileSize >= 22 * 32000 + 44 else { return nil }
     let data = try Data(contentsOf: url)
@@ -166,10 +220,114 @@ enum Transcriber {
     return WavChunks(dir: dir, files: files)
   }
 
-  private static func ms(_ time: CMTime) -> Int {
+  fileprivate static func ms(_ time: CMTime) -> Int {
     time.seconds.isFinite ? max(0, Int((time.seconds * 1000).rounded())) : 0
   }
 }
+
+#if SCRAWL_MACOS26_SDK
+@available(macOS 26, *)
+private enum AppleTranscriber {
+  static func transcribe(_ url: URL) async throws -> [String: Any] {
+    guard let choice = await SpeechModel.choose() else {
+      return missing(nil, "unsupported")
+    }
+    switch await SpeechModel.status(choice) {
+    case "installed": break
+    case "downloading": return missing(choice, "downloading")
+    case "unsupported": return missing(choice, "unsupported")
+    default:
+      // Supported but not installed for Scrawl: usually on disk already and only needs
+      // reserving, which is quick. A real download is left to the background install.
+      do {
+        let done = try await withThrowingTaskGroup(of: Bool.self) { group in
+          group.addTask { try await SpeechModel.install(choice) { _ in }; return true }
+          group.addTask { try await Task.sleep(nanoseconds: 15_000_000_000); return false }
+          let first = try await group.next() ?? false
+          group.cancelAll()
+          return first
+        }
+        if !done { return missing(choice, "downloading") }
+      } catch {
+        var result = missing(choice, "failed")
+        result["error"] = error.localizedDescription
+        return result
+      }
+    }
+    let locale = choice.locale
+    if let chunks = try? Transcriber.splitWavAtSilences(url), chunks.files.count > 1 {
+      defer { try? FileManager.default.removeItem(at: chunks.dir) }
+      let ordered = try await withThrowingTaskGroup(of: (Int, [[String: Any]], [[String: Any]]).self) { group in
+        for (idx, item) in chunks.files.enumerated() {
+          group.addTask {
+            let (segs, wrds) = try await transcribeSingle(item.url, choice: choice, offsetMs: item.offsetMs)
+            return (idx, segs, wrds)
+          }
+        }
+        var collected: [(Int, [[String: Any]], [[String: Any]])] = []
+        for try await res in group {
+          collected.append(res)
+        }
+        return collected.sorted { $0.0 < $1.0 }
+      }
+      var segments: [[String: Any]] = []
+      var words: [[String: Any]] = []
+      for (_, segs, wrds) in ordered {
+        segments.append(contentsOf: segs)
+        words.append(contentsOf: wrds)
+      }
+      return [
+        "engine": choice.name,
+        "locale": locale.identifier,
+        "text": segments.compactMap { $0["text"] as? String }.joined(separator: " "),
+        "segments": segments,
+        "words": words,
+      ]
+    }
+    let (segments, words) = try await transcribeSingle(url, choice: choice, offsetMs: 0)
+    return [
+      "engine": choice.name,
+      "locale": locale.identifier,
+      "text": segments.compactMap { $0["text"] as? String }.joined(separator: " "),
+      "segments": segments,
+      "words": words,
+    ]
+  }
+
+  private static func missing(_ choice: SpeechChoice?, _ reason: String) -> [String: Any] {
+    var result: [String: Any] = ["locale": choice?.locale.identifier ?? Locale.current.identifier, "text": "", "segments": [], "words": [], "missing": reason]
+    if let choice { result["engine"] = choice.name }
+    return result
+  }
+
+  private static func transcribeSingle(_ url: URL, choice: SpeechChoice, offsetMs: Int) async throws -> ([[String: Any]], [[String: Any]]) {
+    let file = try AVAudioFile(forReading: url)
+    var segments: [[String: Any]] = []
+    var words: [[String: Any]] = []
+    func collect(_ text: AttributedString, _ range: CMTimeRange) {
+      let line = String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !line.isEmpty else { return }
+      for run in text.runs {
+        guard let time = run.audioTimeRange else { continue }
+        let word = String(text[run.range].characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !word.isEmpty else { continue }
+        words.append(["t0": Transcriber.ms(time.start) + offsetMs, "t1": Transcriber.ms(time.end) + offsetMs, "text": word])
+      }
+      segments.append(["t0": Transcriber.ms(range.start) + offsetMs, "t1": Transcriber.ms(range.end) + offsetMs, "text": line])
+    }
+    let module = choice.module()
+    let analyzer = try await SpeechAnalyzer(inputAudioFile: file, modules: [module], finishAfterFile: true)
+    if let transcriber = module as? SpeechTranscriber {
+      for try await result in transcriber.results { collect(result.text, result.range) }
+    } else if let transcriber = module as? DictationTranscriber {
+      for try await result in transcriber.results where result.isFinal { collect(result.text, result.range) }
+    }
+    withExtendedLifetime(analyzer) {}
+    return (segments, words)
+  }
+}
+#endif
+
 
 enum Media {
   static func probe(_ movie: URL) async throws -> [String: Any] {

@@ -1389,6 +1389,14 @@ impl Session {
     pub fn sync(&mut self, host: &dyn Host) {
         let mut view = serde_json::to_value(self.panel.view(host)).unwrap_or_default();
         view["type"] = "state".into();
+        // Switched from Hex to Apple Speech: get its model now, not at the first capture.
+        let speech = crate::speech_model::current();
+        if view["transcriber"]["engine"] == "apple"
+            && speech.state == crate::speech_model::State::Unknown
+        {
+            crate::speech_model::ensure();
+        }
+        view["transcriber"]["speech"] = serde_json::to_value(speech).unwrap_or_default();
         let text = view.to_string();
         if text != self.last_view {
             self.send(&view);

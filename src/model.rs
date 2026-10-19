@@ -315,6 +315,19 @@ pub struct TranscriptData {
     /// so they can't place a spoken cue precisely.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub estimated: bool,
+    /// Why there is no transcript although there was audio (no speech model yet, say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<MissingTranscript>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingTranscript {
+    /// One plain sentence for the summary.
+    pub reason: String,
+    /// Scrawl transcribes the bundle again once the speech model is installed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retry: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

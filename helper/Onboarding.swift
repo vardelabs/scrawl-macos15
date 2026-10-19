@@ -86,6 +86,35 @@ struct PermissionRow: Decodable, Equatable, Identifiable {
   var granted: Bool { status == "granted" }
 }
 
+/// Apple's speech model, which Scrawl installs in the background (`src/speech_model.rs`).
+struct SpeechStatus: Decodable, Equatable {
+  var state = "unknown"
+  var locale: String?
+  var progress = 0.0
+
+  private var language: String {
+    locale.flatMap { Locale.current.localizedString(forIdentifier: $0) } ?? "your language"
+  }
+
+  private var percent: String { progress > 0 ? " \(Int(progress * 100))%" : "" }
+  var percentInParens: String { progress > 0 ? " (\(Int(progress * 100))%)" : "" }
+
+  /// One line for onboarding and Settings, or nil when there's nothing to say.
+  var line: String? {
+    switch state {
+    case "checking": return "Checking for the speech model…"
+    case "downloading": return "Downloading the speech model…\(percent)"
+    case "ready": return "Speech model ready (\(language))"
+    case "unavailable": return "No Apple speech model for \(language) on this Mac"
+    case "failed": return "The speech model didn't download. Scrawl will try again."
+    default: return nil
+    }
+  }
+
+  /// Still on its way, or not coming: worth a line on the Microphone row and Try it.
+  var notReady: Bool { ["checking", "downloading", "failed", "unavailable"].contains(state) }
+}
+
 struct OnboardingState: Decodable, Equatable {
   var step = "welcome"
   var index = 0
@@ -93,6 +122,8 @@ struct OnboardingState: Decodable, Equatable {
   var rows: [PermissionRow] = []
   var ready = false
   var fix = false
+  var pickerNote = false
+  var speech: SpeechStatus?
   /// The demo on how-it-works: nil, "skipped", "watched" or "practiced".
   var tutorial: String?
 
@@ -394,6 +425,8 @@ struct PermissionRowView: View {
   let row: PermissionRow
   let paste: String
   let showOptional: Bool
+  /// Replaces the row's reason once it's on (the speech model's download, for Microphone).
+  var detail: String?
   /// The first row still to turn on.
   var next = false
   var buttonFrame: (CGRect) -> Void = { _ in }
@@ -424,7 +457,7 @@ struct PermissionRowView: View {
               .background(Capsule().fill(Color.white.opacity(0.07)))
           }
         }
-        Text(info.why)
+        Text(row.granted ? detail ?? info.why : info.why)
           .font(.system(size: 12))
           .foregroundStyle(Palette.muted)
       }
@@ -540,6 +573,17 @@ struct OnboardingView: View {
         .frame(maxWidth: 440)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, 10)
+      if state.step == "try-it" {
+        if state.pickerNote {
+          note(pickerNoteText).padding(.top, 12)
+        }
+        if state.speech?.notReady == true, let line = state.speech?.line {
+          note(state.speech?.state == "downloading" || state.speech?.state == "checking"
+            ? "The speech model is still downloading\(state.speech?.percentInParens ?? ""). If it isn't done when you finish, Scrawl adds the transcript to your capture afterwards."
+            : line)
+            .padding(.top, 12)
+        }
+      }
     }
   }
 
@@ -605,14 +649,35 @@ struct OnboardingView: View {
         ForEach(Array(state.rows.enumerated()), id: \.element.id) { i, row in
           if i > 0 { divider }
           PermissionRowView(
-            row: row, paste: model.paste, showOptional: !state.fix, next: row.permission == next,
+            row: row, paste: model.paste, showOptional: !state.fix,
+            detail: row.permission == "microphone" && state.speech?.notReady == true ? state.speech?.line : nil,
+            next: row.permission == next,
             buttonFrame: { model.buttonFrames[row.permission] = $0 },
             grant: { model.grant(row.permission) }
           )
         }
       }
       .padding(.top, 22)
+      if state.pickerNote {
+        note(pickerNoteText)
+          .padding(.top, 14)
+      }
     }
+  }
+
+  private var pickerNoteText: String {
+    "macOS may also ask whether Scrawl can bypass its private window picker. Choose Allow, so Scrawl can record the screen you're showing."
+  }
+
+  private func note(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 12))
+      .lineSpacing(2)
+      .foregroundStyle(Palette.muted)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: 480)
+      .fixedSize(horizontal: false, vertical: true)
+      .transition(.opacity)
   }
 
   private var primary: (title: String, action: String, enabled: Bool)? {
@@ -803,6 +868,11 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
     for row in state.rows where row.granted {
       Permissions.closeGuide(row.permission)
     }
+    // A grant usually lands in System Settings (or a macOS prompt): come back in front.
+    let wasOff = Set(model.state.rows.filter { !$0.granted }.map(\.permission))
+    if state.rows.contains(where: { $0.granted && wasOff.contains($0.permission) }) {
+      returnAfterGrant()
+    }
     let old = stepOrder.firstIndex(of: model.state.step) ?? 0
     let new = stepOrder.firstIndex(of: state.step) ?? 0
     guard old != new else {
@@ -836,8 +906,14 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
               self.apply(state)
             }
-          case "request": Permissions.request(permission)
-          case "open-settings": Permissions.openSettings(permission, from: self.screenFrame(of: permission))
+          // The user has moved on to another row: answering an earlier question mustn't pull
+          // this window over the System Settings pane they're working in.
+          case "request":
+            self.followUp?.invalidate()
+            Permissions.request(permission)
+          case "open-settings":
+            self.followUp?.invalidate()
+            Permissions.openSettings(permission, from: self.screenFrame(of: permission))
           case "hide": self.window?.orderOut(nil)
           case "show": self.present()
           case "close":
@@ -852,6 +928,54 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   private var presented = false
+  private var followUp: Timer?
+
+  /// Comes forward once macOS has stopped asking. A Screen Recording grant brings System
+  /// Settings' own "Quit & Reopen" alert and ScreenCaptureKit's window picker question, and
+  /// answering one hands the keys back to System Settings, so for five minutes after a grant the
+  /// window comes forward again each time the last question on screen is answered, until the
+  /// user presses another row (never otherwise, so it doesn't fight the user going elsewhere).
+  private func returnAfterGrant() {
+    followUp?.invalidate()
+    let started = Date()
+    var asking = Self.macOSIsAsking()
+    var returned = false
+    if !asking, window?.isVisible == true {
+      present()
+      returned = true
+    }
+    followUp = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] timer in
+      guard let self, Date().timeIntervalSince(started) < 300, self.window?.isVisible == true else {
+        timer.invalidate()
+        return
+      }
+      if Self.macOSIsAsking() {
+        asking = true
+      } else if asking || !returned {
+        asking = false
+        returned = true
+        if !(NSApp.isActive && self.window?.isKeyWindow == true) { self.present() }
+      }
+    }
+  }
+
+  /// A macOS question is in view: a privacy alert or password sheet, or an alert in System
+  /// Settings (a second window of its own) while System Settings is in front
+  /// (`windows::macos_is_asking` in Scrawl).
+  static func macOSIsAsking() -> Bool {
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    var settingsWindows = 0
+    var frontOwner: String?
+    for info in list {
+      let owner = info[kCGWindowOwnerName as String] as? String ?? ""
+      let layer = info[kCGWindowLayer as String] as? Int ?? 0
+      if owner == "UserNotificationCenter" || owner == "SecurityAgent" { return true }
+      guard layer == 0 else { continue }
+      if frontOwner == nil { frontOwner = owner }
+      if owner == "System Settings" { settingsWindows += 1 }
+    }
+    return frontOwner == "System Settings" && settingsWindows > 1
+  }
 
   /// A row button's frame on screen (AppKit coordinates).
   private func screenFrame(of permission: String) -> NSRect? {
@@ -908,7 +1032,9 @@ final class Onboarding: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("permissions-denied", OnboardingState(step: "permissions", index: 2, rows: denied), 0),
       ("permissions-all", OnboardingState(step: "permissions", index: 2, rows: all, ready: true), 0),
       ("permissions-reopen-fallback", OnboardingState(step: "permissions", index: 2, rows: fallback), 0),
+      ("permissions-picker-note", OnboardingState(step: "permissions", index: 2, rows: some, pickerNote: true, speech: SpeechStatus(state: "downloading", locale: "en_US", progress: 0.42)), 0.3),
       ("try-it", OnboardingState(step: "try-it", index: 2, count: 3), 0.3),
+      ("try-it-downloading", OnboardingState(step: "try-it", index: 2, count: 3, pickerNote: true, speech: SpeechStatus(state: "downloading", locale: "en_US", progress: 0.42)), 0.3),
       ("done", OnboardingState(step: "done", index: 3), 0),
       ("fix-required", OnboardingState(step: "permissions", index: 0, count: 1, rows: lost, fix: true), 0),
       ("fix-screen-reopening", OnboardingState(step: "permissions", index: 0, count: 1, rows: reopening, fix: true), 0.3),

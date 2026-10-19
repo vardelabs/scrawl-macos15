@@ -212,6 +212,10 @@ pub enum Effect {
     Close,
     /// Close the tour and open the Settings window.
     Settings,
+    /// Screen Recording works: list the screen's content once now, so macOS's "bypass the
+    /// system private window picker" question comes up here, explained, rather than over the
+    /// first recording.
+    ConfirmScreen,
 }
 
 /// One row on the permissions screen.
@@ -244,6 +248,8 @@ pub struct View {
     pub fix: bool,
     /// The demo's outcome so far; until it's `Watched` the button under it reads Skip.
     pub tutorial: Option<Tutorial>,
+    /// macOS may be asking about its private window picker: say to choose Allow.
+    pub picker_note: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -263,6 +269,8 @@ pub struct Flow {
     /// A relaunch was asked for; never twice from one window.
     relaunching: bool,
     tutorial: Option<Tutorial>,
+    /// The step `Effect::ConfirmScreen` was given on (once per window).
+    screen_confirmed: Option<Step>,
 }
 
 impl Flow {
@@ -302,6 +310,7 @@ impl Flow {
             stale_since: None,
             relaunching: false,
             tutorial: None,
+            screen_confirmed: None,
         }
     }
 
@@ -423,6 +432,7 @@ impl Flow {
             ready: self.done(),
             fix: self.mode == Mode::Fix,
             tutorial: self.tutorial,
+            picker_note: self.screen_confirmed == Some(self.step),
         }
     }
 
@@ -561,6 +571,14 @@ impl Flow {
             };
         }
         self.stale_since = None;
+        if matches!(self.step, Step::Permissions | Step::TryIt)
+            && self.screen_confirmed.is_none()
+            && self.asks.contains(&Permission::ScreenRecording)
+            && self.usable(Permission::ScreenRecording)
+        {
+            self.screen_confirmed = Some(self.step);
+            return Effect::ConfirmScreen;
+        }
         if self.mode != Mode::Fix || !self.done() {
             self.ready_at = None;
             return Effect::None;
@@ -884,6 +902,27 @@ impl Session {
                 self.show();
                 Effect::None
             }
+            Effect::ConfirmScreen => {
+                std::thread::spawn(|| {
+                    // After macOS's own questions (System Settings' "Quit & Reopen") are
+                    // answered and this window is back in front with its note, so the one
+                    // question comes up by itself, over the explanation.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                    while std::time::Instant::now() < deadline
+                        && crate::windows::macos_is_asking(&objc2::rc::autoreleasepool(|_| {
+                            crate::windows::raw_windows()
+                        }))
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1_200));
+                    let result = crate::capture::screen_capture_probe();
+                    crate::capture::scrawl_log(format!(
+                        "onboarding: listed the screen once for macOS's window picker question: {result:?}"
+                    ));
+                });
+                Effect::None
+            }
             other => other,
         };
         self.sync();
@@ -924,6 +963,7 @@ impl Session {
     fn sync(&mut self) {
         let mut view = serde_json::to_value(self.flow.view()).unwrap_or_default();
         view["type"] = "state".into();
+        view["speech"] = serde_json::to_value(crate::speech_model::current()).unwrap_or_default();
         let text = view.to_string();
         if text != self.last_view {
             self.send(&view);
@@ -1259,10 +1299,55 @@ mod tests {
         // A grant this copy can use (ScreenCaptureKit works without a relaunch, or macOS's
         // Quit & Reopen already restarted it) relaunches nothing.
         let mut flow = Flow::tour(Step::Permissions, Some(grants(&[])));
-        for t in [0, 5_000, 60_000] {
+        assert_eq!(
+            tick(&mut flow, &grants(&[ScreenRecording]), 0),
+            Effect::ConfirmScreen
+        );
+        for t in [5_000, 60_000] {
             assert_eq!(tick(&mut flow, &grants(&[ScreenRecording]), t), Effect::None);
         }
         assert!(!flow.view().rows[0].reopening);
+    }
+
+    #[test]
+    fn once_screen_recording_works_the_window_picker_question_comes_up_explained() {
+        let mut flow = Flow::tour(Step::Permissions, Some(grants(&[])));
+        assert_eq!(tick(&mut flow, &grants(&[Microphone]), 0), Effect::None);
+        assert!(!flow.view().picker_note);
+        // Not while the grant needs a relaunch to work: listing the screen would fail.
+        assert_eq!(
+            tick(&mut flow, &stale(&[ScreenRecording]), 100),
+            Effect::None
+        );
+        assert_eq!(
+            tick(&mut flow, &grants(&[ScreenRecording]), 200),
+            Effect::ConfirmScreen
+        );
+        assert!(flow.view().picker_note);
+        assert_eq!(
+            tick(&mut flow, &grants(&[ScreenRecording]), 300),
+            Effect::None
+        );
+        // Answered by the time Try it shows: no note there.
+        flow.on(Input::Grants {
+            grants: grants(&Permission::REQUIRED),
+            now_ms: 400,
+        });
+        flow.on(Input::Continue);
+        assert_eq!(flow.step(), Step::TryIt);
+        assert!(!flow.view().picker_note);
+        // Everything already on: it comes up on Try it instead, before the first capture.
+        let mut flow = Flow::tour(Step::TryIt, Some(grants(&Permission::REQUIRED)));
+        assert_eq!(flow.step(), Step::TryIt);
+        assert_eq!(
+            tick(&mut flow, &grants(&Permission::REQUIRED), 0),
+            Effect::ConfirmScreen
+        );
+        assert!(flow.view().picker_note);
+        // Gone from the last screen.
+        flow.on(Input::CaptureEnded { completed: true });
+        assert_eq!(flow.step(), Step::Done);
+        assert!(!flow.view().picker_note);
     }
 
     #[test]

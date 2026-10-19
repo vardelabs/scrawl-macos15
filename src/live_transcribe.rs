@@ -216,6 +216,7 @@ fn transcript(
         segments,
         words,
         estimated: false,
+        missing: None,
     }
 }
 

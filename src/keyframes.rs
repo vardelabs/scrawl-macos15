@@ -342,8 +342,24 @@ fn align_transcript(
     anchors: &[u64],
     transcript: &TranscriptData,
 ) {
-    if selected.is_empty() {
-        return;
+    let times: Vec<u64> = selected.iter().map(|(frame, _)| frame.t).collect();
+    for ((frame, _), said) in selected
+        .iter_mut()
+        .zip(said_per_keyframe(&times, anchors, transcript))
+    {
+        frame.said = said;
+    }
+}
+
+/// `align_transcript` for keyframes at `times` (anchored at `anchors`, or their own time where
+/// missing): each one's words, or `None`.
+pub fn said_per_keyframe(
+    times: &[u64],
+    anchors: &[u64],
+    transcript: &TranscriptData,
+) -> Vec<Option<String>> {
+    if times.is_empty() {
+        return Vec::new();
     }
     let mut units: Vec<(u64, u64, &str)> = if transcript.words.is_empty() {
         transcript
@@ -389,9 +405,9 @@ fn align_transcript(
             .find(|(t0, t1)| *t0 <= anchor && anchor <= *t1)
             .map_or(anchor, |clause| clause.0)
     };
-    let mut starts: Vec<u64> = Vec::with_capacity(selected.len());
-    for (i, (frame, _)) in selected.iter().enumerate() {
-        let anchor = anchors.get(i).copied().unwrap_or(frame.t);
+    let mut starts: Vec<u64> = Vec::with_capacity(times.len());
+    for (i, &t) in times.iter().enumerate() {
+        let anchor = anchors.get(i).copied().unwrap_or(t);
         let mut start = clause_start(anchor);
         if let Some(&prev) = starts.last()
             && start <= prev
@@ -402,16 +418,20 @@ fn align_transcript(
         starts.push(start);
     }
 
-    let mut text = vec![String::new(); selected.len()];
+    let mut text = vec![String::new(); times.len()];
     for (t0, _, unit) in units {
         let unit = unit.trim();
-        let index = starts
+        let mut index = starts
             .iter()
             .rposition(|&start| start <= t0.saturating_add(50))
             .unwrap_or(0);
         // ASR words normally include their punctuation; separate punctuation tokens
         // and contractions should still produce natural text.
         let attached = unit.starts_with([',', '.', '!', '?', ';', ':', '’', '\'', ')', ']', '”']);
+        // A separate punctuation token at a keyframe's start ends the one before.
+        if attached && text[index].is_empty() && index > 0 {
+            index -= 1;
+        }
         let open = text[index].ends_with(['(', '[', '“']);
         if !text[index].is_empty() && !attached && !open {
             text[index].push(' ');
@@ -422,9 +442,9 @@ fn align_transcript(
     if text.iter().all(String::is_empty) && !transcript.text.trim().is_empty() {
         text[0] = transcript.text.trim().to_owned();
     }
-    for ((frame, _), text) in selected.iter_mut().zip(text) {
-        frame.said = if text.is_empty() { None } else { Some(text) };
-    }
+    text.into_iter()
+        .map(|text| if text.is_empty() { None } else { Some(text) })
+        .collect()
 }
 
 /// Select representative captured frames. Callers use `keyframe_budget` for the
@@ -1521,6 +1541,31 @@ mod tests {
                 MAX_KEYFRAMES
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_punctuation_token_at_a_keyframes_start_ends_the_one_before() {
+        let transcript = TranscriptData {
+            words: [
+                (0, "Lots"),
+                (500, "of"),
+                (900, "glitches"),
+                (5_000, "."),
+                (5_200, "Yeah"),
+            ]
+            .into_iter()
+            .map(|(t, text)| WordTiming {
+                t0: t,
+                t1: t + 100,
+                text: text.into(),
+            })
+            .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            said_per_keyframe(&[1_000, 5_000], &[], &transcript),
+            [Some("Lots of glitches.".into()), Some("Yeah".into())]
         );
     }
 }

@@ -235,13 +235,24 @@ fn try_hex(audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
 }
 
 fn apple(wav: &Path) -> TranscriptData {
-    crate::helper::transcribe(wav).unwrap_or_else(|error| {
+    let transcript = crate::helper::transcribe(wav).unwrap_or_else(|error| {
         crate::capture::scrawl_log(format!("SpeechAnalyzer failed: {error:#}"));
         TranscriptData {
             source: "offline".into(),
+            missing: Some(crate::model::MissingTranscript {
+                reason: format!("Apple Speech failed ({error:#})."),
+                retry: false,
+            }),
             ..Default::default()
         }
-    })
+    });
+    if let Some(missing) = &transcript.missing {
+        crate::capture::scrawl_log(format!("No transcript: {}", missing.reason));
+        if missing.retry {
+            crate::speech_model::ensure();
+        }
+    }
+    transcript
 }
 
 #[cfg(test)]

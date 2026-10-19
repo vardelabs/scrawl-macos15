@@ -413,6 +413,7 @@ pub fn build_fixture(
         segments: scenario.segments,
         words: scenario.words,
         estimated: false,
+        missing: None,
     };
     if out.exists() {
         std::fs::remove_dir_all(out)?;
@@ -625,6 +626,7 @@ pub fn simulate_capture(
         segments: Vec::new(),
         words,
         estimated: false,
+        missing: None,
     };
     let started = std::time::Instant::now();
     let (_, bundle, _) = crate::build_bundle_from_parts(

@@ -198,6 +198,54 @@ pub fn filter_windows(
     out
 }
 
+/// Apps whose windows are macOS asking the user something, never what a capture is about:
+/// UserNotificationCenter shows the privacy alerts (ScreenCaptureKit's "bypass the system
+/// private window picker" among them), SecurityAgent the password sheets.
+const SYSTEM_PROMPT_OWNERS: [&str; 2] = ["UserNotificationCenter", "SecurityAgent"];
+
+fn is_system_prompt(w: &RawWindow) -> bool {
+    w.alpha > 0.01 && SYSTEM_PROMPT_OWNERS.contains(&w.owner.as_str())
+}
+
+/// System prompts (see `SYSTEM_PROMPT_OWNERS`) overlapping `frame`, by window id, sorted.
+pub fn system_prompts_over(raw: &[RawWindow], frame: TargetFrame) -> Vec<u32> {
+    let mut ids: Vec<u32> = raw
+        .iter()
+        .filter(|w| {
+            let [x, y, width, height] = w.bounds;
+            is_system_prompt(w)
+                && x < frame.x + frame.width
+                && x + width > frame.x
+                && y < frame.y + frame.height
+                && y + height > frame.y
+        })
+        .map(|w| w.id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// A macOS question is in view: a system prompt, or an alert in System Settings (a second
+/// window of its own, like the "Quit & Reopen" that follows a Screen Recording grant) while
+/// System Settings is in front. One left behind another window isn't asking anyone.
+pub fn macos_is_asking(raw: &[RawWindow]) -> bool {
+    let normal = || raw.iter().filter(|w| w.layer == 0 && w.alpha > 0.01);
+    raw.iter().any(is_system_prompt)
+        || (normal()
+            .next()
+            .is_some_and(|w| w.owner == "System Settings")
+            && normal().filter(|w| w.owner == "System Settings").count() > 1)
+}
+
+/// Whether a global point is on a system prompt (they float above app windows), so a click
+/// there is the user answering macOS rather than part of what they're showing.
+pub fn system_prompt_at(raw: &[RawWindow], x: f64, y: f64) -> bool {
+    raw.iter().any(|w| {
+        let [wx, wy, ww, wh] = w.bounds;
+        is_system_prompt(w) && x >= wx && x <= wx + ww && y >= wy && y <= wy + wh
+    })
+}
+
 /// Whether the topmost window under a global point (in `raw`, front to back) belongs to `own_pid`,
 /// looking through `passthrough` windows, which let clicks fall to whatever is below them.
 pub fn owned_window_at(
@@ -648,5 +696,45 @@ mod tests {
             regular: true,
         });
         assert!(hidden.iter().all(|w| w.id != 3));
+    }
+
+    #[test]
+    fn system_prompts_are_found_over_the_capture_and_clicks_on_them_are_answers() {
+        let window = |id, owner: &str, bounds, layer| RawWindow {
+            id,
+            pid: 7,
+            owner: owner.into(),
+            title: String::new(),
+            bounds,
+            layer,
+            alpha: 1.0,
+        };
+        let raw = [
+            window(5, "UserNotificationCenter", [830.0, 188.0, 260.0, 348.0], 8),
+            window(6, "SecurityAgent", [2000.0, 100.0, 300.0, 200.0], 1000),
+            window(7, "Safari", [0.0, 0.0, 1000.0, 500.0], 0),
+        ];
+        // `frame()` is 1000 × 500 at the origin: the password sheet is on another display.
+        assert_eq!(system_prompts_over(&raw, frame()), vec![5]);
+        assert!(system_prompt_at(&raw, 900.0, 300.0));
+        assert!(!system_prompt_at(&raw, 100.0, 100.0));
+        assert!(macos_is_asking(&raw));
+        let settings = [
+            window(8, "System Settings", [597.0, 132.0, 723.0, 625.0], 0),
+            window(9, "Safari", [0.0, 0.0, 1000.0, 500.0], 0),
+        ];
+        assert!(!macos_is_asking(&settings));
+        let quit_and_reopen = [
+            window(10, "System Settings", [829.0, 342.0, 260.0, 204.0], 0),
+            settings[0].clone(),
+        ];
+        assert!(macos_is_asking(&quit_and_reopen));
+        // The same alert behind Scrawl's window.
+        let behind = [
+            window(11, "Scrawl Helper", [650.0, 145.0, 620.0, 532.0], 0),
+            quit_and_reopen[0].clone(),
+            settings[0].clone(),
+        ];
+        assert!(!macos_is_asking(&behind));
     }
 }

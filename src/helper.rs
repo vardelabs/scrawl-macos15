@@ -111,26 +111,90 @@ pub fn devices() -> Result<Vec<PhoneDevice>> {
 
 #[derive(Deserialize)]
 struct Transcript {
+    #[serde(default)]
+    engine: Option<String>,
     locale: String,
     text: String,
     segments: Vec<TranscriptSegment>,
     words: Vec<WordTiming>,
+    /// No usable speech model: `downloading`, `unsupported` or `failed` (with `error`).
+    #[serde(default)]
+    missing: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
-/// On-device SpeechAnalyzer transcription with measured word timings.
+/// On-device SpeechAnalyzer transcription with measured word timings. Without a speech model
+/// the transcript is empty and `missing` says why.
 pub fn transcribe(audio: &Path) -> Result<TranscriptData> {
     let transcript: Transcript = run(
         &[os("transcribe"), audio.as_os_str()],
         Duration::from_secs(180),
     )?;
+    let engine = transcript
+        .engine
+        .unwrap_or_else(|| "SpeechTranscriber".into());
+    let missing = transcript.missing.map(|why| {
+        crate::speech_model::missing(&why, &transcript.locale, transcript.error.as_deref())
+    });
     Ok(TranscriptData {
-        source: "speech-analyzer".into(),
-        model: Some(format!("SpeechTranscriber {}", transcript.locale)),
+        source: if missing.is_some() {
+            "offline".into()
+        } else {
+            "speech-analyzer".into()
+        },
+        model: Some(format!("{engine} {}", transcript.locale)),
         text: transcript.text,
         segments: transcript.segments,
         words: transcript.words,
         estimated: false,
+        missing,
     })
+}
+
+/// One line of `scrawl-helper speech-model [--install]`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct SpeechModelLine {
+    pub status: String,
+    #[serde(default)]
+    pub engine: Option<String>,
+    #[serde(default)]
+    pub locale: Option<String>,
+    #[serde(default)]
+    pub progress: Option<f64>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Runs `scrawl-helper speech-model --install`, handing each line to `line` as it comes. The
+/// download can take minutes; the helper exits when it's done or has failed.
+pub fn install_speech_model(mut line: impl FnMut(SpeechModelLine)) -> Result<()> {
+    use std::io::BufRead;
+    let mut child = Command::new(path()?)
+        .args(["speech-model", "--install"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Could not start scrawl-helper")?;
+    let stdout = child.stdout.take().context("No helper stdout")?;
+    for text in std::io::BufReader::new(stdout)
+        .lines()
+        .map_while(Result::ok)
+    {
+        if let Ok(parsed) = serde_json::from_str(&text) {
+            line(parsed);
+        }
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        let mut message = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_string(&mut message);
+        }
+        bail!("{}", message.trim());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
