@@ -725,10 +725,10 @@ struct SettingsView: View {
           }
         }
       }
-      SettingsCaption(text: t.engine == "command"
-        ? "Command runs the program in transcribeCommand (config.json) on each recording and reads its transcript."
+      SettingsCaption(text: t.engine == "command" || t.commandEnabled
+        ? "Command runs the program in transcribeCommand (config.json) on each recording and reads its transcript. Apple Speech runs on this Mac and times each word."
         : t.hexEnabled || t.engine == "hex"
-        ? "Apple Speech times each word. Hex uses a model you have in Hex, and its word times are estimates."
+        ? "Apple Speech times each word. Hex uses a model you have in Hex, and its word times are estimates. Command is enabled once transcribeCommand in config.json names a program by its absolute path."
         : "Apple Speech runs on this Mac and times each word. Hex shows up here while Hex is running. Command is enabled once transcribeCommand in config.json names a program by its absolute path.")
       SettingsHeader("Experimental")
       SettingsGroup {

@@ -259,7 +259,15 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
     // killed before the leader is reaped: its zombie keeps the group id reserved, so the signal
     // cannot land on a group another process claimed since.
     let status = loop {
-        if has_exited(pid)? {
+        let exited = match has_exited(pid) {
+            Ok(exited) => exited,
+            Err(error) => {
+                kill_group(pid);
+                let _ = child.wait();
+                return Err(error.into());
+            }
+        };
+        if exited {
             kill_group(pid);
             break child.wait()?;
         }
@@ -328,10 +336,24 @@ mod tests {
         }
     }
 
-    fn wav() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("scrawl-command-{}.wav", std::process::id()));
+    /// Removed when the test's value drops, so parallel tests never share a file.
+    struct Wav(std::path::PathBuf);
+
+    impl Drop for Wav {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn wav() -> Wav {
+        static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "scrawl-command-{}-{}.wav",
+            std::process::id(),
+            COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::write(&path, b"RIFF").unwrap();
-        path
+        Wav(path)
     }
 
     #[test]
@@ -451,11 +473,11 @@ mod tests {
         let escaped = Settings {
             timeout: Some(Duration::from_millis(500)),
             ..sh(
-                r#"/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 30' & printf '{"version":1,"text":"late"}'"#,
+                r#"/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 3' & printf '{"version":1,"text":"late"}'"#,
             )
         };
         let started = Instant::now();
-        assert_eq!(format!("{:#}", transcribe(&escaped, &wav, 1_000).unwrap_err()), "timeout");
+        assert_eq!(format!("{:#}", transcribe(&escaped, &wav.0, 1_000).unwrap_err()), "timeout");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
@@ -464,8 +486,8 @@ mod tests {
         let wav = wav();
         let started = Instant::now();
         let transcript = transcribe(
-            &sh(r#"sleep 30 & printf '{"version":1,"text":"done"}'"#),
-            &wav,
+            &sh(r#"sleep 3 & printf '{"version":1,"text":"done"}'"#),
+            &wav.0,
             1_000,
         )
         .unwrap();
@@ -481,7 +503,7 @@ mod tests {
             command: [settings.command, strings(&["sh", "{audio}"])].concat(),
             ..settings
         };
-        let transcript = transcribe(&settings, &wav, 1_000).unwrap();
+        let transcript = transcribe(&settings, &wav.0, 1_000).unwrap();
         assert_eq!(transcript.source, "command:m");
         assert_eq!(transcript.text, "ok");
     }
@@ -489,23 +511,23 @@ mod tests {
     #[test]
     fn failures_are_short_reasons_without_program_output() {
         let wav = wav();
-        let crash = transcribe(&sh("echo spoken words; exit 3"), &wav, 1_000).unwrap_err();
+        let crash = transcribe(&sh("echo spoken words; exit 3"), &wav.0, 1_000).unwrap_err();
         assert_eq!(format!("{crash:#}"), "exit status 3");
         let hang = Settings {
             timeout: Some(Duration::from_millis(300)),
             ..sh("sleep 30")
         };
         let started = Instant::now();
-        assert_eq!(format!("{:#}", transcribe(&hang, &wav, 1_000).unwrap_err()), "timeout");
+        assert_eq!(format!("{:#}", transcribe(&hang, &wav.0, 1_000).unwrap_err()), "timeout");
         assert!(started.elapsed() < Duration::from_secs(5));
-        let flood = transcribe(&sh("yes spoken"), &wav, 1_000).unwrap_err();
+        let flood = transcribe(&sh("yes spoken"), &wav.0, 1_000).unwrap_err();
         assert_eq!(format!("{flood:#}"), "output too large");
         let missing = transcribe(
             &Settings {
                 command: strings(&["/nonexistent/transcriber"]),
                 timeout: None,
             },
-            &wav,
+            &wav.0,
             1_000,
         )
         .unwrap_err();

@@ -1678,6 +1678,41 @@ mod tests {
     }
 
     #[test]
+    fn command_engine_shows_only_when_its_program_is_usable() {
+        let dir = TempDir::new("command");
+        let host = fake(&dir);
+        let panel = Panel::default();
+        std::fs::write(
+            &host.path,
+            r#"{"transcriber":"command","transcribeCommand":["uv","run"]}"#,
+        )
+        .unwrap();
+        let relative = panel.view(&host).transcriber;
+        assert_eq!(relative.engine, "apple");
+        assert!(!relative.command_enabled);
+        assert_eq!(relative.command_title, "Command (not set up)");
+
+        std::fs::write(
+            &host.path,
+            r#"{"transcriber":"command","transcribeCommand":["/opt/homebrew/bin/uv","run"]}"#,
+        )
+        .unwrap();
+        let usable = panel.view(&host).transcriber;
+        assert_eq!(usable.engine, "command");
+        assert!(usable.command_enabled);
+        assert_eq!(usable.command_title, "Command");
+
+        std::fs::write(
+            &host.path,
+            r#"{"transcriber":"apple","transcribeCommand":["/opt/homebrew/bin/uv","run"]}"#,
+        )
+        .unwrap();
+        let apple = panel.view(&host).transcriber;
+        assert_eq!(apple.engine, "apple");
+        assert!(apple.command_enabled);
+    }
+
+    #[test]
     fn toggles_and_popups_write_their_keys() {
         let dir = TempDir::new("set");
         let mut host = fake(&dir);
