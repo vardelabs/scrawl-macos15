@@ -243,17 +243,20 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if eof.load(Ordering::Acquire) {
-            kill_group(&mut child);
-            break child.wait()?;
-        }
         let now = Instant::now();
         if now >= deadline {
             kill_group(&mut child);
             let _ = child.wait();
             bail!("timeout");
         }
-        std::thread::park_timeout(deadline - now);
+        // Once stdout closes the program is about to exit on its own (a flood is cut off by the
+        // closed pipe), so poll briefly instead of waiting out the deadline.
+        let wait = if eof.load(Ordering::Acquire) {
+            Duration::from_millis(20)
+        } else {
+            deadline - now
+        };
+        std::thread::park_timeout(wait);
     };
     let out = reader.join().unwrap_or_default();
     ensure!(out.len() <= OUTPUT_LIMIT, "output too large");
