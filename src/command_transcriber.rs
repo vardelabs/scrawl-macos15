@@ -260,6 +260,7 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
     // Nothing wakes this thread when the program exits, so the exit is polled. The group is
     // killed before the leader is reaped: its zombie keeps the group id reserved, so the signal
     // cannot land on a group another process claimed since.
+    let mut delivered: Option<Vec<u8>> = None;
     let status = loop {
         let exited = match has_exited(pid) {
             Ok(exited) => exited,
@@ -273,6 +274,18 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
             kill_group(pid);
             break child.wait()?;
         }
+        // The reader hands over early only past the output cap; a program that floods and then
+        // idles is rejected for its output, not reported as a timeout later.
+        if delivered.is_none()
+            && let Ok(out) = receiver.try_recv()
+        {
+            if out.len() > OUTPUT_LIMIT {
+                kill_group(pid);
+                let _ = child.wait();
+                bail!("output too large");
+            }
+            delivered = Some(out);
+        }
         let now = Instant::now();
         if now >= deadline {
             kill_group(pid);
@@ -285,8 +298,15 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
     // and stops: a descendant that left the group (setsid) and still holds the pipe can neither
     // add to the transcript nor pin the thread and descriptor, since our end closes here.
     stop.store(true, Ordering::Release);
-    let Ok(out) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) else {
-        bail!("timeout");
+    let out = match delivered {
+        Some(out) => out,
+        None => {
+            let Ok(out) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            else {
+                bail!("timeout");
+            };
+            out
+        }
     };
     ensure!(out.len() <= OUTPUT_LIMIT, "output too large");
     ensure!(
@@ -576,6 +596,15 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         let flood = transcribe(&sh("yes spoken"), &wav.0, 1_000).unwrap_err();
         assert_eq!(format!("{flood:#}"), "output too large");
+        let started = Instant::now();
+        let flood_then_idle = transcribe(
+            &sh("yes spoken | head -c 9000000; sleep 30"),
+            &wav.0,
+            1_000,
+        )
+        .unwrap_err();
+        assert_eq!(format!("{flood_then_idle:#}"), "output too large");
+        assert!(started.elapsed() < Duration::from_secs(5));
         let missing = transcribe(
             &Settings {
                 command: strings(&["/nonexistent/transcriber"]),
