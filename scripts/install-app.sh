@@ -88,8 +88,14 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Without Kit's Developer ID, a self-signed "Scrawl Local Signing" certificate in the login
+# keychain still gives every rebuild the same identity, so macOS keeps its permission grants.
+# An ad hoc signature changes with each build, and the grants stop applying.
+LOCAL_SIGN_ID="Scrawl Local Signing"
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "${SIGN_ID}"; then
   IDENTITY="${SIGN_ID}"
+elif security find-identity -p codesigning 2>/dev/null | grep -q "\"${LOCAL_SIGN_ID}\""; then
+  IDENTITY="${LOCAL_SIGN_ID}"
 else
   IDENTITY="-"
 fi
