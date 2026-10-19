@@ -1,0 +1,87 @@
+//! A warm helper handles one-second ramps without blocking recording or the UI.
+//! Pipe EOF also restores volume when the parent exits unexpectedly.
+use std::io::Write;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+
+pub struct Guard;
+static HELPER: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+fn level(mode: Option<&str>, percent: Option<u8>) -> Option<u8> {
+    match mode {
+        Some("mute") => Some(0),
+        Some("lower") => Some(percent.unwrap_or(20).min(100)),
+        _ => None,
+    }
+}
+
+fn command(line: Option<&str>) -> anyhow::Result<()> {
+    let mut helper = HELPER.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(child) = helper.as_mut()
+        && child.try_wait()?.is_some()
+    {
+        helper.take();
+    }
+    if helper.is_none() {
+        *helper = Some(Command::new(crate::helper::path()?)
+            .args(["playback-volume", "--server"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()?);
+    }
+    if let Some(line) = line {
+        let stdin = helper.as_mut().and_then(|child| child.stdin.as_mut())
+            .ok_or_else(|| anyhow::anyhow!("Playback helper stdin missing"))?;
+        writeln!(stdin, "{line}")?;
+        stdin.flush()?;
+    }
+    Ok(())
+}
+
+pub fn warm_up() {
+    if crate::handoff::experiment("recordingPlaybackVolume") {
+        if let Err(error) = command(None) {
+            crate::capture::scrawl_log(format!("Playback helper: {error:#}"));
+        }
+    }
+}
+
+impl Guard {
+    pub fn start() -> Option<Self> {
+        if !crate::handoff::experiment("recordingPlaybackVolume") {
+            return None;
+        }
+        let config = crate::handoff::load_config_from(&crate::handoff::default_config_path());
+        let percent = level(config.playback_mode.as_deref(), config.playback_level)?;
+        match command(Some(&format!("start {percent}"))) {
+            Ok(()) => Some(Self),
+            Err(error) => {
+                crate::capture::scrawl_log(format!("Playback volume: {error:#}"));
+                None
+            }
+        }
+    }
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if let Err(error) = command(Some("stop")) {
+            crate::capture::scrawl_log(format!("Restoring playback volume: {error:#}"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn playback_is_opt_in_and_levels_are_bounded() {
+        assert_eq!(level(None, Some(0)), None);
+        assert_eq!(level(Some("unknown"), Some(0)), None);
+        assert_eq!(level(Some("unchanged"), Some(0)), None);
+        assert_eq!(level(Some("mute"), Some(80)), Some(0));
+        assert_eq!(level(Some("lower"), None), Some(20));
+        assert_eq!(level(Some("lower"), Some(0)), Some(0));
+        assert_eq!(level(Some("lower"), Some(255)), Some(100));
+    }
+}

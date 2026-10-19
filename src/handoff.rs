@@ -401,6 +401,10 @@ pub struct Config {
     /// (`transcribe`).
     #[serde(default)]
     pub transcriber: Option<String>,
+    #[serde(default)]
+    pub playback_mode: Option<String>,
+    #[serde(default)]
+    pub playback_level: Option<u8>,
     /// The Hex model to use when `transcriber` is `"hex"` (default: the first ready one of
     /// `hex::PREFERRED_MODELS`).
     #[serde(default)]

@@ -37,3 +37,34 @@ Launch at login is `SMAppService.mainApp` (only inside Scrawl.app). There's no D
 Agents › Command-line tool (`src/command_line.rs`) symlinks the app's own binary (its real path, which is how it finds `scrawl-helper`) into the first writable of `/opt/homebrew/bin`, `/usr/local/bin`, else `~/.local/bin`; it never asks for admin, never touches a `scrawl` that doesn't link to a Scrawl.app, and the Homebrew cask's `binary` link reads as installed. A bare `scrawl` from a terminal prints help instead of starting a second app. Agents › Agent skill shows `bunx skills add kitlangton/scrawl` (`skills/scrawl/SKILL.md`, also printed by `scrawl skill`); keep that file true to the CLI.
 
 Render every pane (dark, light, recorder listening, refused, microphone chosen/missing/not allowed) with `scrawl-helper settings --render DIR`; test with `cargo test settings::`.
+
+## Playback during recording
+
+With `experiments.recordingPlaybackVolume` enabled, Recording offers Unchanged,
+Mute and Lower volume, with a 0–100% relative-volume slider for Lower volume.
+Changes apply to the next recording. `src/playback.rs` warms a separate CoreAudio
+helper (`helper/PlaybackVolume.swift`) at app startup. The shortcut sends `start`
+as soon as permissions pass, before the tap/hold decision, screen discovery or
+microphone initialization. Cancel and finish send `stop` without blocking the UI.
+Both directions use a one-second smooth ramp; a new start during restoration
+reverses from the current value while retaining the original snapshot.
+
+All writable output channels are snapshotted before any writes and restored as a
+group. Channel scalars take precedence over master volume, preserving stereo
+balance, including intentionally unequal or silent channels. Mute ramps scalars
+to zero without changing the device's mute flags. Accepted hardware values are
+read back after the entire group is written to account for quantization. During
+the ramps, delayed Bluetooth channel feedback must never be mistaken for manual
+changes. Once the target settles, manual changes release the whole group instead
+of restoring only one channel. A failed
+write attempts to roll back the entire original snapshot. Pipe EOF restores on
+app exit. Device switches are not followed; restoration targets the original ID.
+Fixed-volume outputs and devices with channel values that cannot be restored are
+left unchanged. No Automation permission or dependency is added.
+
+`scrawl-helper playback-volume --self-test` runs deterministic, silent ramp tests;
+`--inspect` reads the current device's writable volume controls without changing them.
+
+The Settings window opens at 780 × 600 points, can be resized down to 680 × 480,
+and remembers its frame between openings. The sidebar stays fixed while the pane
+uses the available width; Recording scrolls when its content exceeds the height.
