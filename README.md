@@ -726,7 +726,8 @@ network use for it.
   `SCRAWL_TRANSCRIBE_VERSION=1` in its environment, and `/dev/null` on stdin.
 - `transcribeTimeoutSeconds` is optional. The default is `max(300, 60 + 10 × audio seconds)`,
   counted from launch, model loading included.
-- **Command** appears in Settings › Recording › **Transcription** once `transcribeCommand` is set.
+- **Command** in Settings › Recording › **Transcription** is greyed out as "Command (not set up)"
+  until `transcribeCommand` is set.
 - Input: the whole recording as a 16 kHz mono 16-bit WAV, the same audio Apple Speech gets.
 - Output: exit 0 and one JSON object on stdout. `version` (the integer 1) and `text` are required;
   `model`, `segments` and `words` are optional and use the `{t0, t1, text}` shape of `scrawl.json`

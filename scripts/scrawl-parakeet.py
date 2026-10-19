@@ -14,13 +14,20 @@ Reads the 16 kHz mono WAV Scrawl hands it and prints the transcript JSON Scrawl 
                           "/path/to/scrawl-parakeet.py", "{audio}"]
 
 Needs uv and ffmpeg (brew install uv ffmpeg). The first run resolves the dependencies and
-downloads the model (about 1.2 GB) from Hugging Face; later runs are offline.
-SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
+downloads the model (about 1.2 GB) from Hugging Face; once the model is in the hub cache the
+script runs offline. SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
 """
 
+import glob
 import json
 import os
 import sys
+
+DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+MODEL_NAME = os.environ.get("SCRAWL_PARAKEET_MODEL", DEFAULT_MODEL)
+# Long recordings are decoded in windows so memory stays flat; the overlap keeps words whole.
+CHUNK_SECONDS = 120.0
+OVERLAP_SECONDS = 15.0
 
 # Scrawl.app runs this without a shell PATH, and parakeet-mlx decodes audio by finding ffmpeg
 # on it; Homebrew's prefixes are where a Mac has ffmpeg.
@@ -28,12 +35,19 @@ os.environ["PATH"] = os.pathsep.join(
     ["/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", "/usr/bin:/bin")]
 )
 
-from parakeet_mlx import from_pretrained  # noqa: E402
 
-DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
-# Long recordings are decoded in windows so memory stays flat; the overlap keeps words whole.
-CHUNK_SECONDS = 120.0
-OVERLAP_SECONDS = 15.0
+def model_is_cached(name: str) -> bool:
+    hub = os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub")
+    snapshot = os.path.join(hub, "models--" + name.replace("/", "--"), "snapshots", "*", "config.json")
+    return bool(glob.glob(snapshot))
+
+
+# The hub client checks every cached file against huggingface.co on each download call unless
+# it is offline, which would put a network round trip into every recording.
+if model_is_cached(MODEL_NAME):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+from parakeet_mlx import from_pretrained  # noqa: E402
 
 
 def ms(seconds: float) -> int:
@@ -41,20 +55,21 @@ def ms(seconds: float) -> int:
 
 
 def words_from_tokens(tokens):
-    """Sentencepiece tokens carry a leading space on the first piece of a word; punctuation
-    pieces attach to the word before them."""
+    """Sentencepiece tokens carry a leading space on the first piece of a word, or a bare space
+    token before pieces that never carry one (digits); punctuation attaches to the word before."""
     words = []
+    boundary = True
     for token in tokens:
-        text = token.text
-        starts_word = text.startswith(" ") or not words
-        piece = text.strip()
+        piece = token.text.strip()
         if not piece:
+            boundary = True
             continue
-        if starts_word:
+        if boundary or token.text.startswith(" "):
             words.append({"t0": ms(token.start), "t1": ms(token.end), "text": piece})
         else:
             words[-1]["text"] += piece
             words[-1]["t1"] = ms(token.end)
+        boundary = False
     return words
 
 
@@ -62,7 +77,7 @@ def main() -> int:
     if len(sys.argv) != 2:
         print("usage: scrawl-parakeet.py AUDIO.wav", file=sys.stderr)
         return 2
-    model_name = os.environ.get("SCRAWL_PARAKEET_MODEL", DEFAULT_MODEL)
+    model_name = MODEL_NAME
     model = from_pretrained(model_name)
     result = model.transcribe(
         sys.argv[1], chunk_duration=CHUNK_SECONDS, overlap_duration=OVERLAP_SECONDS

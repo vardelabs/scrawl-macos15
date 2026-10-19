@@ -4,15 +4,14 @@
 //! times in integer milliseconds from the start of the WAV, the same shape as `scrawl.json`.
 //!
 //! The program's stderr is discarded and its stdout is never logged, so nothing the user said
-//! reaches the log. A failure surfaces as a short reason (`timeout`, `words[12].t1 out of range`)
-//! and the caller falls back to Apple Speech for that recording.
+//! reaches the log. A failure surfaces as a short reason (`timeout`, `words[12] is past the end
+//! of the audio`) and the caller falls back to Apple Speech for that recording.
 
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail, ensure};
@@ -232,8 +231,8 @@ pub fn parse_output(stdout: &[u8], audio_ms: u64) -> Result<TranscriptData> {
 }
 
 /// Runs the program on `wav` in its own process group and reads its transcript. The group is
-/// killed on timeout, and again once the program exits, so a wrapper never leaves a model
-/// process behind or holding the stdout pipe open.
+/// killed on timeout, and again once the program exits, so a wrapper's leftover model process
+/// dies with it and the deadline bounds the whole run either way.
 pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<TranscriptData> {
     use std::os::unix::process::CommandExt;
     let argv = argv(&settings.command, wav);
@@ -248,15 +247,11 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
         .spawn()
         .map_err(|error| anyhow::anyhow!("could not start the program ({})", error.kind()))?;
     let stdout = child.stdout.take().expect("stdout was piped");
-    let caller = std::thread::current();
-    let eof = Arc::new(AtomicBool::new(false));
-    let reader_eof = Arc::clone(&eof);
-    let reader = std::thread::spawn(move || {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = Vec::new();
         let _ = stdout.take((OUTPUT_LIMIT + 1) as u64).read_to_end(&mut out);
-        reader_eof.store(true, Ordering::Release);
-        caller.unpark();
-        out
+        let _ = sender.send(out);
     });
     let deadline = Instant::now() + timeout(settings.timeout, audio_ms);
     let status = loop {
@@ -269,14 +264,18 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
             let _ = child.wait();
             bail!("timeout");
         }
-        // Nothing wakes this thread when the program exits, only when its stdout closes, so the
-        // exit is polled; a program that exits while a child of its own holds stdout open would
-        // otherwise sit here until the deadline.
-        std::thread::park_timeout(EXIT_POLL.min(deadline - now));
+        // Nothing wakes this thread when the program exits, so the exit is polled; a program
+        // that exits while a child of its own holds stdout open would otherwise wait out the
+        // deadline.
+        std::thread::sleep(EXIT_POLL.min(deadline - now));
     };
     // Whatever the program left running dies with it; that is also what lets the reader finish.
+    // A descendant that left the group (setsid) and still holds the pipe is beyond reach, so the
+    // deadline bounds the read too and the reader thread is left to end with the pipe.
     kill_group(&mut child);
-    let out = reader.join().unwrap_or_default();
+    let Ok(out) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) else {
+        bail!("timeout");
+    };
     ensure!(out.len() <= OUTPUT_LIMIT, "output too large");
     ensure!(
         status.success(),
@@ -425,6 +424,18 @@ mod tests {
         for error in [version, no_text, invalid] {
             assert!(!format!("{error:#}").contains(spoken), "{error:#}");
         }
+    }
+
+    #[test]
+    fn a_descendant_outside_the_group_still_hits_the_deadline() {
+        let wav = wav();
+        let escaped = Settings {
+            timeout: Some(Duration::from_millis(500)),
+            ..sh(r#"/usr/bin/nohup /bin/sh -c 'setsid sleep 30' >/dev/null 2>&1 & sleep 30"#)
+        };
+        let started = Instant::now();
+        assert_eq!(format!("{:#}", transcribe(&escaped, &wav, 1_000).unwrap_err()), "timeout");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
