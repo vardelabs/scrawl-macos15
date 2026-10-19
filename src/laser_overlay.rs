@@ -33,6 +33,31 @@ const TILE_PT: f32 = 32.0;
 /// (`glow_sigma` <= 6.2 * (0.28 + 0.72 * 1.25) = 7.32), the ink at `r + 2.0` (`r` <= 2.59).
 const LASER_REACH_PT: f32 = 22.0;
 const INK_REACH_PT: f32 = 4.6;
+/// The overlay's drawable never holds more pixels than a 4K screen. A 2x ultrawide (7680×2160,
+/// 16.6 MP) redrawn at 120 Hz beside a running capture made the ink lag; the compositor scales
+/// the smaller drawable up, which only softens the ink's edge.
+const MAX_DRAWABLE_PX: f32 = 3840.0 * 2160.0;
+/// A released ink stroke holds for 650 ms, fades for 650 ms, then is gone from the overlay.
+const INK_VISIBLE_MS: u64 = 1_300;
+
+/// `scale`, lowered as far as needed to keep a `width`×`height`-point drawable within
+/// `MAX_DRAWABLE_PX`, and never below 1.
+fn drawable_scale(width: f32, height: f32, scale: f32) -> f32 {
+    let pixels = width * height * scale * scale;
+    if pixels <= MAX_DRAWABLE_PX {
+        return scale;
+    }
+    (scale * (MAX_DRAWABLE_PX / pixels).sqrt()).max(1.0)
+}
+
+/// What a frame shows when no ink, pin, laser tip or glow is on screen: only the target
+/// outline, which doesn't change while it stays the same, so such a frame is drawn once.
+#[derive(Clone, Copy, PartialEq)]
+struct QuietFrame {
+    target_rect: [f32; 4],
+    constrained: bool,
+    mode: f32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -273,6 +298,8 @@ struct MetalLaserRenderer {
     width: f32,
     height: f32,
     scale: f32,
+    /// The last frame presented, when it was quiet; `None` after anything moved on screen.
+    shown_quiet: Option<QuietFrame>,
 }
 
 impl SharedMetalOverlay {
@@ -283,6 +310,7 @@ impl SharedMetalOverlay {
         height: f32,
         scale: f32,
     ) -> Result<Self, String> {
+        let scale = drawable_scale(width, height, scale);
         let device = metal::Device::system_default().ok_or("Metal is unavailable")?;
         let layer = MetalLayer::new();
         layer.set_device(&device);
@@ -309,17 +337,20 @@ impl SharedMetalOverlay {
                 width,
                 height,
                 scale,
+                shown_quiet: None,
             }),
         })
     }
 
     /// Takes another screen's origin, size and scale (`MetalLaserOverlay::move_to`).
     fn place(&self, origin: [f32; 2], width: f32, height: f32, scale: f32) {
+        let scale = drawable_scale(width, height, scale);
         let mut renderer = self
             .renderer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         renderer.origin = origin;
+        renderer.shown_quiet = None;
         renderer.width = width;
         renderer.height = height;
         renderer.scale = scale;
@@ -407,12 +438,25 @@ impl SharedMetalOverlay {
         let (tx, ty) = (tx - ox, ty - oy);
         let to_screen = |nx: f32, ny: f32| -> [f32; 2] { [tx + nx * tw, ty + ny * th] };
 
-        let committed_strokes = self
+        // Only what can still show is copied: every stroke of the recording, cloned under the
+        // lock the input thread appends to, 120 times a second, was the cost that made long
+        // recordings lag. Pins stay; ink is gone 1.3 s after release, the laser after its tail.
+        let committed_strokes: Vec<crate::model::Stroke> = self
             .telemetry
             .strokes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+            .iter()
+            .filter(|stroke| {
+                stroke.pin.is_some()
+                    || if stroke.laser {
+                        stroke.t1 >= min_laser_ms
+                    } else {
+                        now_ms.saturating_sub(stroke.t1) < INK_VISIBLE_MS
+                    }
+            })
+            .cloned()
+            .collect();
         let active_laser = self
             .telemetry
             .active_laser
@@ -475,7 +519,7 @@ impl SharedMetalOverlay {
                     1.0
                 } else {
                     let age_ms = now_ms.saturating_sub(stroke.t1);
-                    if age_ms >= 1_300 {
+                    if age_ms >= INK_VISIBLE_MS {
                         continue;
                     } else if age_ms <= 650 {
                         1.0
@@ -526,10 +570,23 @@ impl SharedMetalOverlay {
             pins.push(PinMarker::default());
         }
 
-        let renderer = self
+        let mut renderer = self
             .renderer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let nothing_drawn = segments.len() == 1 && segments[0].width == 0.0;
+        let no_pins = pins.len() == 1 && pins[0].radius == 0.0;
+        let glowing = is_active && self.telemetry.start_glow.load(Ordering::Acquire);
+        let quiet = (!is_selecting && !is_device_pending && (!is_active || (nothing_drawn && no_pins && !shift_held && !glowing)))
+            .then_some(QuietFrame {
+                target_rect: [tx, ty, tw, th],
+                constrained: is_constrained,
+                mode: mode_code,
+            });
+        if quiet.is_some() && quiet == renderer.shown_quiet {
+            return;
+        }
+        renderer.shown_quiet = quiet;
         let tile_cols = (renderer.width / TILE_PT).ceil().max(1.0) as u32;
         let tile_rows = (renderer.height / TILE_PT).ceil().max(1.0) as u32;
         objc2::rc::autoreleasepool(|_| {
@@ -1037,6 +1094,17 @@ mod tests {
     /// The shader must load on the oldest macOS Scrawl supports (`LSMinimumSystemVersion` 15.0).
     /// Without `-mmacosx-version-min`, `xcrun metal` targets the build machine's macOS and the
     /// overlay (ink, laser, edge glow) silently fails to open on older systems.
+    #[test]
+    fn drawable_scale_caps_big_screens_and_leaves_others_alone() {
+        assert_eq!(drawable_scale(1512.0, 982.0, 2.0), 2.0);
+        assert_eq!(drawable_scale(1920.0, 1080.0, 2.0), 2.0);
+        let ultrawide = drawable_scale(3840.0, 1080.0, 2.0);
+        assert!(ultrawide < 2.0 && ultrawide >= 1.0);
+        let pixels = 3840.0 * 1080.0 * ultrawide * ultrawide;
+        assert!((pixels - MAX_DRAWABLE_PX).abs() / MAX_DRAWABLE_PX < 1e-3, "{pixels}");
+        assert_eq!(drawable_scale(7680.0, 4320.0, 2.0), 1.0);
+    }
+
     #[test]
     fn shader_targets_the_minimum_supported_macos() {
         let library = include_bytes!(concat!(env!("OUT_DIR"), "/laser_overlay.metallib"));
