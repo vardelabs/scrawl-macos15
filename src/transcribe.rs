@@ -1,6 +1,8 @@
 //! Transcription: Apple's SpeechAnalyzer through `scrawl-helper` (measured word and segment
-//! timings), or Hex when `"transcriber": "hex"` is set and Hex is connected (`crate::hex`; word
-//! times estimated). Any Hex trouble falls back to Apple for that recording.
+//! timings), Hex when `"transcriber": "hex"` is set and Hex is connected (`crate::hex`; word
+//! times estimated), or a program of the user's own when `"transcriber": "command"` is set
+//! (`crate::command_transcriber`). Any trouble with Hex or the program falls back to Apple for
+//! that recording.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -15,6 +17,7 @@ pub enum Engine {
     #[default]
     Apple,
     Hex,
+    Command,
 }
 
 impl Engine {
@@ -22,6 +25,7 @@ impl Engine {
         match name.trim().to_ascii_lowercase().as_str() {
             "apple" => Some(Self::Apple),
             "hex" => Some(Self::Hex),
+            "command" => Some(Self::Command),
             _ => None,
         }
     }
@@ -30,6 +34,16 @@ impl Engine {
         match self {
             Self::Apple => "apple",
             Self::Hex => "hex",
+            Self::Command => "command",
+        }
+    }
+
+    /// How the log names the engine.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Apple => "Apple Speech",
+            Self::Hex => "Hex",
+            Self::Command => "Command",
         }
     }
 
@@ -46,6 +60,7 @@ impl Engine {
         match OVERRIDE.load(Ordering::Relaxed) {
             1 => Self::Apple,
             2 => Self::Hex,
+            3 => Self::Command,
             _ => Self::configured(),
         }
     }
@@ -53,6 +68,7 @@ impl Engine {
 
 static OVERRIDE: AtomicU8 = AtomicU8::new(0);
 static LOGGED_NOT_CONNECTED: std::sync::Once = std::sync::Once::new();
+static LOGGED_NO_COMMAND: std::sync::Once = std::sync::Once::new();
 
 /// What the menu's Transcription submenu shows. A Hex preference stays saved while Hex is away,
 /// but the tick follows what recordings would really use.
@@ -112,6 +128,7 @@ pub fn set_override(engine: Engine) {
         match engine {
             Engine::Apple => 1,
             Engine::Hex => 2,
+            Engine::Command => 3,
         },
         Ordering::Relaxed,
     );
@@ -125,26 +142,46 @@ pub fn transcribe(wav: Option<&Path>, audio: Option<&RecordedAudio>) -> Transcri
             ..Default::default()
         };
     };
-    run(Engine::preferred(), || try_hex(audio), || apple(wav))
+    let engine = Engine::preferred();
+    let external = || match engine {
+        Engine::Hex => try_hex(audio),
+        Engine::Command => try_command(wav, audio),
+        Engine::Apple => Ok(None),
+    };
+    run(engine, external, || apple(wav))
 }
 
-/// Hex first when preferred, with Apple as the answer to anything it can't do. `hex` returns
-/// `Ok(None)` when Hex isn't available at all (not connected, model not ready).
+/// The preferred engine first, with Apple as the answer to anything it can't do. `external`
+/// returns `Ok(None)` when that engine isn't available at all (Hex not connected, no model
+/// ready, no command configured).
 fn run(
     engine: Engine,
-    hex: impl FnOnce() -> Result<Option<TranscriptData>>,
+    external: impl FnOnce() -> Result<Option<TranscriptData>>,
     apple: impl FnOnce() -> TranscriptData,
 ) -> TranscriptData {
-    if engine == Engine::Hex {
-        match hex() {
+    if engine != Engine::Apple {
+        match external() {
             Ok(Some(transcript)) => return transcript,
             Ok(None) => {}
             Err(error) => crate::capture::scrawl_log(format!(
-                "Hex transcription failed, using Apple Speech: {error:#}"
+                "{} transcription failed, using Apple Speech: {error:#}",
+                engine.title()
             )),
         }
     }
     apple()
+}
+
+fn try_command(wav: &Path, audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
+    let Some(settings) = crate::handoff::transcribe_command() else {
+        LOGGED_NO_COMMAND.call_once(|| {
+            crate::capture::scrawl_log(
+                "Command transcriber preferred but transcribeCommand is not usable; using Apple Speech".to_owned(),
+            );
+        });
+        return Ok(None);
+    };
+    crate::command_transcriber::transcribe(&settings, wav, audio.duration_ms).map(Some)
 }
 
 fn try_hex(audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
@@ -193,8 +230,23 @@ mod tests {
     fn engine_names_parse_and_unknown_is_not_an_engine() {
         assert_eq!(Engine::parse("hex"), Some(Engine::Hex));
         assert_eq!(Engine::parse(" Apple "), Some(Engine::Apple));
+        assert_eq!(Engine::parse("Command"), Some(Engine::Command));
         assert_eq!(Engine::parse("whisper"), None);
         assert_eq!(Engine::default(), Engine::Apple);
+    }
+
+    #[test]
+    fn command_is_used_when_it_answers_and_apple_covers_its_failures() {
+        let result = run(
+            Engine::Command,
+            || Ok(Some(named("command:parakeet"))),
+            || panic!("Apple must not be asked"),
+        );
+        assert_eq!(result.source, "command:parakeet");
+        let apple = || named("speech-analyzer");
+        assert_eq!(run(Engine::Command, || Ok(None), apple).source, "speech-analyzer");
+        let failed = run(Engine::Command, || Err(anyhow::anyhow!("timeout")), apple);
+        assert_eq!(failed.source, "speech-analyzer");
     }
 
     #[test]

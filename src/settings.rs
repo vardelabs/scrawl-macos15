@@ -606,11 +606,14 @@ pub struct ShortcutView {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriberView {
-    /// What recordings use now: "apple" or "hex".
+    /// What recordings use now: "apple", "hex" or "command".
     pub engine: &'static str,
     pub hex_title: &'static str,
     pub hex_enabled: bool,
     pub models: Vec<ModelView>,
+    pub command_title: &'static str,
+    /// `transcribeCommand` in the config is usable.
+    pub command_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -973,6 +976,8 @@ impl Panel {
             .and_then(crate::transcribe::Engine::parse)
             .unwrap_or_default();
         let menu = crate::transcribe::menu_state(engine, hex.as_ref(), config.hex_model.as_deref());
+        let command_enabled = crate::handoff::transcribe_command_from(&config).is_some();
+        let command_checked = command_enabled && engine == crate::transcribe::Engine::Command;
         let policy = crate::retention::Policy::load_from(&host.config_path());
         let login = login_item();
         let order = [
@@ -1006,7 +1011,13 @@ impl Panel {
                 })
                 .collect(),
             transcriber: TranscriberView {
-                engine: if menu.hex_checked { "hex" } else { "apple" },
+                engine: if menu.hex_checked {
+                    "hex"
+                } else if command_checked {
+                    "command"
+                } else {
+                    "apple"
+                },
                 hex_title: menu.hex_title,
                 hex_enabled: menu.hex_enabled,
                 models: menu
@@ -1014,6 +1025,12 @@ impl Panel {
                     .into_iter()
                     .map(|(id, title, chosen)| ModelView { id, title, chosen })
                     .collect(),
+                command_title: if command_enabled {
+                    "Command"
+                } else {
+                    "Command (not set up)"
+                },
+                command_enabled,
             },
             video_export: config.video_export.unwrap_or(false),
             retention: RetentionView {
@@ -1658,6 +1675,41 @@ mod tests {
         );
         assert_eq!(panel.on(Action::Close, &mut host), Effect::Close);
         assert_eq!(host.paused.last(), Some(&false));
+    }
+
+    #[test]
+    fn command_engine_shows_only_when_its_program_is_usable() {
+        let dir = TempDir::new("command");
+        let host = fake(&dir);
+        let panel = Panel::default();
+        std::fs::write(
+            &host.path,
+            r#"{"transcriber":"command","transcribeCommand":["uv","run"]}"#,
+        )
+        .unwrap();
+        let relative = panel.view(&host).transcriber;
+        assert_eq!(relative.engine, "apple");
+        assert!(!relative.command_enabled);
+        assert_eq!(relative.command_title, "Command (not set up)");
+
+        std::fs::write(
+            &host.path,
+            r#"{"transcriber":"command","transcribeCommand":["/opt/homebrew/bin/uv","run"]}"#,
+        )
+        .unwrap();
+        let usable = panel.view(&host).transcriber;
+        assert_eq!(usable.engine, "command");
+        assert!(usable.command_enabled);
+        assert_eq!(usable.command_title, "Command");
+
+        std::fs::write(
+            &host.path,
+            r#"{"transcriber":"apple","transcribeCommand":["/opt/homebrew/bin/uv","run"]}"#,
+        )
+        .unwrap();
+        let apple = panel.view(&host).transcriber;
+        assert_eq!(apple.engine, "apple");
+        assert!(apple.command_enabled);
     }
 
     #[test]

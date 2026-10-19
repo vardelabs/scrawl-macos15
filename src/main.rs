@@ -5,6 +5,7 @@ mod ax;
 mod autocrop_lab;
 mod capture;
 mod command_line;
+mod command_transcriber;
 mod delivery;
 mod export;
 mod handoff;
@@ -61,7 +62,8 @@ struct Cli {
 }
 
 fn parse_engine(name: &str) -> Result<crate::transcribe::Engine, String> {
-    crate::transcribe::Engine::parse(name).ok_or_else(|| "expected `apple` or `hex`".to_owned())
+    crate::transcribe::Engine::parse(name)
+        .ok_or_else(|| "expected `apple`, `hex` or `command`".to_owned())
 }
 
 /// `scrawl hex status`: connection, models and what the next recording would use.
@@ -74,11 +76,19 @@ fn hex_status() {
         configured.as_deref().unwrap_or("(automatic)")
     );
     println!("Discovery file: {}", hex::discovery_path().display());
+    let command_ready = handoff::transcribe_command().is_some();
     let status = match hex::status() {
         Ok(status) => status,
         Err(error) => {
             println!("Hex: not connected ({error:#})");
-            println!("Next recording uses: Apple Speech");
+            println!(
+                "Next recording uses: {}",
+                if preferred == transcribe::Engine::Command && command_ready {
+                    "Command"
+                } else {
+                    "Apple Speech"
+                }
+            );
             return;
         }
     };
@@ -100,6 +110,7 @@ fn hex_status() {
         "Next recording uses: {}",
         match (preferred, chosen) {
             (transcribe::Engine::Hex, Some(model)) => format!("Hex ({model})"),
+            (transcribe::Engine::Command, _) if command_ready => "Command".to_owned(),
             _ => "Apple Speech".to_owned(),
         }
     );
@@ -200,7 +211,7 @@ enum Command {
         /// Copy the summary to the clipboard.
         #[arg(long)]
         clipboard: bool,
-        /// Transcribe with `apple` or `hex` instead of the configured transcriber.
+        /// Transcribe with `apple`, `hex` or `command` instead of the configured transcriber.
         #[arg(long, value_parser = parse_engine)]
         transcriber: Option<crate::transcribe::Engine>,
     },
@@ -227,7 +238,7 @@ enum Command {
         /// captures) to benchmark finish-to-done wall clock.
         #[arg(long, hide = true)]
         bench: Option<u32>,
-        /// Transcribe with `apple` or `hex` instead of the configured transcriber.
+        /// Transcribe with `apple`, `hex` or `command` instead of the configured transcriber.
         #[arg(long, value_parser = parse_engine)]
         transcriber: Option<crate::transcribe::Engine>,
         /// Turn an experiment on for this run, as `"experiments"` in `config.json` would
