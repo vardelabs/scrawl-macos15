@@ -317,6 +317,9 @@ pub struct Config {
     /// Feature flag: shows **Export Last Capture as Video…** in the menu (default off).
     #[serde(default)]
     pub video_export: Option<bool>,
+    /// Pauses Music and Spotify while recording and resumes them after (default on).
+    #[serde(default)]
+    pub pause_music: Option<bool>,
     /// `"apple"` (default), `"hex"` or `"command"`: which engine transcribes recordings
     /// (`transcribe`).
     #[serde(default)]
@@ -571,6 +574,11 @@ pub fn auto_send() -> bool {
 /// either way.
 pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
+}
+
+/// Whether recordings pause Music and Spotify (`pauseMusic`, default on; `media_pause`).
+pub fn pause_music() -> bool {
+    config().pause_music.unwrap_or(true)
 }
 
 /// The configured transcriber name (`transcriber`) as written, unvalidated.

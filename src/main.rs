@@ -17,6 +17,7 @@ mod inbox;
 mod keyframes;
 mod laser_overlay;
 mod live_transcribe;
+mod media_pause;
 mod mic;
 mod model;
 mod native;
