@@ -11,6 +11,8 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -247,14 +249,14 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
         .spawn()
         .map_err(|error| anyhow::anyhow!("could not start the program ({})", error.kind()))?;
     let stdout = child.stdout.take().expect("stdout was piped");
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.take((OUTPUT_LIMIT + 1) as u64).read_to_end(&mut out);
-        let _ = sender.send(out);
-    });
     let pid = child.id() as libc::pid_t;
     let deadline = Instant::now() + timeout(settings.timeout, audio_ms);
+    let (sender, receiver) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let _ = sender.send(read_until(stdout, deadline, &reader_stop));
+    });
     // Nothing wakes this thread when the program exits, so the exit is polled. The group is
     // killed before the leader is reaped: its zombie keeps the group id reserved, so the signal
     // cannot land on a group another process claimed since.
@@ -279,9 +281,10 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
         }
         std::thread::sleep(EXIT_POLL.min(deadline - now));
     };
-    // Whatever the program left running died with it, which is what lets the reader finish. A
-    // descendant that left the group (setsid) and still holds the pipe is beyond reach, so the
-    // deadline bounds the read too and the reader thread is left to end with the pipe.
+    // Everything the program wrote is in the pipe once it has exited, so the reader drains it
+    // and stops: a descendant that left the group (setsid) and still holds the pipe can neither
+    // add to the transcript nor pin the thread and descriptor, since our end closes here.
+    stop.store(true, Ordering::Release);
     let Ok(out) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) else {
         bail!("timeout");
     };
@@ -292,6 +295,59 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
         status.code().unwrap_or(-1)
     );
     parse_output(&out, audio_ms)
+}
+
+/// Reads stdout until EOF, one byte past the output cap, the deadline, or `stop` with the pipe
+/// drained. Without the last two, a descendant that outlives the program and keeps the pipe
+/// would pin this thread and the descriptor for as long as it lived.
+fn read_until(mut stdout: std::process::ChildStdout, deadline: Instant, stop: &AtomicBool) -> Vec<u8> {
+    use std::os::fd::AsRawFd;
+    let fd = stdout.as_raw_fd();
+    // SAFETY: fcntl and poll on a descriptor this thread owns for its whole life.
+    unsafe {
+        libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK);
+    }
+    let mut out = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    while out.len() <= OUTPUT_LIMIT {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let stopping = stop.load(Ordering::Acquire);
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let wait_ms = if stopping {
+            0
+        } else {
+            remaining.min(EXIT_POLL).as_millis() as i32
+        };
+        let ready = unsafe { libc::poll(&mut poll, 1, wait_ms) };
+        if ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if ready < 0 || (ready == 0 && stopping) {
+            break;
+        }
+        if ready == 0 {
+            continue;
+        }
+        match stdout.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => out.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if stopping {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    out
 }
 
 /// Whether the program has exited, without reaping it: `Child::wait` still collects it after.
@@ -466,19 +522,17 @@ mod tests {
     }
 
     /// macOS has no `setsid` binary, so perl's POSIX binding moves the descendant out of the
-    /// group; it inherits stdout and outlives the program, which exits at once.
+    /// group; it inherits stdout and outlives the program, which exits at once with its
+    /// transcript already written.
     #[test]
-    fn a_descendant_outside_the_group_still_hits_the_deadline() {
+    fn a_descendant_outside_the_group_neither_blocks_nor_loses_the_transcript() {
         let wav = wav();
-        let escaped = Settings {
-            timeout: Some(Duration::from_millis(500)),
-            ..sh(
-                r#"/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 3' & printf '{"version":1,"text":"late"}'"#,
-            )
-        };
+        let escaped = sh(
+            r#"/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 3' & printf '{"version":1,"text":"done"}'"#,
+        );
         let started = Instant::now();
-        assert_eq!(format!("{:#}", transcribe(&escaped, &wav.0, 1_000).unwrap_err()), "timeout");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(transcribe(&escaped, &wav.0, 1_000).unwrap().text, "done");
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
