@@ -40,7 +40,7 @@ fn compile_metal_shader(src_rel: &str, name: &str) {
     println!("cargo:rerun-if-changed={}", source.display());
 
     let metal = Command::new("xcrun")
-        .args(["--sdk", "macosx", "metal", "-c", "-mmacosx-version-min=26.0"])
+        .args(["--sdk", "macosx", "metal", "-c", "-mmacosx-version-min=15.0"])
         .arg(&source)
         .arg("-o")
         .arg(&air)
@@ -88,9 +88,17 @@ fn compile_helper() {
     }
     .to_owned();
     let built = out_dir.join("scrawl-helper");
-    let status = Command::new("xcrun")
+    let mut swiftc = Command::new("xcrun");
+    swiftc
         .args(["swiftc", "-O", "-swift-version", "5", "-target"])
-        .arg(format!("{arch}-apple-macos26.0"))
+        .arg(format!("{arch}-apple-macos15.0"));
+    // SpeechAnalyzer and NSGlassEffectView exist only in the macOS 26 SDK. A Command Line Tools
+    // install on macOS 15 has the 15 SDK, so the helper compiles those paths out there and
+    // guards them with `#available` when the SDK has them.
+    if macos_sdk_major() >= 26 {
+        swiftc.args(["-D", "SCRAWL_MACOS26_SDK"]);
+    }
+    let status = swiftc
         .args(&sources)
         .arg("-o")
         .arg(&built)
@@ -108,9 +116,20 @@ fn compile_helper() {
         .expect("xcrun swiftc is required to build scrawl-helper");
     assert!(
         status.success(),
-        "scrawl-helper failed to compile (needs the macOS 26 SDK)"
+        "scrawl-helper failed to compile (needs the macOS 15 SDK or newer)"
     );
     let dest = profile_dir.join("scrawl-helper");
     let _ = std::fs::remove_file(&dest);
     std::fs::copy(&built, dest).expect("Could not place scrawl-helper");
+}
+
+fn macos_sdk_major() -> u32 {
+    Command::new("xcrun")
+        .args(["--sdk", "macosx", "--show-sdk-version"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|version| version.trim().split('.').next()?.parse().ok())
+        .unwrap_or(0)
 }

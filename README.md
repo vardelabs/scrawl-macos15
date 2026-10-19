@@ -6,7 +6,9 @@ Press a shortcut (`⌥⇧S`) and Scrawl starts recording the screen. Talk, click
 
 ## Install
 
-Scrawl needs an Apple silicon Mac on macOS 26 or later. Download the DMG from
+Scrawl needs an Apple silicon Mac on macOS 15 or later. Transcription needs macOS 26 (see
+[Transcription](#transcription)); on macOS 15 a capture keeps its frames, marks and clicks but has
+no transcript. Download the DMG from
 [scrawl.kitlangton.com](https://scrawl.kitlangton.com), or use Homebrew:
 
 ```sh
@@ -662,7 +664,8 @@ daily, at low priority, and logs what it did:
 ## Transcription
 
 Narration is transcribed on device by Apple's SpeechAnalyzer (macOS 26), which reports when every
-word was spoken. The word timings drive two things:
+word was spoken. On macOS 15 the transcriber reports itself unavailable and the bundle's transcript
+source is `offline`. The word timings drive two things:
 
 - **Text per keyframe.** Each keyframe's text runs from the start of the clause in progress when
   its moment began (the action, the transition, or the spoken cue) until the next keyframe, so the

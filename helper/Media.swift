@@ -3,9 +3,14 @@ import CoreGraphics
 import Speech
 
 /// On-device transcription with macOS 26's SpeechAnalyzer: finalized results only, each word with
-/// its own audio time range.
+/// its own audio time range. Older systems get an error, and Scrawl keeps the recording without a
+/// transcript. `SCRAWL_MACOS26_SDK` is set by `build.rs` when the SDK declares these types.
 enum Transcriber {
+  static let unavailable = HelperError("SpeechAnalyzer needs macOS 26 or later")
+
   static func transcribe(_ url: URL) async throws -> [String: Any] {
+    #if SCRAWL_MACOS26_SDK
+    guard #available(macOS 26, *) else { throw unavailable }
     var found = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current)
     if found == nil { found = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "en-US")) }
     guard let locale = found else { throw HelperError("SpeechTranscriber has no supported locale") }
@@ -48,8 +53,13 @@ enum Transcriber {
       "segments": segments,
       "words": words,
     ]
+    #else
+    throw unavailable
+    #endif
   }
 
+  #if SCRAWL_MACOS26_SDK
+  @available(macOS 26, *)
   private static func transcribeSingle(_ url: URL, locale: Locale, offsetMs: Int) async throws -> ([[String: Any]], [[String: Any]]) {
     let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
     let file = try AVAudioFile(forReading: url)
@@ -70,6 +80,7 @@ enum Transcriber {
     withExtendedLifetime(analyzer) {}
     return (segments, words)
   }
+  #endif
 
   private struct WavChunks {
     let dir: URL

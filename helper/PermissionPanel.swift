@@ -550,7 +550,8 @@ extension PermissionPanel {
   /// One card surface: a two-layer shadow, frosted Liquid Glass, and the content clipped to it.
   /// The flight and the docked panel use the same class so the hand-off is pixel for pixel.
   final class CardSurface: NSView {
-    let glass = NSGlassEffectView()
+    /// `NSGlassEffectView` on macOS 26; a blurred `NSVisualEffectView` before it.
+    let glass: NSView
     let clip = NSView()
     let frost = Frost()
     let content: NSView
@@ -561,6 +562,7 @@ extension PermissionPanel {
     init(content: NSView, size: NSSize) {
       self.content = content
       self.contentSize = size
+      self.glass = CardSurface.makeGlass()
       super.init(frame: NSRect(origin: .zero, size: size))
       wantsLayer = true
       layer?.masksToBounds = false
@@ -572,7 +574,6 @@ extension PermissionPanel {
       contact.shadowRadius = 1.5
       contact.shadowOffset = CGSize(width: 0, height: -0.5)
       ambient.shadowOffset = CGSize(width: 0, height: -8)
-      glass.style = .regular
       addSubview(glass)
       clip.wantsLayer = true
       clip.layer?.masksToBounds = true
@@ -589,11 +590,39 @@ extension PermissionPanel {
     @available(*, unavailable)
     required init?(coder _: NSCoder) { fatalError() }
 
+    private static func makeGlass() -> NSView {
+      #if SCRAWL_MACOS26_SDK
+      if #available(macOS 26, *) {
+        let liquid = NSGlassEffectView()
+        liquid.style = .regular
+        return liquid
+      }
+      #endif
+      let blur = NSVisualEffectView()
+      blur.material = .popover
+      blur.blendingMode = .behindWindow
+      blur.state = .active
+      blur.wantsLayer = true
+      blur.layer?.masksToBounds = true
+      blur.layer?.cornerCurve = .continuous
+      return blur
+    }
+
+    private func setGlassRadius(_ radius: CGFloat) {
+      #if SCRAWL_MACOS26_SDK
+      if #available(macOS 26, *), let liquid = glass as? NSGlassEffectView {
+        liquid.cornerRadius = radius
+        return
+      }
+      #endif
+      glass.layer?.cornerRadius = radius
+    }
+
     /// `lift` 0 is docked; 1 is the top of the arc, with a deeper, softer shadow.
     func apply(size: NSSize, radius: CGFloat, lift: CGFloat) {
       let bounds = NSRect(origin: .zero, size: size)
       glass.frame = bounds
-      glass.cornerRadius = radius
+      setGlassRadius(radius)
       clip.frame = bounds
       clip.layer?.cornerRadius = radius
       frost.frame = bounds
