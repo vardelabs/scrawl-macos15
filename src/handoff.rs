@@ -386,6 +386,9 @@ pub struct Config {
     /// Feature flag: shows **Export Last Capture as Video…** in the menu (default off).
     #[serde(default)]
     pub video_export: Option<bool>,
+    /// Mutes the sound output while recording and restores it after (default on; `mute`).
+    #[serde(default)]
+    pub mute_audio: Option<bool>,
     /// Esc discards a running recording, as it cancels the picker (default on). Off for a
     /// keyboard that sends Esc on its own, such as CapsLock-as-Control remaps.
     #[serde(default)]
@@ -656,6 +659,11 @@ pub fn auto_send() -> bool {
 /// either way.
 pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
+}
+
+/// Whether recordings mute the sound output (`muteAudio`, default on; `mute`).
+pub fn mute_audio() -> bool {
+    config().mute_audio.unwrap_or(true)
 }
 
 /// Whether Esc discards a running recording (`escapeCancels`, default on).

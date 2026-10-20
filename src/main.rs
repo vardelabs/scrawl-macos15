@@ -25,6 +25,7 @@ mod keyframes;
 #[cfg(target_os = "macos")]
 mod laser_overlay;
 mod live_transcribe;
+mod mute;
 mod mic;
 mod model;
 mod native;

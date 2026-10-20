@@ -203,6 +203,7 @@ Preview every pane, dark and light, with the recorder listening and a combinatio
   selected; `Esc` cancels. With no iPhone cabled, iPhone says so and releasing records nothing.
 - **Choose What to Record…** in the menu bar: the full picker (Area, Window, Screen, iPhone).
 - `⌥⇧V`: Paste both `contact-sheet.png` and `summary.md` into the active app or terminal (`⌃⌥⇧V` also works while it's the default)
+- **Sound**: the Mac's sound output is muted while a recording runs and unmuted when it finishes or is cancelled, unless it was muted already (Scrawl records the microphone, not the system's sound). `"muteAudio": false` in `~/.config/scrawl/config.json` turns it off
 - **Normal pointer**: Clicks and scrolls pass straight through to the app underneath
 - **Hold `⇧` (Shift) + move**: Draw a persistent red marker stroke (`#ff3b30`) on screen that fades out after release
 - **`⇧`-click**: Drop a numbered pin where you click (a press that moves under 12 pt and lets go within 1 s; longer is ink)
