@@ -66,6 +66,13 @@ impl Engine {
     }
 }
 
+/// The on-device engine's name in menus: Apple's SpeechAnalyzer on macOS; on Windows, Parakeet
+/// through `transcribe.cpp` (`crate::win::speech`). Both are `Engine::Apple` in the config.
+#[cfg(target_os = "macos")]
+pub const LOCAL_ENGINE_TITLE: &str = "Apple Speech";
+#[cfg(not(target_os = "macos"))]
+pub const LOCAL_ENGINE_TITLE: &str = "Parakeet (on this PC)";
+
 static OVERRIDE: AtomicU8 = AtomicU8::new(0);
 static LOGGED_NOT_CONNECTED: std::sync::Once = std::sync::Once::new();
 static LOGGED_NO_COMMAND: std::sync::Once = std::sync::Once::new();
@@ -193,7 +200,7 @@ fn run(
             Ok(Some(transcript)) => return transcript,
             Ok(None) => {}
             Err(error) => crate::capture::scrawl_log(format!(
-                "{} transcription failed, using Apple Speech: {error:#}",
+                "{} transcription failed, using {LOCAL_ENGINE_TITLE}: {error:#}",
                 engine.title()
             )),
         }
@@ -217,7 +224,7 @@ fn try_hex(audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
     let not_connected = |reason: String| {
         LOGGED_NOT_CONNECTED.call_once(|| {
             crate::capture::scrawl_log(format!(
-                "Hex preferred but unavailable ({reason}); using Apple Speech"
+                "Hex preferred but unavailable ({reason}); using {LOCAL_ENGINE_TITLE}"
             ));
         });
         Ok(None)
@@ -236,7 +243,7 @@ fn try_hex(audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
 
 fn apple(wav: &Path) -> TranscriptData {
     let transcript = crate::helper::transcribe(wav).unwrap_or_else(|error| {
-        crate::capture::scrawl_log(format!("SpeechAnalyzer failed: {error:#}"));
+        crate::capture::scrawl_log(format!("{LOCAL_ENGINE_TITLE} failed: {error:#}"));
         TranscriptData {
             source: "offline".into(),
             missing: Some(crate::model::MissingTranscript {

@@ -1,20 +1,28 @@
 mod agent_context;
 mod audio;
 mod autocrop;
+// Windows looks elements up through UI Automation (`win/uia.rs`); other systems have no lookup.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    path = "ax_other.rs"
+)]
 mod ax;
 mod autocrop_lab;
 mod capture;
+#[cfg_attr(target_os = "windows", path = "win/command_line.rs")]
 mod command_line;
 mod command_transcriber;
 mod delivery;
 mod export;
 mod handoff;
+#[cfg_attr(target_os = "windows", path = "win/helper.rs")]
 mod helper;
 mod hex;
 mod hold;
 mod icons;
 mod inbox;
 mod keyframes;
+#[cfg(target_os = "macos")]
 mod laser_overlay;
 mod live_transcribe;
 mod mute;
@@ -22,6 +30,7 @@ mod mic;
 mod model;
 mod native;
 mod onboarding;
+mod onboarding_window;
 mod page;
 mod phone;
 mod render;
@@ -29,12 +38,16 @@ mod retention;
 mod routing;
 mod screens;
 mod settings;
+mod settings_window;
 mod sketch;
+#[cfg(target_os = "macos")]
 mod sparkle;
 mod speech_model;
 mod transcribe;
 mod ui;
 mod web;
+#[cfg(target_os = "windows")]
+mod win;
 mod windows;
 mod zoom;
 
@@ -44,13 +57,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 
-use crate::capture::{ScreenCaptureSession, discover_target, write_bundle_artifacts};
 use crate::audio::{AudioRecorder, RecordedAudio};
+use crate::capture::{ScreenCaptureSession, discover_target, write_bundle_artifacts};
 use crate::keyframes::select_keyframes;
 use crate::model::{
-    CaptureMode, DeviceInfo, InteractionEvent, Mark, RgbaFrame, SCALE, ScrawlBundle, Shape,
-    Stroke, TargetFrame, TargetInfo, TranscriptData, TranscriptSegment, WordTiming,
-    keyframe_budget, parse_clock_ms,
+    CaptureMode, DeviceInfo, InteractionEvent, Mark, RgbaFrame, SCALE, ScrawlBundle, Shape, Stroke,
+    TargetFrame, TargetInfo, TranscriptData, TranscriptSegment, WordTiming, keyframe_budget,
+    parse_clock_ms,
 };
 use crate::render::{render_contact_sheet, render_synthetic_demo_frame};
 use crate::sketch::{marks_of, summary_markdown};
@@ -91,7 +104,7 @@ fn hex_status() {
                 if preferred == transcribe::Engine::Command && command_ready {
                     "Command"
                 } else {
-                    "Apple Speech"
+                    transcribe::LOCAL_ENGINE_TITLE
                 }
             );
             return;
@@ -116,7 +129,7 @@ fn hex_status() {
         match (preferred, chosen) {
             (transcribe::Engine::Hex, Some(model)) => format!("Hex ({model})"),
             (transcribe::Engine::Command, _) if command_ready => "Command".to_owned(),
-            _ => "Apple Speech".to_owned(),
+            _ => transcribe::LOCAL_ENGINE_TITLE.to_owned(),
         }
     );
 }
@@ -681,7 +694,10 @@ pub fn prepare_visuals(
                 scope.spawn(move || render::encode_png(frame).ok().map(|b| (kf.file.clone(), b)))
             })
             .collect();
-        workers.into_iter().map(|w| w.join().ok().flatten()).collect::<Option<Vec<_>>>()
+        workers
+            .into_iter()
+            .map(|w| w.join().ok().flatten())
+            .collect::<Option<Vec<_>>>()
     })?;
     let (autocrop, full_sheet_png, full_frame_pngs) = match (cropped, full_sheet) {
         (Some((info, full)), Some(sheet)) => {
@@ -812,7 +828,9 @@ pub fn finalize_capture_bundle(
     note: Option<String>,
     activity: windows::ActivityLog,
 ) -> Result<(PathBuf, ScrawlBundle, String)> {
-    let started_at = activity.stop_started.unwrap_or_else(std::time::Instant::now);
+    let started_at = activity
+        .stop_started
+        .unwrap_or_else(std::time::Instant::now);
     let stop_ms = activity.stop_ms;
     let capture::ScreenRecording {
         frames,
@@ -1442,7 +1460,9 @@ fn main() -> Result<()> {
         Some(command) => command,
         // `scrawl` typed in a terminal (on PATH through Settings › Agents or Homebrew) would
         // start a second menu-bar app. macOS opens the app with stdin on /dev/null.
-        None if std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+        // On Windows `scrawl.exe` is a console program and Explorer gives it a console too, so a
+        // bare launch always starts the app.
+        None if cfg!(target_os = "macos") && std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
             <Cli as clap::CommandFactory>::command().print_help()?;
             return Ok(());
         }
@@ -1453,6 +1473,11 @@ fn main() -> Result<()> {
     };
     match command {
         Command::App { record, iphone } => {
+            #[cfg(target_os = "windows")]
+            {
+                win::shell::release_own_console();
+                win::shell::wait_for_relauncher();
+            }
             ui::run_app(None, record, iphone, None);
             Ok(())
         }
@@ -1744,7 +1769,10 @@ fn main() -> Result<()> {
                 let median = sorted[sorted.len() / 2];
                 eprintln!(
                     "BENCH_FINISH runs_ms={:?} median_ms={:.1}",
-                    runs_ms.iter().map(|v| (*v * 10.0).round() / 10.0).collect::<Vec<_>>(),
+                    runs_ms
+                        .iter()
+                        .map(|v| (*v * 10.0).round() / 10.0)
+                        .collect::<Vec<_>>(),
                     median
                 );
                 return Ok(());
@@ -2099,7 +2127,7 @@ fn main() -> Result<()> {
             let page = autocrop_lab::export(&dir, &loaded)?;
             println!("{}", page.display());
             if open {
-                std::process::Command::new("open").arg(&page).status()?;
+                handoff::open_path(&page)?;
             }
             Ok(())
         }
@@ -2209,8 +2237,7 @@ fn main() -> Result<()> {
                 handoff::copy_bundle_to_clipboard(&dir)?;
                 println!("Copied {} to clipboard", dir.display());
             } else {
-                let target_session =
-                    handoff::send_to_opencode(&dir, session.as_deref(), reroute)?;
+                let target_session = handoff::send_to_opencode(&dir, session.as_deref(), reroute)?;
                 println!(
                     "Sent {} to OpenCode session {target_session}",
                     dir.display()
