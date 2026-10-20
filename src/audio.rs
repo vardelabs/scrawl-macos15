@@ -13,6 +13,8 @@ pub struct RecordedAudio {
     pub wav_bytes: Vec<u8>,
     /// The transcription that ran while recording, if one did (`live_transcribe`).
     pub live: crate::live_transcribe::Slot,
+    /// The command transcriber started with the recording, if `transcribePrestart` is on.
+    pub prestarted: crate::transcribe::PrestartSlot,
 }
 
 pub struct AudioRecorder {
@@ -21,6 +23,7 @@ pub struct AudioRecorder {
     samples: Arc<Mutex<Vec<f32>>>,
     error: Arc<Mutex<Option<String>>>,
     live: Option<crate::live_transcribe::Live>,
+    prestarted: Option<crate::command_transcriber::Prestarted>,
 }
 
 impl AudioRecorder {
@@ -59,6 +62,7 @@ impl AudioRecorder {
             samples,
             error,
             live,
+            prestarted: crate::transcribe::prestart(),
         })
     }
 
@@ -194,6 +198,7 @@ impl AudioRecorder {
             duration_ms,
             wav_bytes,
             live: crate::live_transcribe::Slot::new(self.live.take()),
+            prestarted: crate::transcribe::PrestartSlot::new(self.prestarted.take()),
         })
     }
 }
@@ -278,6 +283,7 @@ pub fn recorded_audio_from_wav(wav_bytes: Vec<u8>) -> Result<RecordedAudio> {
         duration_ms: sample_count as u64 * 1_000 / u64::from(SAMPLE_RATE),
         wav_bytes,
         live: Default::default(),
+        prestarted: Default::default(),
     })
 }
 
@@ -407,6 +413,7 @@ mod tests {
             samples,
             error: Arc::new(Mutex::new(None)),
             live: None,
+            prestarted: None,
         }
         .stop()
         .unwrap();
@@ -427,6 +434,7 @@ mod tests {
             samples: Arc::new(Mutex::new(samples)),
             error: Arc::new(Mutex::new(Some("Device disconnected".into()))),
             live: None,
+            prestarted: None,
         };
         assert_eq!(recorder(vec![0.1; 160]).stop().unwrap().sample_count, 160);
         assert!(recorder(Vec::new()).stop().is_err());
@@ -440,6 +448,7 @@ mod tests {
             samples: Arc::new(Mutex::new(Vec::new())),
             error: Arc::new(Mutex::new(None)),
             live: None,
+            prestarted: None,
         };
         assert!(
             recorder

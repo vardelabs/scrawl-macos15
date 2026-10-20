@@ -41,12 +41,18 @@ const END_SLACK_MS: u64 = 500;
 pub struct Settings {
     pub command: Vec<String>,
     pub timeout: Option<Duration>,
+    /// Start the program when the recording begins (`transcribePrestart`, see `Prestarted`).
+    pub prestart: bool,
 }
 
 /// The usable form of the config keys: a non-empty argv whose first entry is an absolute path
 /// (the app runs without the user's shell `PATH`), and a timeout only when it is positive,
 /// capped at a day.
-pub fn settings(command: Option<&[String]>, timeout_seconds: Option<u64>) -> Option<Settings> {
+pub fn settings(
+    command: Option<&[String]>,
+    timeout_seconds: Option<u64>,
+    prestart: bool,
+) -> Option<Settings> {
     let command = command?.to_vec();
     if !command.first().is_some_and(|program| program.starts_with('/')) {
         return None;
@@ -56,6 +62,7 @@ pub fn settings(command: Option<&[String]>, timeout_seconds: Option<u64>) -> Opt
         timeout: timeout_seconds
             .filter(|&seconds| seconds > 0)
             .map(|seconds| Duration::from_secs(seconds.min(MAX_TIMEOUT_SECONDS))),
+        prestart,
     })
 }
 
@@ -241,25 +248,86 @@ pub fn parse_output(stdout: &[u8], audio_ms: u64) -> Result<TranscriptData> {
 }
 
 #[cfg(unix)]
-/// Runs the program on `wav` in its own process group and reads its transcript. The group is
-/// killed on timeout, and again once the program exits, so a wrapper's leftover model process
-/// dies with it and the deadline bounds the whole run either way.
-pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<TranscriptData> {
+fn spawn(argv: &[OsString], wav: &Path, prestart: bool) -> Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
-    let argv = argv(&settings.command, wav);
-    let mut child = Command::new(&argv[0])
+    let mut command = Command::new(&argv[0]);
+    command
         .args(&argv[1..])
         .env("SCRAWL_TRANSCRIBE_VERSION", "1")
         .env("SCRAWL_AUDIO", wav)
-        .stdin(Stdio::null())
+        .stdin(if prestart { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .process_group(0)
+        .process_group(0);
+    if prestart {
+        command.env("SCRAWL_PRESTART", "1");
+    }
+    command
         .spawn()
-        .map_err(|error| anyhow::anyhow!("could not start the program ({})", error.kind()))?;
+        .map_err(|error| anyhow::anyhow!("could not start the program ({})", error.kind()))
+}
+
+#[cfg(unix)]
+/// Runs the program on `wav` in its own process group and reads its transcript.
+pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<TranscriptData> {
+    let child = spawn(&argv(&settings.command, wav), wav, false)?;
+    collect(child, timeout(settings.timeout, audio_ms), audio_ms)
+}
+
+/// A transcriber started when the recording began, with `"-"` for the audio and
+/// `SCRAWL_PRESTART=1`, so its model loads while the user talks. `finish` sends it the WAV's
+/// path on stdin; dropping it unused (a cancelled recording) kills its group.
+#[cfg(unix)]
+pub struct Prestarted {
+    child: Option<std::process::Child>,
+    timeout: Option<Duration>,
+}
+
+#[cfg(unix)]
+pub fn prestart(settings: &Settings) -> Result<Prestarted> {
+    let pending = Path::new("-");
+    Ok(Prestarted {
+        child: Some(spawn(&argv(&settings.command, pending), pending, true)?),
+        timeout: settings.timeout,
+    })
+}
+
+#[cfg(unix)]
+impl Prestarted {
+    pub fn finish(mut self, wav: &Path, audio_ms: u64) -> Result<TranscriptData> {
+        use std::io::Write;
+        let mut child = self.child.take().expect("a Prestarted holds its child until finish");
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        // A program that already died fails the write; `collect` then reports how it exited.
+        let _ = writeln!(stdin, "{}", wav.display());
+        drop(stdin);
+        collect(child, timeout(self.timeout, audio_ms), audio_ms)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Prestarted {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            kill_group(child.id() as libc::pid_t);
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+}
+
+/// The group is killed on timeout, and again once the program exits, so a wrapper's leftover
+/// model process dies with it and the deadline bounds the whole run either way.
+#[cfg(unix)]
+fn collect(
+    mut child: std::process::Child,
+    limit: Duration,
+    audio_ms: u64,
+) -> Result<TranscriptData> {
     let stdout = child.stdout.take().expect("stdout was piped");
     let pid = child.id() as libc::pid_t;
-    let deadline = Instant::now() + timeout(settings.timeout, audio_ms);
+    let deadline = Instant::now() + limit;
     let (sender, receiver) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let reader_stop = Arc::clone(&stop);
@@ -328,6 +396,21 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
 
 /// Elsewhere the runner's process-group and pipe handling don't exist, so the engine says so
 /// and the caller falls back to the local engine.
+#[cfg(not(unix))]
+pub struct Prestarted;
+
+#[cfg(not(unix))]
+pub fn prestart(_settings: &Settings) -> Result<Prestarted> {
+    bail!("the command transcriber runs on macOS only")
+}
+
+#[cfg(not(unix))]
+impl Prestarted {
+    pub fn finish(self, _wav: &Path, _audio_ms: u64) -> Result<TranscriptData> {
+        bail!("the command transcriber runs on macOS only")
+    }
+}
+
 #[cfg(not(unix))]
 pub fn transcribe(_settings: &Settings, _wav: &Path, _audio_ms: u64) -> Result<TranscriptData> {
     bail!("the command transcriber runs on macOS only")
@@ -429,6 +512,7 @@ mod tests {
         Settings {
             command: strings(&["/bin/sh", "-c", script]),
             timeout: Some(Duration::from_secs(10)),
+            prestart: false,
         }
     }
 
@@ -457,15 +541,15 @@ mod tests {
 
     #[test]
     fn settings_need_an_absolute_program_and_a_positive_timeout() {
-        assert_eq!(settings(None, None), None);
-        assert_eq!(settings(Some(&[]), None), None);
-        assert_eq!(settings(Some(&strings(&["whisper"])), None), None);
-        let ok = settings(Some(&strings(&["/usr/local/bin/whisper", "--fast"])), Some(0)).unwrap();
+        assert_eq!(settings(None, None, false), None);
+        assert_eq!(settings(Some(&[]), None, false), None);
+        assert_eq!(settings(Some(&strings(&["whisper"])), None, false), None);
+        let ok = settings(Some(&strings(&["/usr/local/bin/whisper", "--fast"])), Some(0), false).unwrap();
         assert_eq!(ok.command, strings(&["/usr/local/bin/whisper", "--fast"]));
         assert_eq!(ok.timeout, None);
-        let timed = settings(Some(&strings(&["/bin/true"])), Some(90)).unwrap();
+        let timed = settings(Some(&strings(&["/bin/true"])), Some(90), false).unwrap();
         assert_eq!(timed.timeout, Some(Duration::from_secs(90)));
-        let absurd = settings(Some(&strings(&["/bin/true"])), Some(u64::MAX)).unwrap();
+        let absurd = settings(Some(&strings(&["/bin/true"])), Some(u64::MAX), false).unwrap();
         assert_eq!(absurd.timeout, Some(Duration::from_secs(MAX_TIMEOUT_SECONDS)));
         assert!(std::time::Instant::now().checked_add(absurd.timeout.unwrap()).is_some());
     }
@@ -610,6 +694,36 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_prestarted_program_gets_the_audio_on_stdin() {
+        let wav = wav();
+        let script = r#"test "$SCRAWL_PRESTART" = 1 && test "$1" = - && read -r audio && test -f "$audio" && printf '{"version":1,"model":"m","text":"early"}'"#;
+        let settings = sh(script);
+        let settings = Settings {
+            command: [settings.command, strings(&["sh", "{audio}"])].concat(),
+            prestart: true,
+            ..settings
+        };
+        let prestarted = prestart(&settings).unwrap();
+        let transcript = prestarted.finish(&wav.0, 1_000).unwrap();
+        assert_eq!(transcript.text, "early");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_prestart_is_killed() {
+        let prestarted = prestart(&Settings { prestart: true, ..sh("sleep 30") }).unwrap();
+        let pid = prestarted.child.as_ref().unwrap().id() as libc::pid_t;
+        drop(prestarted);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only asks whether the process still exists.
+        while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the cancelled transcriber still runs");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn failures_are_short_reasons_without_program_output() {
         let wav = wav();
         let crash = transcribe(&sh("echo spoken words; exit 3"), &wav.0, 1_000).unwrap_err();
@@ -636,6 +750,7 @@ mod tests {
             &Settings {
                 command: strings(&["/nonexistent/transcriber"]),
                 timeout: None,
+                prestart: false,
             },
             &wav.0,
             1_000,
