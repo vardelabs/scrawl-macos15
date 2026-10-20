@@ -92,9 +92,16 @@ PLIST
 # keychain still gives every rebuild the same identity, so macOS keeps its permission grants.
 # An ad hoc signature changes with each build, and the grants stop applying.
 LOCAL_SIGN_ID="Scrawl Local Signing"
+# `find-identity -v` hides an untrusted self-signed identity, so the local one is found without
+# it and checked for expiry here instead; an expired one falls back to ad hoc.
+local_identity_usable() {
+  security find-identity -p codesigning 2>/dev/null | grep -q "\"${LOCAL_SIGN_ID}\"" &&
+    security find-certificate -c "${LOCAL_SIGN_ID}" -p 2>/dev/null |
+    /usr/bin/openssl x509 -noout -checkend 0 >/dev/null 2>&1
+}
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "${SIGN_ID}"; then
   IDENTITY="${SIGN_ID}"
-elif security find-identity -p codesigning 2>/dev/null | grep -q "\"${LOCAL_SIGN_ID}\""; then
+elif local_identity_usable; then
   IDENTITY="${LOCAL_SIGN_ID}"
 else
   IDENTITY="-"
