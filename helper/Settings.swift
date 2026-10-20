@@ -126,7 +126,7 @@ struct SettingsState: Decodable, Equatable {
   ]
   var microphone = SettingsMicrophone()
   var transcriber = SettingsTranscriber()
-  var playbackMode = "unchanged"
+  var playbackMode = "mute"
   var playbackLevel = 20
   var videoExport = false
   var tapChooses = false

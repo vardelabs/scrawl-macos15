@@ -47,7 +47,7 @@ pub fn warm_up() {
 impl Guard {
     pub fn start() -> Option<Self> {
         let config = crate::handoff::load_config_from(&crate::handoff::default_config_path());
-        let percent = level(config.playback_mode.as_deref(), config.playback_level)?;
+        let percent = level(Some(crate::handoff::playback_mode_in(&config)), config.playback_level)?;
         match command(Some(&format!("start {percent}"))) {
             Ok(()) => Some(Self),
             Err(error) => {

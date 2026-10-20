@@ -1222,10 +1222,7 @@ impl Panel {
                 self.inputs.as_ref(),
                 self.status(Permission::Microphone) == Status::Granted,
             ),
-            playback_mode: config
-                .playback_mode
-                .clone()
-                .unwrap_or_else(|| "unchanged".into()),
+            playback_mode: crate::handoff::playback_mode_in(&config).into(),
             playback_level: config.playback_level.unwrap_or(20).min(100),
             transcriber: TranscriberView {
                 engine: if menu.hex_checked {
@@ -2103,7 +2100,7 @@ mod tests {
             )
         };
         assert!(panel.view(&host).auto_send);
-        assert_eq!(panel.view(&host).playback_mode, "unchanged");
+        assert_eq!(panel.view(&host).playback_mode, "mute");
         assert_eq!(panel.view(&host).playback_level, 20);
         set(&mut panel, &mut host, "playbackMode", "lower".into());
         set(&mut panel, &mut host, "playbackLevel", 35.into());

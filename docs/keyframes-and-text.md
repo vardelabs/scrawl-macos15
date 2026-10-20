@@ -45,6 +45,7 @@ To compare a summary experiment on real captures, `scripts/agent-eval.sh [--expe
 ## Playback during recording
 
 Settings › Recording › Playback during recording is always available. `playbackMode`
-is `unchanged` (default), `mute`, or `lower`; `playbackLevel` is 0–100 percent of the
+is `mute` (this fork's default), `lower`, or `unchanged`; an older `"muteAudio": false`
+with no `playbackMode` reads as `unchanged`. `playbackLevel` is 0–100 percent of the
 current output volume (default 20). Applies to Mac recordings and cabled iPhone
 recordings, not preview or imported bundles. See `docs/onboarding-and-settings.md`.
