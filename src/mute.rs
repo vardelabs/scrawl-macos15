@@ -6,13 +6,58 @@
 //! `config.json`.
 
 use std::process::Command;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+use std::sync::mpsc::{Sender, channel};
 
-/// Scrawl muted the output and has not unmuted it yet.
-static MUTED_BY_US: AtomicBool = AtomicBool::new(false);
-/// Mute and unmute run in order, so a quick start and stop can't unmute before the mute lands.
-static ORDER: Mutex<()> = Mutex::new(());
+#[derive(Clone, Copy)]
+enum Op {
+    Mute,
+    Restore,
+}
+
+/// One worker runs every mute and restore in the order they were asked for, so a quick start
+/// and stop can never unmute before the mute has landed.
+fn worker() -> Option<&'static Sender<Op>> {
+    static WORKER: OnceLock<Option<Sender<Op>>> = OnceLock::new();
+    WORKER
+        .get_or_init(|| {
+            let (sender, receiver) = channel::<Op>();
+            std::thread::Builder::new()
+                .name("scrawl-mute".into())
+                .spawn(move || {
+                    let mut muted_by_us = false;
+                    for op in receiver {
+                        muted_by_us = apply(op, muted_by_us);
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        })
+        .as_ref()
+}
+
+/// Runs one op and returns whether Scrawl's mute is still in place afterwards. A failed
+/// unmute keeps it, so the next restore tries again.
+fn apply(op: Op, muted_by_us: bool) -> bool {
+    match op {
+        Op::Mute => {
+            let state = osascript(READ_MUTED);
+            if !should_mute(muted_by_us, state.as_deref()) || osascript(MUTE).is_none() {
+                return muted_by_us;
+            }
+            crate::capture::scrawl_log("Mute: sound output muted for the recording".to_owned());
+            true
+        }
+        Op::Restore if muted_by_us => {
+            if osascript(UNMUTE).is_none() {
+                return true;
+            }
+            crate::capture::scrawl_log("Mute: sound output restored".to_owned());
+            false
+        }
+        Op::Restore => false,
+    }
+}
 
 const READ_MUTED: &str = "output muted of (get volume settings)";
 const MUTE: &str = "set volume with output muted";
@@ -36,27 +81,16 @@ pub fn mute() {
     if !crate::handoff::mute_audio() {
         return;
     }
-    let _ = std::thread::Builder::new().name("scrawl-mute".into()).spawn(|| {
-        let _order = ORDER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = osascript(READ_MUTED);
-        if !should_mute(MUTED_BY_US.load(Ordering::Acquire), state.as_deref()) {
-            return;
-        }
-        if osascript(MUTE).is_some() {
-            MUTED_BY_US.store(true, Ordering::Release);
-            crate::capture::scrawl_log("Mute: sound output muted for the recording".to_owned());
-        }
-    });
+    if let Some(worker) = worker() {
+        let _ = worker.send(Op::Mute);
+    }
 }
 
 /// When a recording finishes or is cancelled: unmutes only what `mute` muted.
 pub fn restore() {
-    let _ = std::thread::Builder::new().name("scrawl-unmute".into()).spawn(|| {
-        let _order = ORDER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if MUTED_BY_US.swap(false, Ordering::AcqRel) && osascript(UNMUTE).is_some() {
-            crate::capture::scrawl_log("Mute: sound output restored".to_owned());
-        }
-    });
+    if let Some(worker) = worker() {
+        let _ = worker.send(Op::Restore);
+    }
 }
 
 #[cfg(test)]
