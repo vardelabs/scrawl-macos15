@@ -609,6 +609,8 @@ struct ShortcutRecorder: View {
   @ObservedObject var model: SettingsModel
   let shortcut: SettingsShortcut
   var tapChooses = false
+  /// A setting that belongs to this shortcut, drawn in the same box under its keys.
+  var footer: AnyView? = nil
 
   var body: some View {
     let live = shortcut.recording ? model.liveModifiers : []
@@ -628,29 +630,35 @@ struct ShortcutRecorder: View {
         .opacity(shortcut.isDefault || shortcut.recording ? 0 : 1)
         .disabled(shortcut.isDefault || shortcut.recording)
       }
-      Button {
-        if shortcut.recording {
-          model.act("cancel-shortcut")
-        } else {
-          model.act("record-shortcut", ["kind": shortcut.kind])
+      VStack(spacing: 0) {
+        Button {
+          if shortcut.recording {
+            model.act("cancel-shortcut")
+          } else {
+            model.act("record-shortcut", ["kind": shortcut.kind])
+          }
+        } label: {
+          HStack(spacing: 6) {
+            SettingsKeycap(glyph: "⇧", lit: lit(shortcut.shift, .shift))
+            SettingsKeycap(glyph: "⌃", name: "ctrl", lit: lit(shortcut.control, .control))
+            SettingsKeycap(glyph: "⌥", name: "opt", lit: lit(shortcut.option, .option))
+            SettingsKeycap(glyph: "⌘", name: "cmd", lit: lit(shortcut.command, .command))
+            SettingsKeycap(glyph: shortcut.recording ? "…" : shortcut.key, lit: !shortcut.recording, center: true)
+          }
+          .padding(7)
+          .contentShape(Rectangle())
         }
-      } label: {
-        HStack(spacing: 6) {
-          SettingsKeycap(glyph: "⇧", lit: lit(shortcut.shift, .shift))
-          SettingsKeycap(glyph: "⌃", name: "ctrl", lit: lit(shortcut.control, .control))
-          SettingsKeycap(glyph: "⌥", name: "opt", lit: lit(shortcut.option, .option))
-          SettingsKeycap(glyph: "⌘", name: "cmd", lit: lit(shortcut.command, .command))
-          SettingsKeycap(glyph: shortcut.recording ? "…" : shortcut.key, lit: !shortcut.recording, center: true)
+        .buttonStyle(.plain)
+        if let footer {
+          SettingsSeparator()
+          footer
         }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: SettingsMetrics.radius + 2, style: .continuous).fill(theme.group))
-        .overlay(
-          RoundedRectangle(cornerRadius: SettingsMetrics.radius + 2, style: .continuous)
-            .strokeBorder(shortcut.recording ? theme.accent : theme.groupLine, lineWidth: shortcut.recording ? 1.5 : 1)
-        )
-        .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .background(RoundedRectangle(cornerRadius: SettingsMetrics.radius + 2, style: .continuous).fill(theme.group))
+      .overlay(
+        RoundedRectangle(cornerRadius: SettingsMetrics.radius + 2, style: .continuous)
+          .strokeBorder(shortcut.recording ? theme.accent : theme.groupLine, lineWidth: shortcut.recording ? 1.5 : 1)
+      )
       ZStack(alignment: .leading) {
         SettingsCaption(text: caption, error: shortcut.error != nil && !shortcut.recording)
           .id(caption)
@@ -815,14 +823,13 @@ struct SettingsView: View {
         SettingsCaption(text: "Launch at login works in the installed Scrawl.app.")
       }
       ForEach(state.shortcuts) { shortcut in
-        ShortcutRecorder(model: model, shortcut: shortcut, tapChooses: state.tapChooses)
-        if shortcut.kind == "record" {
-          SettingsGroup {
-            SettingsRow(title: "Tap opens the picker") {
-              SettingsSwitch(on: state.tapChooses) { model.set("tapChooses", $0) }
-            }
-          }
-        }
+        ShortcutRecorder(
+          model: model, shortcut: shortcut, tapChooses: state.tapChooses,
+          footer: shortcut.kind == "record"
+            ? AnyView(SettingsRow(title: "Tap opens the picker") {
+                SettingsSwitch(on: state.tapChooses) { model.set("tapChooses", $0) }
+              })
+            : nil)
       }
     }
   }

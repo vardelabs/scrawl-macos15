@@ -872,9 +872,6 @@ fn display_of(screens: &[crate::screens::Screen], rect: [f64; 4]) -> (u32, f64) 
     )
 }
 
-/// `scrawl-helper`'s windows (Settings, onboarding) are Scrawl's own, not something to record.
-const HELPER_BUNDLE_ID: &str = "dev.kitlangton.scrawl.helper";
-
 /// Lists all on-screen normal (`window_layer == 0`) windows in front-to-back order for the Window picker.
 pub fn list_selectable_windows() -> Vec<TargetInfo> {
     let Ok(content) = SCShareableContent::get() else {
@@ -903,9 +900,9 @@ pub fn list_selectable_windows() -> Vec<TargetInfo> {
                 && f.size.width >= 80.0
                 && f.size.height >= 80.0
                 && z_order.contains_key(&w.window_id())
-                && w.owning_application().as_ref().is_some_and(|a| {
-                    a.process_id() != our_pid && a.bundle_identifier() != HELPER_BUNDLE_ID
-                })
+                // Scrawl's own overlay and pill. The helper's windows (Settings, onboarding)
+                // are fair to record, and its invisible ones fail the alpha check above.
+                && w.owning_application().as_ref().is_some_and(|a| a.process_id() != our_pid)
         })
         .collect();
     windows.sort_by_key(|w| z_order.get(&w.window_id()).copied().unwrap_or(usize::MAX));
