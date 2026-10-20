@@ -688,6 +688,11 @@ source is `offline`. The word timings drive two things:
   "there" count only when they coincide with a change, because they are usually filler. Speech
   pauses never cut keyframes.
 
+Every engine's transcript loses its spoken fillers before it is used: "um", "uh" and their
+variants always, and "like" where commas mark it as an aside ("it's, like, nice" or a leading
+"Like,"). A dropped filler's full stop moves to the word before it, and a sentence that started
+with one starts at the next word. `"removeFillers": false` keeps the transcript as spoken.
+
 ### Apple or Hex
 
 Apple's SpeechAnalyzer is the default and needs nothing. If you use Hex

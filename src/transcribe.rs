@@ -156,10 +156,14 @@ pub fn transcribe(wav: Option<&Path>, audio: Option<&RecordedAudio>) -> Transcri
         Engine::Command => try_command(wav, audio),
         Engine::Apple => Ok(None),
     };
-    run(engine, external, || {
+    let mut transcript = run(engine, external, || {
         live.and_then(|live| finish_live(live, audio))
             .unwrap_or_else(|| apple(wav))
-    })
+    });
+    if crate::handoff::remove_fillers() {
+        crate::fillers::clean(&mut transcript);
+    }
+    transcript
 }
 
 /// The transcript made while recording, or `None` (logged) to transcribe the WAV instead.
