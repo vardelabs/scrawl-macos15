@@ -386,6 +386,10 @@ pub struct Config {
     /// Feature flag: shows **Export Last Capture as Video…** in the menu (default off).
     #[serde(default)]
     pub video_export: Option<bool>,
+    /// A tap of the record shortcut opens the picker instead of recording the whole screen;
+    /// holding it still switches modes (default off).
+    #[serde(default)]
+    pub tap_chooses: Option<bool>,
     /// Mutes the sound output while recording and restores it after (default on; `mute`).
     #[serde(default)]
     pub mute_audio: Option<bool>,
@@ -659,6 +663,11 @@ pub fn auto_send() -> bool {
 /// either way.
 pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
+}
+
+/// Whether a tap of the record shortcut opens the picker (`tapChooses`, default off).
+pub fn tap_chooses() -> bool {
+    config().tap_chooses.unwrap_or(false)
 }
 
 /// Whether recordings mute the sound output (`muteAudio`, default on; `mute`).

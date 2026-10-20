@@ -1224,6 +1224,8 @@ impl ScrawlCoordinator {
         }
         match action {
             Action::None => {}
+            // On a large screen a full-screen capture costs the most, so a tap can pick instead.
+            Action::RecordScreen if crate::handoff::tap_chooses() => self.begin_target_selection(cx),
             Action::RecordScreen => self.record_screen_now(cx),
             Action::Open(mode) => {
                 self.open_picker(Some(SelectionMode::Screen), true, cx);
@@ -1232,6 +1234,16 @@ impl ScrawlCoordinator {
                 }
             }
             Action::Show(mode) => self.show_switcher_mode(mode, cx),
+            // A tap that ran a little long reads as a short hold on Screen: it still chooses. The
+            // mode on screen decides, as in `commit_switcher`: a chip clicked during the hold
+            // changes it without the switcher knowing.
+            Action::Commit(mode)
+                if crate::handoff::tap_chooses()
+                    && self.selection_mode().unwrap_or(mode) == SelectionMode::Screen =>
+            {
+                self.cancel_recording(cx);
+                self.begin_target_selection(cx);
+            }
             Action::Commit(mode) => self.commit_switcher(mode, cx),
             Action::Cancel => {
                 if self.is_selecting() {
