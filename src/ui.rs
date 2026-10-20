@@ -3893,58 +3893,6 @@ fn mode_segment_level(mode: SelectionMode, level: f32) -> gpui::Stateful<Div> {
         .child(mode.label())
 }
 
-/// CleanShot-style floating camera cursor rendered at `(x, y)` in `SelectionMode::Window`.
-fn camera_cursor_badge(x: f32, y: f32) -> Div {
-    div()
-        .absolute()
-        .left(px(x - 20.0))
-        .top(px(y - 20.0))
-        .size(px(40.0))
-        .rounded_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .bg(rgba(0x161619eb))
-        .border_1()
-        .border_color(rgba(0xffffff38))
-        .shadow(vec![BoxShadow {
-            color: gpui::hsla(0.0, 0.0, 0.0, 0.45),
-            offset: point(px(0.0), px(3.0)),
-            blur_radius: px(10.0),
-            spread_radius: px(0.0),
-        }])
-        .child(
-            // Top viewfinder hump
-            div()
-                .w(px(9.0))
-                .h(px(2.5))
-                .rounded_t(px(1.5))
-                .bg(rgb(0xf5f5f7)),
-        )
-        .child(
-            // Camera body + lens
-            div()
-                .w(px(21.0))
-                .h(px(14.5))
-                .rounded(px(3.5))
-                .bg(rgb(0xf5f5f7))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .size(px(9.0))
-                        .rounded_full()
-                        .bg(rgb(0x161619))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(div().size(px(4.5)).rounded_full().bg(rgb(0xf5f5f7))),
-                ),
-        )
-}
-
 pub struct TargetPickerWindow {
     coordinator: Entity<ScrawlCoordinator>,
     focus: FocusHandle,
@@ -3958,9 +3906,6 @@ impl Render for TargetPickerWindow {
             _ => SelectionMode::Area,
         };
         let drag = coord.selection_drag;
-        let hovered = coord.hovered_window.clone();
-        let anim_rect = coord.animated_window_rect;
-        let pointer = coord.selection_pointer;
         let picker_fade = ease_out_cubic(motion::age(coord.island_phase_since) / 0.15);
 
         let c_down = self.coordinator.clone();
@@ -4001,26 +3946,8 @@ impl Render for TargetPickerWindow {
                     format!("{} × {}", w.round() as i32, h.round() as i32),
                 )
             }),
-            SelectionMode::Window => hovered.map(|t| {
-                let title = match (&t.app, &t.window_title) {
-                    (Some(app), Some(win)) if !win.is_empty() && win != app => {
-                        format!("{app} — {win}")
-                    }
-                    (Some(app), _) => app.clone(),
-                    _ => format!(
-                        "{} × {}",
-                        t.frame.width.round() as i32,
-                        t.frame.height.round() as i32
-                    ),
-                };
-                let [rx, ry, rw, rh] = anim_rect.unwrap_or([
-                    t.frame.x as f32,
-                    t.frame.y as f32,
-                    t.frame.width as f32,
-                    t.frame.height as f32,
-                ]);
-                ([(rx - origin[0]) * k, (ry - origin[1]) * k, rw * k, rh * k], title)
-            }),
+            // A picked window is plain to see under the overlay tint, so it gets no badge.
+            SelectionMode::Window => None,
             SelectionMode::Screen if hold => Some((
                 [0.0, 0.0, screen[0], screen[1]],
                 format!(
@@ -4074,29 +4001,21 @@ impl Render for TargetPickerWindow {
         // The 120Hz `LaserOverlay` draws the backdrop dim, selection cutout, window tint,
         // and inset border continuously across both `Selecting` and `Recording` so there is zero
         // window swap or border jump on recording start. `TargetPickerWindow` only provides the
-        // hit-test surface, cursor style, camera cursor follower, and tabular dimension badge.
+        // hit-test surface, cursor style, and tabular dimension badge.
         let _ = picker_fade;
-        let mut root = div()
+        let root = div()
             .id("scrawl-target-picker")
             .track_focus(&self.focus)
             .size_full()
             .relative()
             .when(mode == SelectionMode::Area, |d| d.cursor_crosshair())
             .when(
-                matches!(mode, SelectionMode::Iphone | SelectionMode::Screen),
+                matches!(
+                    mode,
+                    SelectionMode::Iphone | SelectionMode::Screen | SelectionMode::Window
+                ),
                 |d| d.cursor_pointer(),
-            )
-            .when(mode == SelectionMode::Window, |d| {
-                d.cursor(gpui::CursorStyle::None)
-            });
-
-        if mode == SelectionMode::Window
-            && let Some([px_screen, py_screen]) = pointer
-        {
-            let cx_local = (px_screen - origin[0]) * k;
-            let cy_local = (py_screen - origin[1]) * k;
-            root = root.child(camera_cursor_badge(cx_local, cy_local));
-        }
+            );
 
         root.when_some(badge, |d, ([bx, by], text_w, label)| {
             d.child(
