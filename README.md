@@ -328,6 +328,10 @@ To turn it off, or change a setting, use `~/.config/scrawl/config.json`:
 { "autocrop": { "padding": 24, "minW": 480 } }
 ```
 
+Window captures are cropped the same way, with the captured window standing in for the screen: a
+keyframe zooms in to the activity inside the window. Settings › Recording › **Zoom window captures**
+(`"cropWindowCaptures": false`) keeps their full frames; `"autocrop": false` turns off both.
+
 ### Tuning
 
 `scrawl autocrop <bundle|latest> --serve --open` opens a playground that runs the same Rust crop as

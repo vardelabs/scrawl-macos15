@@ -849,7 +849,7 @@ pub fn finalize_capture_bundle(
     }
     let wav_path = bundle_dir.join("audio.wav");
     let has_wav = wav_path.exists();
-    let crop_settings = (target.mode == CaptureMode::Display)
+    let crop_settings = handoff::crops_mode(target.mode)
         .then(autocrop::Settings::configured)
         .flatten();
     let ((transcript, transcribe_ms), (predecoded, prepared)) = std::thread::scope(|scope| {
@@ -1137,7 +1137,7 @@ pub fn build_bundle_from_parts(
 
     let crop_settings = match extras.autocrop {
         Some(settings) => settings,
-        None if target.mode == CaptureMode::Display => autocrop::Settings::configured(),
+        None if handoff::crops_mode(target.mode) => autocrop::Settings::configured(),
         None => None,
     };
     let (mut annotated_frames, mut cropped) = autocrop::annotate_and_crop(

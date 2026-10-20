@@ -168,13 +168,17 @@ const CELL_CHANGE: f32 = 0.04;
 /// legible and its words stay near its ink.
 const GROUP_MS: u64 = 20_000;
 const GROUP_STROKES: usize = 12;
+/// A mark started this soon after the last one ended is part of the same drawing (a circle and
+/// its arrow); after a longer pause it is a new point, usually with its own words, and gets its
+/// own keyframe.
+const GROUP_GAP_MS: u64 = 1_000;
 /// A keyframe owns too much when its stretch holds more words or time than this; a frame from
 /// inside the stretch is added if the screen changed there.
 const COVERAGE_WORDS: f32 = 100.0;
 const COVERAGE_MS: f32 = 35_000.0;
 
-/// Marks in drawing order, grouped while they were drawn on the same screen with no click or drag
-/// (`actions`, sorted times) between them; then neighbouring groups merge until they fit `budget`,
+/// Marks in drawing order, grouped while they were drawn in one go on the same screen with no
+/// click or drag (`actions`, sorted times) between them; then neighbouring groups merge until they fit `budget`,
 /// same-screen pairs with the least ink first, else the most alike. Flags stay on their own.
 fn group_marks(
     frames: &[&RgbaFrame],
@@ -254,6 +258,7 @@ fn group_marks(
                 if marks[i].shape != Shape::Flag
                     && drawn(group)
                     && marks[i].t1.saturating_sub(marks[group[0]].t0) <= GROUP_MS
+                    && marks[i].t0.saturating_sub(marks[*group.last().unwrap()].t1) <= GROUP_GAP_MS
                     && ink(group) + marks[i].strokes.len() <= GROUP_STROKES
                     && !acted(*group.last().unwrap())
                     && spread(group, i) < SAME_SCREEN =>
@@ -1004,12 +1009,12 @@ mod tests {
         assert_eq!(marks[4].frame, marks[5].frame);
         assert_eq!(selected[4].0.t, 11_000);
 
-        // On one unchanged screen, marks group until they span more than `GROUP_MS`.
+        // On one unchanged screen, marks drawn in one go share a keyframe; a pause longer than
+        // `GROUP_GAP_MS` starts a new one.
         let frames: Vec<_> = (0..=50).map(|i| frame(i * 1_000, 128)).collect();
-        let mut marks: Vec<_> = [2_000, 9_000, 20_000, 33_000, 40_000]
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| mark(&format!("m{}", i + 1), t))
+        let mut marks: Vec<_> = (1..=10)
+            .map(|i| mark(&format!("m{i}"), i * 1_000))
+            .chain([mark("m11", 33_000), mark("m12", 40_000)])
             .collect();
         let selected = select_keyframes(
             &frames,
@@ -1020,7 +1025,47 @@ mod tests {
             MAX_KEYFRAMES,
         );
         let at: Vec<_> = selected.iter().map(|(k, _)| k.t).collect();
-        assert_eq!(at, [20_000, 40_000]);
+        assert_eq!(at, [10_000, 33_000, 40_000]);
+        assert!(marks.iter().all(|m| m.frame.is_some()));
+
+        // Long strokes with no pause still close the group once it spans more than `GROUP_MS`.
+        let mut marks: Vec<_> = [(1_000, 9_000), (9_000, 17_000), (17_000, 25_000)]
+            .iter()
+            .enumerate()
+            .map(|(i, &(t0, t1))| Mark {
+                t0,
+                ..mark(&format!("l{i}"), t1)
+            })
+            .collect();
+        let selected = select_keyframes(
+            &frames,
+            &[],
+            &mut marks,
+            &[],
+            &TranscriptData::default(),
+            MAX_KEYFRAMES,
+        );
+        let at: Vec<_> = selected.iter().map(|(k, _)| k.t).collect();
+        assert_eq!(at, [17_000, 25_000]);
+
+        // Drawings with a pause between them, each talked through, get a keyframe each.
+        let mut marks: Vec<_> = [(1_190, 2_887), (6_361, 8_273), (9_683, 11_990)]
+            .iter()
+            .enumerate()
+            .map(|(i, &(t0, t1))| Mark {
+                t0,
+                ..mark(&format!("d{i}"), t1)
+            })
+            .collect();
+        let selected = select_keyframes(
+            &frames,
+            &[],
+            &mut marks,
+            &[],
+            &TranscriptData::default(),
+            MAX_KEYFRAMES,
+        );
+        assert_eq!(selected.len(), 3);
         assert!(marks.iter().all(|m| m.frame.is_some()));
     }
 
@@ -1447,7 +1492,7 @@ mod tests {
             strokes: (0..5).collect(),
             ..mark(id, t)
         };
-        let mut marks = vec![heavy("m1", 2_000), heavy("m2", 4_000), heavy("m3", 6_000)];
+        let mut marks = vec![heavy("m1", 2_000), heavy("m2", 2_800), heavy("m3", 3_600)];
         select_keyframes(
             &frames,
             &[],
@@ -1487,9 +1532,9 @@ mod tests {
     #[test]
     fn nothing_cuts_into_a_drawing_session() {
         let frames: Vec<_> = (0..=40).map(|i| frame(i * 250, 128)).collect();
-        let mut marks = vec![mark("m1", 2_000), mark("m2", 6_000)];
+        let mut marks = vec![mark("m1", 2_000), mark("m2", 2_800)];
         let point = InteractionEvent::Point {
-            t: 4_000,
+            t: 2_400,
             x: 0.5,
             y: 0.5,
             label: None,
