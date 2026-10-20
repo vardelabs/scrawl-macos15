@@ -3906,8 +3906,6 @@ impl Render for TargetPickerWindow {
             _ => SelectionMode::Area,
         };
         let drag = coord.selection_drag;
-        let hovered = coord.hovered_window.clone();
-        let anim_rect = coord.animated_window_rect;
         let picker_fade = ease_out_cubic(motion::age(coord.island_phase_since) / 0.15);
 
         let c_down = self.coordinator.clone();
@@ -3948,26 +3946,8 @@ impl Render for TargetPickerWindow {
                     format!("{} × {}", w.round() as i32, h.round() as i32),
                 )
             }),
-            SelectionMode::Window => hovered.map(|t| {
-                let title = match (&t.app, &t.window_title) {
-                    (Some(app), Some(win)) if !win.is_empty() && win != app => {
-                        format!("{app} — {win}")
-                    }
-                    (Some(app), _) => app.clone(),
-                    _ => format!(
-                        "{} × {}",
-                        t.frame.width.round() as i32,
-                        t.frame.height.round() as i32
-                    ),
-                };
-                let [rx, ry, rw, rh] = anim_rect.unwrap_or([
-                    t.frame.x as f32,
-                    t.frame.y as f32,
-                    t.frame.width as f32,
-                    t.frame.height as f32,
-                ]);
-                ([(rx - origin[0]) * k, (ry - origin[1]) * k, rw * k, rh * k], title)
-            }),
+            // A picked window is plain to see under the overlay tint, so it gets no badge.
+            SelectionMode::Window => None,
             SelectionMode::Screen if hold => Some((
                 [0.0, 0.0, screen[0], screen[1]],
                 format!(
@@ -3996,8 +3976,7 @@ impl Render for TargetPickerWindow {
         }
         .map(|(rect, label)| (clip_rect(rect, screen), label));
 
-        // A picked window is plain to see under the tint, so Window mode names nothing.
-        let badge = highlight.as_ref().filter(|_| mode != SelectionMode::Window).map(|(rect, label)| {
+        let badge = highlight.as_ref().map(|(rect, label)| {
             let max_text = (screen[0] - 2.0 * BADGE_MARGIN - 2.0 * BADGE_PX - 2.0).min(480.0);
             let measured_label = if mode == SelectionMode::Area {
                 clock_template(label)
@@ -4022,7 +4001,7 @@ impl Render for TargetPickerWindow {
         // The 120Hz `LaserOverlay` draws the backdrop dim, selection cutout, window tint,
         // and inset border continuously across both `Selecting` and `Recording` so there is zero
         // window swap or border jump on recording start. `TargetPickerWindow` only provides the
-        // hit-test surface, cursor style, camera cursor follower, and tabular dimension badge.
+        // hit-test surface, cursor style, and tabular dimension badge.
         let _ = picker_fade;
         let root = div()
             .id("scrawl-target-picker")
