@@ -63,10 +63,10 @@ const KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
 const SCROLL_WHEEL_DELTA_AXIS_1: u32 = 11;
 const SCROLL_WHEEL_DELTA_AXIS_2: u32 = 12;
 
-const FLAG_SHIFT: u64 = 1 << 17;
-const FLAG_CONTROL: u64 = 1 << 18;
-const FLAG_ALTERNATE: u64 = 1 << 19;
-const FLAG_COMMAND: u64 = 1 << 20;
+pub const FLAG_SHIFT: u64 = 1 << 17;
+pub const FLAG_CONTROL: u64 = 1 << 18;
+pub const FLAG_ALTERNATE: u64 = 1 << 19;
+pub const FLAG_COMMAND: u64 = 1 << 20;
 
 /// The S key on the ANSI layout (`kVK_ANSI_S`).
 pub const KEY_S: u16 = 1;
@@ -111,6 +111,7 @@ unsafe extern "C" {
         user_data: *mut c_void,
         out_ref: *mut *mut c_void,
     ) -> i32;
+    fn IsSecureEventInputEnabled() -> bool;
     fn RegisterEventHotKey(
         hot_key_code: u32,
         hot_key_modifiers: u32,
@@ -1617,9 +1618,13 @@ unsafe extern "C" fn key_tap_callback(
     let alt = (flags & FLAG_ALTERNATE) != 0;
     let shift = (flags & FLAG_SHIFT) != 0;
     let keycode = unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE) } as u16;
+    let repeat = unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_AUTOREPEAT) } != 0;
+    if !repeat {
+        telemetry.key_downs.fetch_add(1, Ordering::AcqRel);
+    }
     if telemetry.matches_shortcut(keycode, cmd, ctrl, alt, shift) {
         // Holding S repeats the key; only a fresh press switches modes.
-        if unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_AUTOREPEAT) } == 0 {
+        if !repeat {
             telemetry.emit_capture_shortcut();
         }
         return event;
@@ -1673,6 +1678,20 @@ fn current_mouse_location() -> Option<CGPoint> {
     let loc = unsafe { CGEventGetLocation(ev) };
     unsafe { CFRelease(ev.cast()) };
     Some(loc)
+}
+
+/// Whether an app has Secure Input on (a password field, Terminal's Secure Keyboard Entry). Key
+/// taps see no keys then, though macOS keeps reporting them enabled.
+pub fn secure_input_on() -> bool {
+    unsafe { IsSecureEventInputEnabled() }
+}
+
+/// Whether a mouse button is down right now (no permission needed).
+pub fn mouse_button_down() -> bool {
+    // Left, right, middle and two side buttons.
+    (0..5).any(|button| unsafe {
+        CGEventSourceButtonState(0, button) || CGEventSourceButtonState(1, button)
+    })
 }
 
 pub fn current_mouse_screen() -> Option<[f32; 2]> {

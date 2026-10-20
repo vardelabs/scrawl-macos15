@@ -800,6 +800,26 @@ speech model isn't installed yet, or it takes too long, the recording is transcr
 usual; the log says which (`Live transcription: …`). Hex and iPhone recordings are unaffected.
 `scrawl reprocess <bundle> --out … --bench 1 --live-speed 1` replays a bundle's audio through it.
 
+## Dictation
+
+Scrawl can also type for you, with no screen recorded. Turn on Settings › General › **Dictation**
+(or `"dictation": true` in `~/.config/scrawl/config.json`), then:
+
+- **Hold `⌃⌥`** and talk; let go and the text is pasted where you type.
+- **Double tap `⌃⌥`** for hands-free: a pill with ✕ and ✓ shows at the bottom of the screen.
+  `⌃⌥` again or ✓ pastes; Esc or ✕ discards.
+
+`⌃⌥` followed by another key (`⌃⌥←`) stays an ordinary shortcut. `"dictationShortcut"` picks
+another chord (`"⌃⌘"`, `"⌥⌘"`, `"⌃⇧"`), and `"dictationRestoreClipboard": false` leaves the text
+on the clipboard. Dictation uses the transcriber set for recordings and needs Accessibility to
+paste. Words it gets wrong go in `~/.config/scrawl/dictionary.json`:
+
+```json
+{ "words": ["Corvus", "Varde Labs"], "replacements": { "corvis": "Corvus" } }
+```
+
+Details are in `docs/dictation.md`.
+
 ## Helper
 
 `scrawl-helper` is a small Swift executable built by `build.rs` from `helper/` and shipped inside

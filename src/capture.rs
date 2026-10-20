@@ -688,6 +688,10 @@ pub struct SharedCaptureTelemetry {
     /// Scrawl's windows that let clicks through (the ink overlay), skipped when deciding whether
     /// a click landed on Scrawl itself.
     pub passthrough_window_ids: Mutex<Vec<u32>>,
+    /// Fresh key presses the key tap has seen, so dictation can tell its chord was the start of
+    /// another shortcut. Counted, never recorded.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    pub key_downs: AtomicU64,
     /// macOS's key event tap (`CFMachPortRef`), made once Accessibility is on (`check_key_tap`).
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     tap_port: AtomicU64,
@@ -749,6 +753,7 @@ impl SharedCaptureTelemetry {
             window_log_request: Arc::new(AtomicBool::new(false)),
             ui_sender,
             passthrough_window_ids: Mutex::new(Vec::new()),
+            key_downs: AtomicU64::new(0),
             tap_port: AtomicU64::new(0),
             tap_run_loop: AtomicU64::new(0),
             tap_starting: AtomicBool::new(false),
@@ -925,6 +930,12 @@ impl SharedCaptureTelemetry {
             platform::NO_KEY_SOURCE
         };
         scrawl_log(format!("session clicks from {clicks}, keys from {keys}"));
+    }
+
+    /// Whether the key tap is delivering key presses (Accessibility on, Secure Input off).
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    pub fn key_tap_live(&self) -> bool {
+        self.tap_live.load(Ordering::Acquire)
     }
 
     /// Whether Esc went down since the last call (the switcher cancels on it).

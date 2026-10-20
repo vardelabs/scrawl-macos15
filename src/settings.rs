@@ -582,6 +582,9 @@ pub struct View {
     pub video_export: bool,
     pub tap_chooses: bool,
     pub crop_window_captures: bool,
+    pub dictation: bool,
+    pub dictation_shortcut: String,
+    pub dictation_restore_clipboard: bool,
     pub retention: RetentionView,
     /// How much the captures folder takes, once measured.
     pub captures_size: Option<String>,
@@ -882,7 +885,8 @@ fn shortcut_view(
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
-    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures` (bool), `microphone`
+    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures`,
+    /// `dictation`, `dictationRestoreClipboard` (bool), `dictationShortcut` (a chord), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
     Set {
@@ -1099,10 +1103,14 @@ impl Panel {
                 }
             }
             (
-                "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures",
+                "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures" | "dictation"
+                | "dictationRestoreClipboard",
                 serde_json::Value::Bool(on),
-            ) => {
-                write(key, (*on).into())
+            ) => write(key, (*on).into()),
+            ("dictationShortcut", serde_json::Value::String(chord))
+                if crate::dictation::parse_shortcut(chord).is_some() =>
+            {
+                write(key, value.clone());
             }
             ("playbackMode", serde_json::Value::String(mode))
                 if matches!(mode.as_str(), "unchanged" | "mute" | "lower") =>
@@ -1253,6 +1261,13 @@ impl Panel {
             video_export: config.video_export.unwrap_or(false),
             tap_chooses: config.tap_chooses.unwrap_or(false),
             crop_window_captures: config.crop_window_captures.unwrap_or(true),
+            dictation: config.dictation.unwrap_or(false),
+            dictation_shortcut: config
+                .dictation_shortcut
+                .clone()
+                .filter(|chord| crate::dictation::parse_shortcut(chord).is_some())
+                .unwrap_or_else(|| crate::dictation::DEFAULT_SHORTCUT.to_owned()),
+            dictation_restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
             retention: RetentionView {
                 preset: policy.preset().map(preset_id),
                 options: crate::retention::Preset::ALL

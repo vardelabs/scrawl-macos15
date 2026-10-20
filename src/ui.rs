@@ -755,6 +755,7 @@ pub struct ScrawlCoordinator {
     gate: crate::onboarding::Gate,
     /// ⌥⇧S held as a ⌘Tab-style switcher (`crate::hold`).
     switcher: crate::hold::Switcher,
+    dictation: crate::dictation::Dictation,
     /// The modifiers held when the shortcut went down; releasing any of them commits.
     hold_mods: u64,
     /// The open picker is the held switcher, not the menu bar's picker.
@@ -835,6 +836,7 @@ impl ScrawlCoordinator {
             grants: None,
             gate: crate::onboarding::Gate::default(),
             switcher: crate::hold::Switcher::default(),
+            dictation: crate::dictation::Dictation::default(),
             hold_mods: 0,
             hold_picker: false,
             clock: Instant::now(),
@@ -1182,8 +1184,9 @@ impl ScrawlCoordinator {
 
     /// The capture shortcut went down (from Carbon, the event tap or the HID poller).
     pub fn press_shortcut(&mut self, cx: &mut Context<Self>) {
+        self.dictation.cede();
         let activity = self.activity();
-        if self.gate.is_pending() {
+        if self.gate.is_pending() || self.dictation.is_busy() {
             return;
         }
         if !self.switcher.is_held() && activity == crate::hold::Activity::Free {
@@ -5453,6 +5456,13 @@ pub fn run_app(
                     }
 
                     motion::poll_tune();
+                    loop_coord.update(cx, |coord, _| {
+                        let capture_busy = coord.switcher.is_held()
+                            || coord.is_recording()
+                            || coord.is_selecting()
+                            || coord.is_processing();
+                        coord.dictation.tick(&coord.telemetry, capture_busy);
+                    });
                     if loop_coord.read(cx).switcher.is_held() {
                         loop_coord.update(cx, |coord, cx| coord.tick_switcher(cx));
                     } else if loop_coord.read(cx).telemetry.take_escape()

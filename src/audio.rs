@@ -28,6 +28,14 @@ pub struct AudioRecorder {
 
 impl AudioRecorder {
     pub fn start() -> Result<Self> {
+        let mut recorder = Self::start_mic()?;
+        recorder.prestart_transcriber();
+        Ok(recorder)
+    }
+
+    /// The microphone alone. Dictation starts it on every press of its chord, many of which
+    /// turn out to be other shortcuts, so the transcribers wait for `prestart_transcriber`.
+    pub fn start_mic() -> Result<Self> {
         let started = std::time::Instant::now();
         let samples = Arc::new(Mutex::new(Vec::new()));
         let error = Arc::new(Mutex::new(None));
@@ -48,22 +56,28 @@ impl AudioRecorder {
                 Ok(())
             })
             .context("Could not spawn microphone worker")?;
-        let live = crate::live_transcribe::wanted()
-            .then(|| crate::live_transcribe::Live::start(Arc::clone(&samples)))
-            .and_then(|live| {
-                live.inspect_err(|error| {
-                    crate::capture::scrawl_log(format!("Live transcription: {error:#}"));
-                })
-                .ok()
-            });
         Ok(Self {
             worker: Some(worker),
             stop_sender: Some(stop_sender),
             samples,
             error,
-            live,
-            prestarted: crate::transcribe::prestart(),
+            live: None,
+            prestarted: None,
         })
+    }
+
+    /// The live transcriber and the prestarted command transcriber, whichever are configured.
+    pub fn prestart_transcriber(&mut self) {
+        if self.live.is_none() && crate::live_transcribe::wanted() {
+            self.live = crate::live_transcribe::Live::start(Arc::clone(&self.samples))
+                .inspect_err(|error| {
+                    crate::capture::scrawl_log(format!("Live transcription: {error:#}"));
+                })
+                .ok();
+        }
+        if self.prestarted.is_none() {
+            self.prestarted = crate::transcribe::prestart();
+        }
     }
 
     /// The chosen microphone (`mic`), else the macOS default. A chosen device that is missing or
