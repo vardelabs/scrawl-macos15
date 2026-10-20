@@ -586,12 +586,14 @@ impl SharedMetalOverlay {
         if quiet.is_some() && quiet == renderer.shown_quiet {
             return;
         }
-        renderer.shown_quiet = quiet;
+        // Recorded only once a frame is presented: a quiet frame that found no drawable must
+        // be tried again, not skipped for as long as the screen stays quiet.
+        renderer.shown_quiet = None;
         let tile_cols = (renderer.width / TILE_PT).ceil().max(1.0) as u32;
         let tile_rows = (renderer.height / TILE_PT).ceil().max(1.0) as u32;
-        objc2::rc::autoreleasepool(|_| {
+        let presented = objc2::rc::autoreleasepool(|_| {
             let Some(drawable) = renderer.layer.next_drawable() else {
-                return;
+                return false;
             };
             let pass = RenderPassDescriptor::new();
             let attachment = pass.color_attachments().object_at(0).unwrap();
@@ -650,7 +652,11 @@ impl SharedMetalOverlay {
             );
             cmd.present_drawable(drawable);
             cmd.commit();
+            true
         });
+        if presented {
+            renderer.shown_quiet = quiet;
+        }
     }
 }
 
