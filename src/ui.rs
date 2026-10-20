@@ -1252,7 +1252,10 @@ impl ScrawlCoordinator {
                 if crate::handoff::tap_chooses()
                     && self.selection_mode().unwrap_or(mode) == SelectionMode::Screen =>
             {
+                // Playback stays down through the picker, as it does for a plain tap.
+                let playback = self.playback.take();
                 self.cancel_recording(cx);
+                self.playback = playback;
                 self.begin_target_selection(cx);
             }
             Action::Commit(mode) => self.commit_switcher(mode, cx),

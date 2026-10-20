@@ -40,7 +40,7 @@ Render every pane (dark, light, recorder listening, refused, microphone chosen/m
 
 ## Playback during recording
 
-Recording always offers Unchanged (the default), Mute and Lower volume, with a
+Recording always offers Mute (this fork's default), Lower volume and Unchanged, with a
 0–100% relative-volume slider for Lower volume. No experiment flag is required.
 Changes apply to the next recording. `src/playback.rs` warms a separate CoreAudio
 helper (`helper/PlaybackVolume.swift`) at app startup. The shortcut sends `start`

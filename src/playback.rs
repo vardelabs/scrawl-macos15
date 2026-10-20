@@ -70,7 +70,7 @@ impl Drop for Guard {
 mod tests {
     use super::*;
     #[test]
-    fn playback_is_opt_in_and_levels_are_bounded() {
+    fn only_mute_and_lower_change_playback_and_levels_are_bounded() {
         assert_eq!(level(None, Some(0)), None);
         assert_eq!(level(Some("unknown"), Some(0)), None);
         assert_eq!(level(Some("unchanged"), Some(0)), None);
