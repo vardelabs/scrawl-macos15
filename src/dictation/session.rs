@@ -116,7 +116,7 @@ impl Dictation {
         if !self.settings.enabled {
             return;
         }
-        let key_tap_live = telemetry.key_tap_live();
+        let key_tap_live = telemetry.key_tap_live() && !crate::capture::secure_input_on();
         let now_ms = self.clock.elapsed().as_millis() as u64;
         let mods = self.settings.mods(crate::capture::modifier_flags());
         let keys = telemetry.key_downs.load(std::sync::atomic::Ordering::Acquire);

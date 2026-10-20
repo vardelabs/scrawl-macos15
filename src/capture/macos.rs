@@ -111,6 +111,7 @@ unsafe extern "C" {
         user_data: *mut c_void,
         out_ref: *mut *mut c_void,
     ) -> i32;
+    fn IsSecureEventInputEnabled() -> bool;
     fn RegisterEventHotKey(
         hot_key_code: u32,
         hot_key_modifiers: u32,
@@ -1680,6 +1681,12 @@ fn current_mouse_location() -> Option<CGPoint> {
     let loc = unsafe { CGEventGetLocation(ev) };
     unsafe { CFRelease(ev.cast()) };
     Some(loc)
+}
+
+/// Whether an app has Secure Input on (a password field, Terminal's Secure Keyboard Entry). Key
+/// taps see no keys then, though macOS keeps reporting them enabled.
+pub fn secure_input_on() -> bool {
+    unsafe { IsSecureEventInputEnabled() }
 }
 
 /// Whether a mouse button is down right now (no permission needed).
