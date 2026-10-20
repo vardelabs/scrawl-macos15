@@ -8,13 +8,20 @@
 //! of the audio`) and the caller falls back to Apple Speech for that recording.
 
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::io::Read;
 use std::path::Path;
+#[cfg(unix)]
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
@@ -233,6 +240,7 @@ pub fn parse_output(stdout: &[u8], audio_ms: u64) -> Result<TranscriptData> {
     })
 }
 
+#[cfg(unix)]
 /// Runs the program on `wav` in its own process group and reads its transcript. The group is
 /// killed on timeout, and again once the program exits, so a wrapper's leftover model process
 /// dies with it and the deadline bounds the whole run either way.
@@ -318,6 +326,14 @@ pub fn transcribe(settings: &Settings, wav: &Path, audio_ms: u64) -> Result<Tran
     parse_output(&out, audio_ms)
 }
 
+/// Elsewhere the runner's process-group and pipe handling don't exist, so the engine says so
+/// and the caller falls back to the local engine.
+#[cfg(not(unix))]
+pub fn transcribe(_settings: &Settings, _wav: &Path, _audio_ms: u64) -> Result<TranscriptData> {
+    bail!("the command transcriber runs on macOS only")
+}
+
+#[cfg(unix)]
 /// Reads stdout until EOF, one byte past the output cap, the deadline, or `stop` with the pipe
 /// drained. Without the last two, a descendant that outlives the program and keeps the pipe
 /// would pin this thread and the descriptor for as long as it lived.
@@ -371,6 +387,7 @@ fn read_until(mut stdout: std::process::ChildStdout, deadline: Instant, stop: &A
     out
 }
 
+#[cfg(unix)]
 /// Whether the program has exited, without reaping it: `Child::wait` still collects it after.
 fn has_exited(pid: libc::pid_t) -> std::io::Result<bool> {
     // SAFETY: a zeroed siginfo_t is the documented input, and WNOWAIT leaves the child in place.
@@ -389,6 +406,7 @@ fn has_exited(pid: libc::pid_t) -> std::io::Result<bool> {
     Ok(info.si_pid != 0)
 }
 
+#[cfg(unix)]
 /// The child is the group leader, so a negative pid reaches everything it started. Called only
 /// while the leader is alive or still unreaped, when the group id is still its own.
 fn kill_group(pid: libc::pid_t) {
@@ -406,6 +424,7 @@ mod tests {
         args.iter().map(|arg| (*arg).to_owned()).collect()
     }
 
+    #[cfg(unix)]
     fn sh(script: &str) -> Settings {
         Settings {
             command: strings(&["/bin/sh", "-c", script]),
@@ -413,15 +432,18 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     /// Removed when the test's value drops, so parallel tests never share a file.
     struct Wav(std::path::PathBuf);
 
+    #[cfg(unix)]
     impl Drop for Wav {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
     }
 
+    #[cfg(unix)]
     fn wav() -> Wav {
         static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
@@ -542,6 +564,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     /// macOS has no `setsid` binary, so perl's POSIX binding moves the descendant out of the
     /// group; it inherits stdout and outlives the program, which exits at once with its
     /// transcript already written.
@@ -556,6 +579,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_child_left_holding_stdout_does_not_hold_up_the_transcript() {
         let wav = wav();
@@ -570,6 +594,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_program_gets_the_audio_and_its_json_comes_back() {
         let wav = wav();
@@ -583,6 +608,7 @@ mod tests {
         assert_eq!(transcript.text, "ok");
     }
 
+    #[cfg(unix)]
     #[test]
     fn failures_are_short_reasons_without_program_output() {
         let wav = wav();
