@@ -332,10 +332,11 @@ pub enum ElemId {
     DoneLead = 13,
     Paste = 14,
     Inspect = 15,
+    Confirm = 16,
 }
 
 impl ElemId {
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 17;
     pub const ALL: [ElemId; Self::COUNT] = [
         Self::Lead,
         Self::DividerLead,
@@ -353,6 +354,7 @@ impl ElemId {
         Self::DoneLead,
         Self::Paste,
         Self::Inspect,
+        Self::Confirm,
     ];
 
     pub const fn trace_key(self) -> &'static str {
@@ -373,6 +375,7 @@ impl ElemId {
             Self::DoneLead => "done.lead",
             Self::Paste => "paste",
             Self::Inspect => "inspect",
+            Self::Confirm => "confirm",
         }
     }
 
@@ -418,6 +421,7 @@ impl ElemId {
             Self::DoneLead => "Completed",
             Self::Paste => "Paste",
             Self::Inspect => "Inspect",
+            Self::Confirm => "Paste dictation",
         }
     }
 
@@ -446,6 +450,10 @@ pub enum Pres {
     Processing,
     Completed {
         label: String,
+    },
+    /// Voice-only dictation (`dictation`): the dot and clock, with ✕ and ✓ when latched.
+    Dictating {
+        latched: bool,
     },
 }
 
@@ -484,6 +492,7 @@ impl Pres {
                     && ((*ma).shows_record() && !*ha) == ((*mb).shows_record() && !*hb)
             }
             (Self::Completed { label: a }, Self::Completed { label: b }) => a == b,
+            (Self::Dictating { latched: a }, Self::Dictating { latched: b }) => a == b,
             _ => false,
         }
     }
@@ -675,6 +684,16 @@ pub fn layout_of(
                     0.0,
                     true,
                 ));
+            }
+        }
+        Pres::Dictating { latched } => {
+            let lead_w = CHIP_H + m.clock_width(clock) + LEAD_TRAIL;
+            if *latched {
+                raw.push((ElemId::Close, CHIP_H, CHIP_CORE_ROUND, 0.0, true));
+            }
+            raw.push((ElemId::Lead, lead_w, CHIP_CORE_ROUND, 0.0, true));
+            if *latched {
+                raw.push((ElemId::Confirm, CHIP_H, CHIP_CORE_ROUND, 0.0, true));
             }
         }
         Pres::Processing => {
@@ -1070,7 +1089,7 @@ impl PillModel {
         let new_w = self.metrics.clock_width(clock);
         self.clock.clear();
         self.clock.push_str(clock);
-        if (old_w - new_w).abs() > 0.5 && matches!(self.pres, Pres::Recording { .. }) {
+        if (old_w - new_w).abs() > 0.5 && matches!(self.pres, Pres::Recording { .. } | Pres::Dictating { .. }) {
             self.apply_geometry();
         }
     }

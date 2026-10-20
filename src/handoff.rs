@@ -241,6 +241,77 @@ pub fn paste_bundle_image_and_text(bundle_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// How long a dictation's text stays on the clipboard before the previous contents come back:
+/// long enough for the app in front to read it after `⌘V`.
+#[cfg(target_os = "macos")]
+const RESTORE_DELAY_MS: u64 = 400;
+
+/// Pastes dictated text into the app in front. With `restore`, the clipboard gets its previous
+/// items back afterwards, unless something else was copied in the meantime.
+#[cfg(target_os = "macos")]
+pub fn paste_text(text: &str, restore: bool) -> Result<()> {
+    use objc2_app_kit::NSPasteboard;
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let saved = restore.then(|| saved_pasteboard(&pasteboard));
+    crate::capture::wait_for_modifiers_released(350);
+    copy_string_to_clipboard(text)?;
+    let ours = pasteboard.changeCount();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    crate::capture::post_synthetic_cmd_v();
+    if let Some(saved) = saved.filter(|items| !items.is_empty()) {
+        std::thread::sleep(std::time::Duration::from_millis(RESTORE_DELAY_MS));
+        if pasteboard.changeCount() == ours {
+            restore_pasteboard(&pasteboard, &saved);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+type SavedItem = Vec<(
+    objc2::rc::Retained<objc2_foundation::NSString>,
+    objc2::rc::Retained<objc2_foundation::NSData>,
+)>;
+
+#[cfg(target_os = "macos")]
+fn saved_pasteboard(pasteboard: &objc2_app_kit::NSPasteboard) -> Vec<SavedItem> {
+    let Some(items) = pasteboard.pasteboardItems() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|item| {
+            item.types()
+                .iter()
+                .filter_map(|kind| item.dataForType(&kind).map(|data| (kind, data)))
+                .collect()
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn restore_pasteboard(pasteboard: &objc2_app_kit::NSPasteboard, saved: &[SavedItem]) {
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{NSPasteboardItem, NSPasteboardWriting};
+    use objc2_foundation::NSArray;
+
+    let items: Vec<objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>>> = saved
+        .iter()
+        .map(|entries| {
+            let item = NSPasteboardItem::new();
+            for (kind, data) in entries {
+                item.setData_forType(data, kind);
+            }
+            ProtocolObject::from_retained(item)
+        })
+        .collect();
+    pasteboard.clearContents();
+    if !pasteboard.writeObjects(&NSArray::from_retained_slice(&items)) {
+        crate::capture::scrawl_log("Dictation: the previous clipboard could not be restored");
+    }
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn copy_bundle_to_clipboard(_bundle_dir: &Path) -> Result<()> {
     bail!("Image and text clipboard handoff requires macOS or Windows")
@@ -439,6 +510,16 @@ pub struct Config {
     /// The microphone Mac captures record from (`mic`); absent follows the macOS default.
     #[serde(default)]
     pub microphone: Option<crate::mic::Choice>,
+    /// Voice-only dictation on its own modifier chord, pasted into the app in front (default
+    /// off; `dictation`).
+    #[serde(default)]
+    pub dictation: Option<bool>,
+    /// That chord: two or more of `⌃⌥⇧⌘` (default `⌃⌥`).
+    #[serde(default)]
+    pub dictation_shortcut: Option<String>,
+    /// Puts the clipboard back after pasting dictated text (default on).
+    #[serde(default)]
+    pub dictation_restore_clipboard: Option<bool>,
 }
 
 /// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
@@ -683,6 +764,18 @@ pub fn auto_send() -> bool {
 /// either way.
 pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
+}
+
+/// The dictation settings: whether it's on, its chord as written, and whether the clipboard is
+/// restored after a paste.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn dictation() -> (bool, Option<String>, bool) {
+    let config = config();
+    (
+        config.dictation.unwrap_or(false),
+        config.dictation_shortcut,
+        config.dictation_restore_clipboard.unwrap_or(true),
+    )
 }
 
 /// Whether a tap of the record shortcut opens the picker (`tapChooses`, default off).

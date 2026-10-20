@@ -130,6 +130,9 @@ struct SettingsState: Decodable, Equatable {
   var playbackLevel = 20
   var videoExport = false
   var tapChooses = false
+  var dictation = false
+  var dictationShortcut = "⌃⌥"
+  var dictationRestoreClipboard = true
   var retention = SettingsRetention()
   var capturesSize: String?
   var permissions: [SettingsPermission] = ["screen-recording", "microphone", "accessibility", "camera"]
@@ -823,6 +826,25 @@ struct SettingsView: View {
           }
         }
       }
+      Color.clear.frame(height: 20)
+      SettingsGroup {
+        SettingsRow(title: "Dictation") {
+          SettingsSwitch(on: state.dictation) { model.set("dictation", $0) }
+        }
+        if state.dictation {
+          SettingsSeparator()
+          SettingsRow(title: "Dictation shortcut") {
+            SettingsPopup(value: state.dictationShortcut,
+                          options: ["⌃⌥", "⌃⌘", "⌥⌘", "⌃⇧"].map { ($0, $0, true) },
+                          selected: state.dictationShortcut) { model.set("dictationShortcut", $0) }
+          }
+          SettingsSeparator()
+          SettingsRow(title: "Restore the clipboard after pasting") {
+            SettingsSwitch(on: state.dictationRestoreClipboard) { model.set("dictationRestoreClipboard", $0) }
+          }
+        }
+      }
+      SettingsCaption(text: "Hold \(state.dictationShortcut) and talk, or double tap it for hands-free; the text is pasted where you type. Esc cancels.")
     }
   }
 

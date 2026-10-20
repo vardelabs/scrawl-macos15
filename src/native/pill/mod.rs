@@ -447,11 +447,30 @@ impl NativePill {
     /// Moves the capsule to the screen holding `point` (global points, top-left origin), below
     /// that screen's menu bar and notch. A no-op when it's already there.
     pub fn place_on(&self, point: [f64; 2]) {
-        let Some(mtm) = MainThreadMarker::new() else {
+        let screens = crate::screens::current();
+        if let Some(origin) = panel_origin(&screens, Some(point)) {
+            self.move_to(origin);
+        }
+    }
+
+    /// Moves the capsule to the bottom centre of the screen holding `point`, above the Dock, where
+    /// dictation shows it (clear of the capture capsule at the top).
+    pub fn place_at_bottom(&self, point: [f64; 2]) {
+        let screens = crate::screens::current();
+        let Some(screen) = crate::screens::index_at(&screens, point)
+            .or(if screens.is_empty() { None } else { Some(0) })
+            .map(|i| &screens[i])
+        else {
             return;
         };
-        let screens = crate::screens::current();
-        let Some(origin) = panel_origin(&screens, Some(point)) else {
+        let capsule_bottom = f64::from(model::TOP + model::ISLAND_H);
+        let x = screen.frame[0] + ((screen.frame[2] - f64::from(PANEL_W)) / 2.0).round();
+        let y = screen.visible[1] + screen.visible[3] - capsule_bottom - BOTTOM_GAP;
+        self.move_to([x as f32, y as f32]);
+    }
+
+    fn move_to(&self, origin: [f32; 2]) {
+        let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
         let Ok(mut st) = self.shared.state.lock() else {
@@ -549,6 +568,9 @@ impl Drop for NativePill {
 }
 
 /// The panel's top-left (global points) on the screen holding `point`, else the primary one.
+/// Space between the dictation capsule and the Dock or the screen's bottom edge.
+const BOTTOM_GAP: f64 = 16.0;
+
 fn panel_origin(screens: &[crate::screens::Screen], point: Option<[f64; 2]>) -> Option<[f32; 2]> {
     let index = point
         .and_then(|p| crate::screens::index_at(screens, p))
@@ -813,6 +835,7 @@ impl PillRuntimeState {
             }
             ElemId::Paste => PillAction::Paste(None),
             ElemId::Inspect => PillAction::Inspect,
+            ElemId::Confirm => PillAction::Finish,
             _ => return,
         };
         let _ = self.action_tx.try_send(action);
@@ -1303,6 +1326,24 @@ impl PillRuntimeState {
                     [ox + (CHIP_H - 12.0) * 0.5, oy + (CHIP_H - 12.0) * 0.5, 12.0, 12.0],
                     ic.uv,
                     [fg, fg, fg, 1.0],
+                );
+            }
+            ElemId::Confirm => {
+                let r = (0.231 + 0.063 * elem.hover - 0.03 * elem.press).clamp(0.0, 1.0);
+                let g = (0.361 + 0.059 * elem.hover - 0.04 * elem.press).clamp(0.0, 1.0);
+                let b = (0.965 + 0.035 * elem.hover - 0.04 * elem.press).clamp(0.0, 1.0);
+                push_shape(
+                    out,
+                    [ox + 2.0, oy + 2.0, bh - 4.0, bh - 4.0],
+                    (bh - 4.0) * 0.5,
+                    [r, g, b, 1.0],
+                );
+                let ic = atlas.icon(IconKind::Check);
+                push_sprite(
+                    out,
+                    [ox + (CHIP_H - 13.0) * 0.5, oy + (CHIP_H - 13.0) * 0.5, 13.0, 13.0],
+                    ic.uv,
+                    [0.95, 0.95, 0.96, 1.0],
                 );
             }
             ElemId::DividerLead | ElemId::DividerClose => {

@@ -14,6 +14,9 @@ mod capture;
 mod command_line;
 mod command_transcriber;
 mod delivery;
+mod dictation;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod dictionary;
 mod export;
 mod fillers;
 mod handoff;

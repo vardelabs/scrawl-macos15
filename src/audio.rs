@@ -28,6 +28,14 @@ pub struct AudioRecorder {
 
 impl AudioRecorder {
     pub fn start() -> Result<Self> {
+        let mut recorder = Self::start_mic()?;
+        recorder.prestart_transcriber();
+        Ok(recorder)
+    }
+
+    /// The microphone alone. Dictation starts it on every press of its chord, many of which
+    /// turn out to be other shortcuts, so the transcriber waits for `prestart_transcriber`.
+    pub fn start_mic() -> Result<Self> {
         let started = std::time::Instant::now();
         let samples = Arc::new(Mutex::new(Vec::new()));
         let error = Arc::new(Mutex::new(None));
@@ -62,8 +70,14 @@ impl AudioRecorder {
             samples,
             error,
             live,
-            prestarted: crate::transcribe::prestart(),
+            prestarted: None,
         })
+    }
+
+    pub fn prestart_transcriber(&mut self) {
+        if self.prestarted.is_none() {
+            self.prestarted = crate::transcribe::prestart();
+        }
     }
 
     /// The chosen microphone (`mic`), else the macOS default. A chosen device that is missing or

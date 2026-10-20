@@ -63,10 +63,10 @@ const KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
 const SCROLL_WHEEL_DELTA_AXIS_1: u32 = 11;
 const SCROLL_WHEEL_DELTA_AXIS_2: u32 = 12;
 
-const FLAG_SHIFT: u64 = 1 << 17;
-const FLAG_CONTROL: u64 = 1 << 18;
-const FLAG_ALTERNATE: u64 = 1 << 19;
-const FLAG_COMMAND: u64 = 1 << 20;
+pub const FLAG_SHIFT: u64 = 1 << 17;
+pub const FLAG_CONTROL: u64 = 1 << 18;
+pub const FLAG_ALTERNATE: u64 = 1 << 19;
+pub const FLAG_COMMAND: u64 = 1 << 20;
 
 /// The S key on the ANSI layout (`kVK_ANSI_S`).
 pub const KEY_S: u16 = 1;
@@ -1620,9 +1620,13 @@ unsafe extern "C" fn key_tap_callback(
     let alt = (flags & FLAG_ALTERNATE) != 0;
     let shift = (flags & FLAG_SHIFT) != 0;
     let keycode = unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE) } as u16;
+    let repeat = unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_AUTOREPEAT) } != 0;
+    if !repeat {
+        telemetry.key_downs.fetch_add(1, Ordering::AcqRel);
+    }
     if telemetry.matches_shortcut(keycode, cmd, ctrl, alt, shift) {
         // Holding S repeats the key; only a fresh press switches modes.
-        if unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_AUTOREPEAT) } == 0 {
+        if !repeat {
             telemetry.emit_capture_shortcut();
         }
         return event;
