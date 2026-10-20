@@ -64,8 +64,9 @@ fragment float4 laser_fragment(
     // `tile_cols * tile_rows + 1` offsets, then each tile's segment indices (`bin_segments`).
     const device uint *tiles [[buffer(3)]]
 ) {
-    // Pixel position in logical screen points (top-left origin).
-    float2 p = (in.uv * u.resolution) / max(u.scale, 1.0);
+    // Pixel position in logical screen points (top-left origin). The drawable can sit below 1x
+    // on a very large screen (`drawable_scale`), so the scale isn't floored at 1.
+    float2 p = (in.uv * u.resolution) / max(u.scale, 1e-3);
 
     float3 laser_red = float3(1.0, 0.16, 0.19);
     float3 laser_hot = float3(1.0, 0.97, 0.97);
