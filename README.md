@@ -730,9 +730,9 @@ network use for it.
 ```json
 {
   "transcriber": "command",
-  "transcribeCommand": ["/opt/homebrew/bin/uv", "run", "--quiet", "--script",
+  "transcribeCommand": ["/Users/you/.local/share/uv/tools/parakeet-mlx/bin/python",
                         "/path/to/scrawl/scripts/scrawl-parakeet.py", "{audio}"],
-  "transcribeTimeoutSeconds": 600
+  "transcribeTimeoutSeconds": 120
 }
 ```
 
@@ -759,17 +759,22 @@ network use for it.
 
 `scripts/scrawl-parakeet.py` is a ready wrapper for NVIDIA's Parakeet TDT 0.6B v3
 (CC BY 4.0, 25 languages, word timestamps) through [parakeet-mlx](https://github.com/senstella/parakeet-mlx)
-on Apple silicon. It needs [uv](https://docs.astral.sh/uv/) and ffmpeg (`brew install uv ffmpeg`;
-the script adds Homebrew's bin directories to its own `PATH`, since the app has none). Run it once
-by hand before the first recording, on any WAV:
+on Apple silicon. It needs ffmpeg (the script adds Homebrew's bin directories to its own `PATH`,
+since the app has none) and parakeet-mlx installed once as a uv tool, whose Python is what
+`transcribeCommand` runs:
 
 ```sh
-uv run --script scripts/scrawl-parakeet.py some.wav
+brew install uv ffmpeg
+uv tool install parakeet-mlx
+~/.local/share/uv/tools/parakeet-mlx/bin/python scripts/scrawl-parakeet.py some.wav
 ```
 
-That run installs the dependencies and downloads the model (about 1.2 GB), which can take longer
-than Scrawl's timeout; after it, a five-second recording transcribes in about three seconds, and
-the script keeps the hub client offline so no recording makes a network request.
+The last line downloads the model (about 1.2 GB) once, which can take longer than Scrawl's timeout;
+after it, a 30-second recording transcribes in about three seconds, and the script keeps the hub
+client offline so no recording makes a network request.
+
+Run the installed Python directly rather than `uv run --script`: launched from Scrawl.app,
+`uv run` can stall on uv's cache lock until the timeout, which holds the capture for minutes.
 
 ### Transcribing while recording (experiment)
 

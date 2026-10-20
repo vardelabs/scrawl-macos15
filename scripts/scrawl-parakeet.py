@@ -10,13 +10,15 @@ Reads the 16 kHz mono WAV Scrawl hands it and prints the transcript JSON Scrawl 
 ~/.config/scrawl/config.json:
 
     "transcriber": "command",
-    "transcribeCommand": ["/opt/homebrew/bin/uv", "run", "--quiet", "--script",
+    "transcribeCommand": ["/Users/you/.local/share/uv/tools/parakeet-mlx/bin/python",
                           "/path/to/scrawl-parakeet.py", "{audio}"]
 
-Needs uv and ffmpeg (brew install uv ffmpeg). Run it once by hand on any WAV before the first
-recording: that run resolves the dependencies and downloads the model (about 1.2 GB) from
-Hugging Face, which can outlast Scrawl's timeout. Once the model is in the hub cache the script
-runs offline. SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
+Needs ffmpeg and parakeet-mlx as a uv tool (brew install uv ffmpeg; uv tool install
+parakeet-mlx). Run it once by hand with that Python on any WAV before the first recording: that
+run downloads the model (about 1.2 GB) from Hugging Face, which can outlast Scrawl's timeout.
+Once the model is in the hub cache the script runs offline. Point Scrawl at the tool's Python,
+not at `uv run --script`, which can stall on uv's cache lock when the app launches it.
+SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
 """
 
 import glob
