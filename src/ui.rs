@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,17 +9,18 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, div, img, point,
     prelude::*, px, relative, rgb, rgba, size, svg,
 };
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol};
-use objc2::{AnyThread, DefinedClass, MainThreadOnly, msg_send, sel};
-use objc2_app_kit::{
-    NSApplication, NSCellImagePosition, NSColor, NSImage, NSMenu, NSMenuDelegate, NSMenuItem,
-    NSStatusBar, NSStatusItem, NSStatusWindowLevel, NSWindow, NSWindowButton,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+
+// The operating system around the shared UI: the menu bar or notification area menu, native
+// window levels and styles, and the pill's native shell. Each module provides the same items.
+#[cfg_attr(target_os = "macos", path = "ui/macos.rs")]
+#[cfg_attr(target_os = "windows", path = "ui/windows.rs")]
+mod platform;
+use platform::{
+    PillChrome, install_status_bar, pointer_on_hud_pill, reduce_motion, set_status_inbox_count,
+    set_status_text,
 };
-use objc2_foundation::{MainThreadMarker, NSData, NSObject, NSSize, NSString};
-use screencapturekit::prelude::*;
-use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
+#[cfg(target_os = "windows")]
+pub(crate) use platform::{gpui_display_for, hwnd_of, set_app_icon};
 
 use crate::audio::AudioRecorder;
 use crate::capture::{
@@ -31,10 +31,13 @@ use crate::capture::{
     update_global_shortcut,
 };
 use crate::helper::PhoneDevice;
-use crate::laser_overlay::MetalLaserOverlay;
+#[cfg(target_os = "macos")]
+use crate::laser_overlay::MetalLaserOverlay as LaserOverlay;
 use crate::model::{CaptureMode, ScrawlBundle, TargetFrame, TargetInfo, format_clock};
 use crate::phone::PhoneSession;
 use crate::sketch::timeline;
+#[cfg(target_os = "windows")]
+use crate::win::overlay::InkOverlay as LaserOverlay;
 
 const SIDEBAR_BG: u32 = 0x111111;
 const CANVAS_BG: u32 = 0x161616;
@@ -361,18 +364,6 @@ fn uncover_alpha(outer: f32, x: f32, w: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Whether macOS asks for reduced motion (Accessibility ▸ Display ▸ Reduce motion).
-fn reduce_motion() -> bool {
-    use objc2::runtime::AnyClass;
-    let Some(cls) = AnyClass::get(c"NSWorkspace") else {
-        return false;
-    };
-    unsafe {
-        let workspace: *mut AnyObject = msg_send![cls, sharedWorkspace];
-        !workspace.is_null() && msg_send![workspace, accessibilityDisplayShouldReduceMotion]
-    }
-}
-
 /// Intrinsic outer width of the capsule for a phase, mirroring the layout in `HudPillWindow`.
 /// `hold`: the held switcher, which always lists iPhone and records on release (no Record chip).
 /// `chips`: a Recording capsule showing its switch chips.
@@ -449,177 +440,9 @@ enum MenuAction {
     Quit,
 }
 
-struct MenuTargetIvars {
-    sender: flume::Sender<MenuAction>,
-}
-
-objc2::define_class!(
-    #[unsafe(super = NSObject)]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = MenuTargetIvars]
-    struct ScrawlMenuTarget;
-
-    unsafe impl NSObjectProtocol for ScrawlMenuTarget {}
-
-    impl ScrawlMenuTarget {
-        #[unsafe(method(toggleCapture:))]
-        fn toggle_capture(&self, _sender: &AnyObject) {
-            let _ = self.ivars().sender.try_send(MenuAction::ToggleCapture);
-        }
-
-        #[unsafe(method(chooseTarget:))]
-        fn choose_target(&self, _sender: &AnyObject) {
-            let _ = self.ivars().sender.try_send(MenuAction::ChooseTarget);
-        }
-
-        #[unsafe(method(openLatest:))]
-        fn open_latest(&self, _sender: &AnyObject) {
-            let _ = self.ivars().sender.try_send(MenuAction::OpenLatest);
-        }
-
-        #[unsafe(method(exportVideo:))]
-        fn export_video(&self, _sender: &AnyObject) {
-            let _ = self.ivars().sender.try_send(MenuAction::ExportVideo);
-        }
-
-        #[unsafe(method(openSettings:))]
-        fn open_settings(&self, _sender: &AnyObject) {
-            let _ = self.ivars().sender.try_send(MenuAction::Settings);
-        }
-
-        #[unsafe(method(checkForUpdates:))]
-        fn check_for_updates(&self, _sender: &AnyObject) {
-            let _ = self.ivars().sender.try_send(MenuAction::CheckForUpdates);
-        }
-
-        #[unsafe(method(quitApp:))]
-        fn quit_app(&self, _sender: &AnyObject) {
-            let _ = self.ivars().sender.try_send(MenuAction::Quit);
-        }
-
-        #[unsafe(method(openInboxItem:))]
-        fn open_inbox_item(&self, sender: &NSMenuItem) {
-            let path = sender
-                .representedObject()
-                .and_then(|object| object.downcast::<NSString>().ok())
-                .map(|path| PathBuf::from(path.to_string()));
-            if let Some(path) = path {
-                let _ = self.ivars().sender.try_send(MenuAction::OpenInbox(path));
-            }
-        }
-    }
-
-    unsafe impl NSMenuDelegate for ScrawlMenuTarget {
-        #[unsafe(method(menuNeedsUpdate:))]
-        fn menu_needs_update(&self, menu: &NSMenu) {
-            rebuild_inbox_menu_items(menu, self);
-            if let Some(item) = menu.itemWithTag(RECORD_MENU_TAG) {
-                item.setTitle(&NSString::from_str(&record_menu_title()));
-            }
-            if let Some(item) = menu.itemWithTag(EXPORT_VIDEO_MENU_TAG) {
-                item.setHidden(!crate::handoff::video_export());
-            }
-        }
-    }
-);
-
-/// Tag on the status menu's inbox rows, so each open can replace them.
-const INBOX_MENU_TAG: isize = 0x5c4a;
-/// Tag on **Export Last Capture as Video…**, shown only with `"videoExport": true`.
-const EXPORT_VIDEO_MENU_TAG: isize = 0x5c4e;
-/// Tag on **Record Screen**, whose title carries the record shortcut.
-const RECORD_MENU_TAG: isize = 0x5c4d;
-
-/// "Record Screen" with the record shortcut as it is now (Settings can change it).
-fn record_menu_title() -> String {
-    format!(
-        "Record Screen  {}",
-        crate::settings::Shortcuts::load().record.label
-    )
-}
-
-/// Lists unhandled iPhone captures at the top of the status menu, read fresh from disk so the
-/// ages are current.
-fn rebuild_inbox_menu_items(menu: &NSMenu, target: &ScrawlMenuTarget) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    for index in (0..menu.numberOfItems()).rev() {
-        if menu
-            .itemAtIndex(index)
-            .is_some_and(|item| item.tag() == INBOX_MENU_TAG)
-        {
-            menu.removeItemAtIndex(index);
-        }
-    }
-    let inbox = crate::inbox::Inbox::load_default();
-    if inbox.len() == 0 {
-        return;
-    }
-    let now = crate::now_epoch_ms();
-    let mut rows = Vec::new();
-    let has_section_header: bool = unsafe {
-        msg_send![objc2::class!(NSMenuItem), respondsToSelector: sel!(sectionHeaderWithTitle:)]
-    };
-    let title = NSString::from_str("From iPhone");
-    rows.push(if has_section_header {
-        NSMenuItem::sectionHeaderWithTitle(&title, mtm)
-    } else {
-        let header = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                &title,
-                None,
-                &NSString::new(),
-            )
-        };
-        header.setEnabled(false);
-        header
-    });
-    let icon = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &NSString::from_str("iphone"),
-        None,
-    );
-    for entry in inbox.entries() {
-        let item = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                &NSString::from_str(&entry.label(now)),
-                Some(sel!(openInboxItem:)),
-                &NSString::new(),
-            )
-        };
-        unsafe {
-            item.setTarget(Some(target));
-            item.setRepresentedObject(Some(&NSString::from_str(&entry.dir.display().to_string())));
-        }
-        item.setImage(icon.as_deref());
-        rows.push(item);
-    }
-    rows.push(NSMenuItem::separatorItem(mtm));
-    for (index, item) in rows.iter().enumerate() {
-        item.setTag(INBOX_MENU_TAG);
-        menu.insertItem_atIndex(item, index as isize);
-    }
-}
-
 /// Text beside the menu bar icon while a video export runs (`None` goes back to the inbox count).
 static EXPORT_STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static EXPORTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn set_status_text(text: &str) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    STATUS_BAR.with(|slot| {
-        let slot = slot.borrow();
-        let Some(button) = slot.as_ref().and_then(|bar| bar._item.button(mtm)) else {
-            return;
-        };
-        button.setImagePosition(NSCellImagePosition::ImageLeft);
-        button.setTitle(&NSString::from_str(text));
-    });
-}
 
 /// Exports the newest bundle to `~/Movies/Scrawl/<name>.mp4` off the main thread, reporting
 /// through `EXPORT_STATUS`, then reveals the file in Finder.
@@ -652,10 +475,7 @@ fn start_video_export() {
                 Ok(exported) => {
                     scrawl_log(format!("Exported {}", crate::export::describe(&exported)));
                     say(Some("Exported".into()));
-                    let _ = std::process::Command::new("/usr/bin/open")
-                        .arg("-R")
-                        .arg(&exported.path)
-                        .spawn();
+                    let _ = crate::handoff::reveal_path(&exported.path);
                 }
                 Err(error) => {
                     scrawl_log(format!("Video export failed: {error:#}"));
@@ -669,471 +489,6 @@ fn start_video_export() {
     if spawned.is_err() {
         say(None);
         EXPORTING.store(false, Ordering::SeqCst);
-    }
-}
-
-/// Shows the unhandled iPhone capture count beside the menu bar icon.
-fn set_status_inbox_count(count: usize) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    STATUS_BAR.with(|slot| {
-        let slot = slot.borrow();
-        let Some(button) = slot.as_ref().and_then(|bar| bar._item.button(mtm)) else {
-            return;
-        };
-        button.setImagePosition(if count == 0 {
-            NSCellImagePosition::ImageOnly
-        } else {
-            NSCellImagePosition::ImageLeft
-        });
-        button.setTitle(&NSString::from_str(&if count == 0 {
-            String::new()
-        } else {
-            count.to_string()
-        }));
-    });
-}
-
-impl ScrawlMenuTarget {
-    fn new(sender: flume::Sender<MenuAction>, mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(MenuTargetIvars { sender });
-        unsafe { msg_send![super(this), init] }
-    }
-}
-
-struct StatusBarController {
-    _item: Retained<NSStatusItem>,
-    _menu: Retained<NSMenu>,
-    _target: Retained<ScrawlMenuTarget>,
-}
-
-thread_local! {
-    static STATUS_BAR: RefCell<Option<StatusBarController>> = const { RefCell::new(None) };
-}
-
-fn install_status_bar() -> Option<flume::Receiver<MenuAction>> {
-    let mtm = MainThreadMarker::new()?;
-    let (sender, receiver) = flume::bounded(16);
-    let target = ScrawlMenuTarget::new(sender, mtm);
-    let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Scrawl"));
-
-    let add = |title: &str, action: objc2::runtime::Sel| {
-        let item = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                &NSString::from_str(title),
-                Some(action),
-                &NSString::new(),
-            )
-        };
-        unsafe { item.setTarget(Some(&target)) };
-        menu.addItem(&item);
-    };
-
-    add(&record_menu_title(), sel!(toggleCapture:));
-    if let Some(item) = menu.itemAtIndex(menu.numberOfItems() - 1) {
-        item.setTag(RECORD_MENU_TAG);
-    }
-    add("Choose What to Record…", sel!(chooseTarget:));
-    menu.addItem(&NSMenuItem::separatorItem(mtm));
-    add("Open Latest Capture", sel!(openLatest:));
-    add("Export Last Capture as Video…", sel!(exportVideo:));
-    if let Some(item) = menu.itemAtIndex(menu.numberOfItems() - 1) {
-        item.setTag(EXPORT_VIDEO_MENU_TAG);
-        item.setHidden(!crate::handoff::video_export());
-    }
-    menu.addItem(&NSMenuItem::separatorItem(mtm));
-    add("Settings…", sel!(openSettings:));
-    if let Some(item) = menu.itemAtIndex(menu.numberOfItems() - 1) {
-        item.setKeyEquivalent(&NSString::from_str(","));
-    }
-    add("Check for Updates…", sel!(checkForUpdates:));
-    add("Quit Scrawl", sel!(quitApp:));
-    if let Some(item) = menu.itemAtIndex(menu.numberOfItems() - 1) {
-        item.setKeyEquivalent(&NSString::from_str("q"));
-    }
-
-    menu.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*target)));
-
-    let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
-    if let Some(button) = item.button(mtm) {
-        let mb_bytes = include_bytes!("../assets/menubar-icon@2x.png");
-        let mb_data = NSData::with_bytes(mb_bytes);
-        if let Some(img) = NSImage::initWithData(NSImage::alloc(), &mb_data) {
-            img.setSize(NSSize::new(18.0, 18.0));
-            img.setTemplate(true);
-            button.setImage(Some(&img));
-        } else {
-            button.setTitle(&NSString::from_str("✎"));
-        }
-    }
-    let app_bytes = include_bytes!("../assets/app-icon.png");
-    let app_data = NSData::with_bytes(app_bytes);
-    if let Some(app_img) = NSImage::initWithData(NSImage::alloc(), &app_data) {
-        unsafe {
-            NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&app_img));
-        }
-    }
-    item.setMenu(Some(&menu));
-
-    STATUS_BAR.with(|slot| {
-        *slot.borrow_mut() = Some(StatusBarController {
-            _item: item,
-            _menu: menu,
-            _target: target,
-        });
-    });
-    Some(receiver)
-}
-
-fn find_hud_pill_ns_window() -> Option<Retained<NSWindow>> {
-    let mtm = MainThreadMarker::new()?;
-    let app = NSApplication::sharedApplication(mtm);
-    for win in app.windows() {
-        let size = win.frame().size;
-        if ((size.width - f64::from(PILL_WINDOW_W)).abs() < 8.0
-            || (size.width - f64::from(crate::native::pill::model::PANEL_W)).abs() < 8.0)
-            && (size.height - f64::from(PILL_WINDOW_H)).abs() < 8.0
-        {
-            return Some(win);
-        }
-    }
-    None
-}
-
-/// Whether the pointer is over the HUD pill's window: the capsule plus a small margin, so the
-/// switch chips stay while the user reaches for them.
-fn pointer_on_hud_pill() -> bool {
-    use objc2::runtime::AnyClass;
-    use objc2_foundation::NSPoint;
-    let (Some(win), Some(cls)) = (find_hud_pill_ns_window(), AnyClass::get(c"NSEvent")) else {
-        return false;
-    };
-    let p: NSPoint = unsafe { msg_send![cls, mouseLocation] };
-    let f = win.frame();
-    p.x >= f.origin.x
-        && p.x <= f.origin.x + f.size.width
-        && p.y >= f.origin.y
-        && p.y <= f.origin.y + f.size.height
-}
-
-fn find_picker_ns_window() -> Option<Retained<NSWindow>> {
-    let mtm = MainThreadMarker::new()?;
-    let app = NSApplication::sharedApplication(mtm);
-    for win in app.windows() {
-        if win.ignoresMouseEvents() {
-            continue;
-        }
-        let size = win.frame().size;
-        if size.width >= 600.0
-            && size.height >= 200.0
-            && (size.width - 1120.0).abs() > 8.0
-            && (size.width - f64::from(PILL_WINDOW_W)).abs() > 8.0
-        {
-            return Some(win);
-        }
-    }
-    None
-}
-
-fn sync_full_size_content_view(ns_window: &NSWindow) {
-    for kind in [
-        NSWindowButton::CloseButton,
-        NSWindowButton::MiniaturizeButton,
-        NSWindowButton::ZoomButton,
-    ] {
-        if let Some(button) = ns_window.standardWindowButton(kind) {
-            button.setHidden(true);
-        }
-    }
-    if let Some(cv) = ns_window.contentView() {
-        let bounds = cv.bounds();
-        for sub in cv.subviews() {
-            sub.setFrame(bounds);
-        }
-        if let Some(frame_view) = unsafe { cv.superview() } {
-            for sub in frame_view.subviews() {
-                if sub
-                    .class()
-                    .name()
-                    .to_bytes()
-                    .windows(8)
-                    .any(|w| w == b"Titlebar")
-                {
-                    sub.setHidden(true);
-                }
-            }
-        }
-    }
-}
-
-fn configure_floating_window(ns_window: &NSWindow, ignores_mouse: bool, level_offset: isize) {
-    ns_window.setHidesOnDeactivate(false);
-    ns_window.setIgnoresMouseEvents(ignores_mouse);
-    ns_window.setOpaque(false);
-    ns_window.setBackgroundColor(Some(&NSColor::clearColor()));
-    ns_window.setHasShadow(false);
-    ns_window.setLevel(NSStatusWindowLevel + level_offset);
-    ns_window.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-    );
-    sync_full_size_content_view(ns_window);
-}
-
-#[repr(C)]
-struct OpaqueCGColor {
-    _priv: [u8; 0],
-}
-
-unsafe impl objc2::RefEncode for OpaqueCGColor {
-    const ENCODING_REF: objc2::Encoding =
-        objc2::Encoding::Pointer(&objc2::Encoding::Struct("CGColor", &[]));
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CATransform3D {
-    m11: f64,
-    m12: f64,
-    m13: f64,
-    m14: f64,
-    m21: f64,
-    m22: f64,
-    m23: f64,
-    m24: f64,
-    m31: f64,
-    m32: f64,
-    m33: f64,
-    m34: f64,
-    m41: f64,
-    m42: f64,
-    m43: f64,
-    m44: f64,
-}
-
-unsafe impl objc2::Encode for CATransform3D {
-    const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
-        "CATransform3D",
-        &[
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-            f64::ENCODING,
-        ],
-    );
-}
-
-/// Two-layer Dynamic Island effect on `HudPillWindow`:
-/// 1. `shell_layer` (inserted behind GPUI's `contentView.layer()`) renders the outer black pill
-///    capsule, `1px` specular border, and drop shadow with **zero blur** so the pill's border and
-///    silhouette are always 100% razor-sharp.
-/// 2. `contentView.layer()` (which renders only the inner chips/text on a transparent background)
-///    receives `CAFilter("gaussianBlur")` + `CATransform3D` scale so only the inner contents blur.
-fn apply_pill_layer_effect(
-    ns_window: &NSWindow,
-    shell_slot: &mut Option<Retained<objc2_quartz_core::CALayer>>,
-    pill_width: f32,
-    pill_height: f32,
-    scale: f32,
-    y_offset: f32,
-    opacity: f32,
-    is_completed: bool,
-    blur_radius: f32,
-    // Content scale lost per px of blur (0.015 for whole-state morphs, 0 to keep it still).
-    content_shrink: f32,
-) {
-    use objc2::runtime::AnyClass;
-    use objc2_foundation::{NSArray, NSNumber, NSPoint, NSRect, NSSize};
-    use objc2_quartz_core::{CALayer, CATransaction};
-
-    let Some(cv) = ns_window.contentView() else {
-        return;
-    };
-    cv.setWantsLayer(true);
-    let Some(cv_layer) = cv.layer() else {
-        return;
-    };
-    // GPUI attaches its `CAMetalLayer` to its child `GPUIView` (`cv.subviews().firstObject()`).
-    let gpui_view = cv.subviews().firstObject();
-    let content_layer = gpui_view
-        .as_ref()
-        .and_then(|v| {
-            v.setWantsLayer(true);
-            v.layer()
-        })
-        .unwrap_or_else(|| cv_layer.clone());
-
-    let bounds = cv.bounds();
-    let cx = bounds.size.width * 0.5;
-    let cy = bounds.size.height * 0.5;
-    let s = f64::from(scale.clamp(0.50, 1.15));
-    let ty_unflipped = -f64::from(y_offset);
-    let is_flipped = gpui_view
-        .as_ref()
-        .map_or_else(|| cv.isFlipped(), |v| v.isFlipped());
-    let ty_cv = if is_flipped {
-        f64::from(y_offset)
-    } else {
-        -f64::from(y_offset)
-    };
-
-    if shell_slot.is_none() {
-        let shell = CALayer::new();
-        cv_layer.insertSublayer_below(&shell, Some(&content_layer));
-        *shell_slot = Some(shell);
-    }
-
-    let w_scaled = f64::from(pill_width) * s;
-    let h_scaled = f64::from(pill_height) * s;
-    let shell_rect = NSRect::new(
-        NSPoint::new(cx - w_scaled * 0.5, cy - h_scaled * 0.5 + ty_unflipped),
-        NSSize::new(w_scaled, h_scaled),
-    );
-
-    // Content scales subtly (`0.93 .. 1.0`) inside the crisp outer shell during morphs.
-    let content_s = content_scale(scale, blur_radius, content_shrink);
-    let transform = CATransform3D {
-        m11: content_s,
-        m12: 0.0,
-        m13: 0.0,
-        m14: 0.0,
-        m21: 0.0,
-        m22: content_s,
-        m23: 0.0,
-        m24: 0.0,
-        m31: 0.0,
-        m32: 0.0,
-        m33: 1.0,
-        m34: 0.0,
-        m41: cx * (1.0 - content_s),
-        m42: cy * (1.0 - content_s) + ty_cv,
-        m43: 0.0,
-        m44: 1.0,
-    };
-
-    CATransaction::begin();
-    CATransaction::setDisableActions(true);
-    if let Some(ref shell) = *shell_slot {
-        shell.setFrame(shell_rect);
-        shell.setCornerRadius(h_scaled * 0.5);
-        shell.setBorderWidth(1.0);
-        shell.setOpacity(opacity);
-        shell.setShadowOpacity(0.40 * opacity);
-        shell.setShadowRadius(14.0);
-        shell.setShadowOffset(NSSize::new(0.0, -5.0));
-        unsafe {
-            let bg_ns = NSColor::colorWithSRGBRed_green_blue_alpha(
-                20.0 / 255.0,
-                20.0 / 255.0,
-                22.0 / 255.0,
-                0.96,
-            );
-            let bg_cg: *const OpaqueCGColor = msg_send![&*bg_ns, CGColor];
-            let _: () = msg_send![&**shell, setBackgroundColor: bg_cg];
-
-            let border_ns = if is_completed {
-                NSColor::colorWithSRGBRed_green_blue_alpha(
-                    105.0 / 255.0,
-                    216.0 / 255.0,
-                    159.0 / 255.0,
-                    0.34,
-                )
-            } else {
-                NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.12)
-            };
-            let border_cg: *const OpaqueCGColor = msg_send![&*border_ns, CGColor];
-            let _: () = msg_send![&**shell, setBorderColor: border_cg];
-        }
-    }
-
-    unsafe {
-        let _: () = msg_send![&*content_layer, setTransform: transform];
-        if blur_radius > 0.18
-            && let Some(ca_filter_cls) = AnyClass::get(c"CAFilter")
-        {
-            let filter_type = NSString::from_str("gaussianBlur");
-            let filter: *mut AnyObject = msg_send![ca_filter_cls, filterWithType: &*filter_type];
-            if !filter.is_null() {
-                let radius_num = NSNumber::new_f64(f64::from(blur_radius));
-                let radius_key = NSString::from_str("inputRadius");
-                let _: () = msg_send![filter, setValue: &*radius_num, forKey: &*radius_key];
-                let filter_ref = &*filter;
-                let filters = NSArray::from_slice(&[filter_ref]);
-                content_layer.setFilters(Some(&filters));
-            }
-        } else {
-            content_layer.setFilters(None);
-        }
-    }
-    CATransaction::commit();
-}
-
-/// The content layer's scale: the capsule's, less a little per px of blur.
-fn content_scale(scale: f32, blur_radius: f32, content_shrink: f32) -> f64 {
-    let s = f64::from(scale.clamp(0.50, 1.15));
-    (s * (1.0 - f64::from(blur_radius).min(5.0) * f64::from(content_shrink))).clamp(0.85, 1.06)
-}
-
-/// The pill window's frame in screen points with a top-left origin (the primary display's).
-fn top_left_frame(ns_window: &NSWindow) -> [f32; 4] {
-    let f = ns_window.frame();
-    let primary_h = MainThreadMarker::new()
-        .and_then(|mtm| objc2_app_kit::NSScreen::screens(mtm).firstObject())
-        .map_or(0.0, |screen| screen.frame().size.height);
-    [
-        f.origin.x as f32,
-        (primary_h - f.origin.y - f.size.height) as f32,
-        f.size.width as f32,
-        f.size.height as f32,
-    ]
-}
-
-/// One trace frame for the capsule (`SCRAWL_MOTION_TRACE`): its window, the shell as drawn, the
-/// content's blur and opacity. Returns the mapping for the content's children.
-#[allow(clippy::too_many_arguments)]
-fn trace_capsule(
-    ns_window: &NSWindow,
-    width: f32,
-    scale: f32,
-    y_off: f32,
-    opacity: f32,
-    content_alpha: f32,
-    blur_radius: f32,
-    content_shrink: f32,
-) -> motion::Xf {
-    let win = top_left_frame(ns_window);
-    let (cx, cy) = (win[2] * 0.5, win[3] * 0.5);
-    let s = scale.clamp(0.50, 1.15);
-    let (w, h) = (width * s, ISLAND_H * s);
-    let shell = [win[0] + cx - w * 0.5, win[1] + cy - h * 0.5 + y_off, w, h];
-    motion::trace_element("window", win, 0.0, 0.0, None, None);
-    motion::trace_element("shell", shell, opacity, h * 0.5, None, None);
-    motion::trace_channel("content.blur", "level", blur_radius);
-    motion::trace_channel("content.alpha", "level", content_alpha);
-    motion::trace_channel("shell.width", "position", width);
-    motion::Xf {
-        s: content_scale(scale, blur_radius, content_shrink) as f32,
-        cx,
-        cy,
-        ty: y_off,
-        ox: win[0],
-        oy: win[1],
-        alpha: opacity * content_alpha,
-        clip: shell,
     }
 }
 
@@ -1184,7 +539,8 @@ impl SelectionMode {
 
     /// Modes shown in the HUD, in order; iPhone only while one is cabled.
     pub(crate) fn available(has_iphone: bool) -> &'static [SelectionMode] {
-        if has_iphone {
+        // A cabled iPhone's screen is an AVFoundation capture device, which only macOS has.
+        if has_iphone && cfg!(target_os = "macos") {
             &Self::ALL
         } else {
             &Self::ALL[..3]
@@ -1297,7 +653,7 @@ struct ActiveRecording {
     target: TargetInfo,
     bundle_dir: PathBuf,
     source: CaptureSource,
-    _metal_overlay: Option<MetalLaserOverlay>,
+    _metal_overlay: Option<LaserOverlay>,
 }
 
 impl ActiveRecording {
@@ -1314,7 +670,7 @@ impl ActiveRecording {
 pub struct ScrawlCoordinator {
     telemetry: Arc<SharedCaptureTelemetry>,
     active_recording: Option<ActiveRecording>,
-    picker_metal_overlay: Option<MetalLaserOverlay>,
+    picker_metal_overlay: Option<LaserOverlay>,
     native_pill: Option<crate::native::pill::NativePill>,
     iphone_preview: Option<PhoneSession>,
     island_phase: IslandPhase,
@@ -2074,7 +1430,7 @@ impl ScrawlCoordinator {
 
     /// Stops the active recording and deletes its bundle, leaving the island as it is. Returns
     /// its target and overlay.
-    fn discard_recording(&mut self) -> Option<(TargetInfo, Option<MetalLaserOverlay>)> {
+    fn discard_recording(&mut self) -> Option<(TargetInfo, Option<LaserOverlay>)> {
         set_escape_hotkey_enabled(false);
         let rec = self.active_recording.take()?;
         let _ = self.telemetry.finish_session();
@@ -2275,10 +1631,11 @@ impl ScrawlCoordinator {
     /// Picker keyboard map, shared by the picker window and the HUD pill. Returns whether the
     /// key was handled.
     /// ⌘Q and ⌘, in Scrawl's own windows: a menu bar (accessory) app has no main menu to
-    /// carry them.
+    /// carry them (Ctrl+Q and Ctrl+, on Windows).
     pub fn handle_app_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
         let mods = keystroke.modifiers;
-        if !mods.platform || mods.control || mods.alt || mods.shift {
+        // `secondary` is ⌘ on macOS and Ctrl elsewhere; the other of the two must be up.
+        if !mods.secondary() || (mods.control && mods.platform) || mods.alt || mods.shift {
             return false;
         }
         match keystroke.key.as_str() {
@@ -2423,29 +1780,28 @@ impl ScrawlCoordinator {
             IslandPhase::Hidden | IslandPhase::Dismissing
         );
         self.island_phase = phase;
+        let place = changed
+            && (appearing
+                || matches!(
+                    phase,
+                    IslandPhase::Selecting { .. } | IslandPhase::Recording
+                ));
         if crate::handoff::native_pill() {
             if !matches!(phase, IslandPhase::Hidden) {
                 self.ensure_native_pill();
             }
-            if changed
-                && (appearing
-                    || matches!(
-                        phase,
-                        IslandPhase::Selecting { .. } | IslandPhase::Recording
-                    ))
-            {
+            if place {
                 self.place_capsule();
             }
             self.sync_native_pill();
+        } else if place {
+            self.place_capsule();
         }
     }
 
     /// Puts the capsule on the display in use: the one being recorded, the one the picker is on,
     /// else the one under the pointer.
     fn place_capsule(&self) {
-        let Some(ref pill) = self.native_pill else {
-            return;
-        };
         let centre = |[x, y, w, h]: [f64; 4]| [x + w / 2.0, y + h / 2.0];
         let anchor = match self.island_phase {
             IslandPhase::Recording => self
@@ -2459,8 +1815,12 @@ impl ScrawlCoordinator {
             IslandPhase::Selecting { .. } => Some(centre(self.display_rect.map(f64::from))),
             _ => None,
         };
-        if let Some(point) = anchor.or_else(crate::screens::pointer) {
-            pill.place_on(point);
+        let Some(point) = anchor.or_else(crate::screens::pointer) else {
+            return;
+        };
+        match self.native_pill {
+            Some(ref pill) => pill.place_on(point),
+            None => platform::place_hud_pill(point),
         }
     }
 
@@ -2523,9 +1883,7 @@ impl ScrawlCoordinator {
         if let Some(ref mut overlay) = self.picker_metal_overlay {
             overlay.move_to(frame);
         }
-        if let Some(ns_win) = find_picker_ns_window() {
-            move_window_to_screen(&ns_win, frame);
-        }
+        platform::move_picker_window(frame, cx);
         self.place_capsule();
         self.sync_picker_overlay();
         // The picker draws relative to `display_rect`; with the native capsule nothing else
@@ -3109,9 +2467,10 @@ impl ScrawlCoordinator {
         self.sync_picker_overlay();
         if self.picker_metal_overlay.is_none() && !self.lab {
             let [x, y, w, h] = self.display_rect.map(f64::from);
-            let overlay = MetalLaserOverlay::open(Arc::clone(&self.telemetry), Some([x, y, w, h]))
-                .map_err(|error| scrawl_log(format!("Metal overlay failed: {error}")))
-                .ok();
+            let overlay =
+                platform::open_overlay(Arc::clone(&self.telemetry), Some([x, y, w, h]), cx)
+                    .map_err(|error| scrawl_log(format!("Metal overlay failed: {error}")))
+                    .ok();
             if let Some(ref ov) = overlay {
                 self.telemetry
                     .excluded_window_ids
@@ -3208,7 +2567,7 @@ impl ScrawlCoordinator {
             overlay
         });
         let metal_overlay = metal_overlay.or_else(|| {
-            let ov = MetalLaserOverlay::open(Arc::clone(&self.telemetry), Some(target_rect))
+            let ov = platform::open_overlay(Arc::clone(&self.telemetry), Some(target_rect), cx)
                 .map_err(|error| scrawl_log(format!("Metal overlay failed: {error}")))
                 .ok();
             if let Some(ref o) = ov {
@@ -3389,7 +2748,7 @@ impl ScrawlCoordinator {
             initial_frame.height,
         ]);
         let metal_overlay = self.picker_metal_overlay.take().or_else(|| {
-            MetalLaserOverlay::open(Arc::clone(&self.telemetry), mirror)
+            platform::open_overlay(Arc::clone(&self.telemetry), mirror, cx)
                 .map_err(|error| scrawl_log(format!("Metal overlay failed: {error}")))
                 .ok()
         });
@@ -3604,17 +2963,14 @@ impl ScrawlCoordinator {
 pub struct HudPillWindow {
     coordinator: Entity<ScrawlCoordinator>,
     focus: FocusHandle,
-    ns_window: Option<Retained<NSWindow>>,
-    shell_layer: Option<Retained<objc2_quartz_core::CALayer>>,
+    /// The capsule's native shell, scale and blur where the platform draws them.
+    chrome: PillChrome,
     /// Frames drawn so far, counting to 2.
     frames: u8,
 }
 
 impl Render for HudPillWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.ns_window.is_none() {
-            self.ns_window = find_hud_pill_ns_window();
-        }
         let tracing = motion::tracing();
         let frame = self.frames;
         if tracing && frame == 0 {
@@ -3790,32 +3146,29 @@ impl Render for HudPillWindow {
         let content_shrink = if swap.is_some() { 0.0 } else { 0.015 };
         let is_completed = matches!(target_phase, IslandPhase::Completed { .. });
 
-        if let Some(ref ns_win) = self.ns_window {
-            apply_pill_layer_effect(
-                ns_win,
-                &mut self.shell_layer,
-                render_width,
-                ISLAND_H,
-                scale,
-                y_off,
-                opacity,
-                is_completed,
-                blur_radius,
-                content_shrink,
-            );
-        }
-        let trace_xf = self.ns_window.as_ref().filter(|_| tracing).map(|ns_win| {
-            trace_capsule(
-                ns_win,
-                render_width,
-                scale,
-                y_off,
-                opacity,
-                content_alpha,
-                blur_radius,
-                content_shrink,
-            )
-        });
+        self.chrome.apply(
+            render_width,
+            ISLAND_H,
+            scale,
+            y_off,
+            opacity,
+            is_completed,
+            blur_radius,
+            content_shrink,
+        );
+        let trace_xf = tracing
+            .then(|| {
+                self.chrome.trace(
+                    render_width,
+                    scale,
+                    y_off,
+                    opacity,
+                    content_alpha,
+                    blur_radius,
+                    content_shrink,
+                )
+            })
+            .flatten();
 
         let c_paste_down = self.coordinator.clone();
         let c_paste_up = self.coordinator.clone();
@@ -4192,9 +3545,17 @@ impl Render for HudPillWindow {
             IslandPhase::Hidden | IslandPhase::Dismissing => row,
         };
 
-        let has_shell = self.shell_layer.is_some();
+        let has_shell = self.chrome.has_shell();
         let c_keys = self.coordinator.clone();
         let pin_lead = matches!(content_phase, IslandPhase::Recording);
+        // Without a native shell the capsule itself springs: its size follows the shell's scale
+        // and it rides the shell's y offset, with the shell's shadow.
+        let (shell_w, shell_h, shell_y) = if has_shell {
+            (render_width, ISLAND_H, 0.0)
+        } else {
+            let s = scale.clamp(0.5, 1.15);
+            (render_width * s, ISLAND_H * s, y_off)
+        };
 
         div()
             .track_focus(&self.focus)
@@ -4213,11 +3574,25 @@ impl Render for HudPillWindow {
             .opacity(opacity)
             .child(
                 div()
-                    .w(px(render_width))
-                    .h(px(ISLAND_H))
+                    .relative()
+                    .top(px(shell_y))
+                    .w(px(shell_w))
+                    .h(px(shell_h))
                     .flex_none()
                     .p(px(if has_shell { ISLAND_INSET } else { ISLAND_PAD }))
-                    .rounded(px(ISLAND_RADIUS))
+                    .rounded(px(if has_shell {
+                        ISLAND_RADIUS
+                    } else {
+                        shell_h / 2.0
+                    }))
+                    .when(!has_shell, |d| {
+                        d.shadow(vec![BoxShadow {
+                            color: gpui::hsla(0.0, 0.0, 0.0, 0.40 * opacity),
+                            offset: point(px(0.0), px(5.0)),
+                            blur_radius: px(14.0),
+                            spread_radius: px(0.0),
+                        }])
+                    })
                     .overflow_hidden()
                     .flex()
                     .items_center()
@@ -4377,9 +3752,7 @@ fn island_lead() -> Div {
         .items_center()
         .pr(px(LEAD_TRAIL))
         .whitespace_nowrap()
-        .on_mouse_down(MouseButton::Left, |_, window, _| {
-            window.start_window_move();
-        })
+        .map(platform::window_drag_region)
 }
 
 fn island_divider() -> Div {
@@ -4572,6 +3945,8 @@ impl Render for TargetPickerWindow {
         let win_bounds = window.bounds();
         // The picker covers one display; pointer, windows and areas are global points.
         let origin = [coord.display_rect[0], coord.display_rect[1]];
+        // Global coordinates are points on macOS and pixels on Windows; this window lays out in points.
+        let k = platform::points_per_pixel(window);
         let screen = [
             f32::from(win_bounds.size.width),
             f32::from(win_bounds.size.height),
@@ -4596,7 +3971,7 @@ impl Render for TargetPickerWindow {
                 let w = (a[0] - b[0]).abs().max(1.0);
                 let h = (a[1] - b[1]).abs().max(1.0);
                 (
-                    [a[0].min(b[0]) - origin[0], a[1].min(b[1]) - origin[1], w, h],
+                    [(a[0].min(b[0]) - origin[0]) * k, (a[1].min(b[1]) - origin[1]) * k, w * k, h * k],
                     format!("{} × {}", w.round() as i32, h.round() as i32),
                 )
             }),
@@ -4618,7 +3993,7 @@ impl Render for TargetPickerWindow {
                     t.frame.width as f32,
                     t.frame.height as f32,
                 ]);
-                ([rx - origin[0], ry - origin[1], rw, rh], title)
+                ([(rx - origin[0]) * k, (ry - origin[1]) * k, rw * k, rh * k], title)
             }),
             SelectionMode::Screen if hold => Some((
                 [0.0, 0.0, screen[0], screen[1]],
@@ -4641,7 +4016,7 @@ impl Render for TargetPickerWindow {
                     "Click to record".to_string()
                 };
                 (
-                    [rx - origin[0], ry - origin[1], rw, rh],
+                    [(rx - origin[0]) * k, (ry - origin[1]) * k, rw * k, rh * k],
                     format!("{iphone_name} · {action}"),
                 )
             }),
@@ -4670,7 +4045,7 @@ impl Render for TargetPickerWindow {
             )
         });
 
-        // The 120Hz `MetalLaserOverlay` draws the backdrop dim, selection cutout, window tint,
+        // The 120Hz `LaserOverlay` draws the backdrop dim, selection cutout, window tint,
         // and inset border continuously across both `Selecting` and `Recording` so there is zero
         // window swap or border jump on recording start. `TargetPickerWindow` only provides the
         // hit-test surface, cursor style, camera cursor follower, and tabular dimension badge.
@@ -4692,8 +4067,8 @@ impl Render for TargetPickerWindow {
         if mode == SelectionMode::Window
             && let Some([px_screen, py_screen]) = pointer
         {
-            let cx_local = px_screen - origin[0];
-            let cy_local = py_screen - origin[1];
+            let cx_local = (px_screen - origin[0]) * k;
+            let cy_local = (py_screen - origin[1]) * k;
             root = root.child(camera_cursor_badge(cx_local, cy_local));
         }
 
@@ -5007,7 +4382,7 @@ impl Render for BundleReviewWindow {
                     let key = event.keystroke.key.as_str();
                     if !handled
                         && (key == "escape"
-                            || (event.keystroke.modifiers.platform
+                            || (event.keystroke.modifiers.secondary()
                                 && key.eq_ignore_ascii_case("w")))
                     {
                         window.remove_window();
@@ -5127,7 +4502,8 @@ impl Render for BundleReviewWindow {
                     }
                     false
                 });
-                if !handled && (key == "escape" || (mods.platform && key.eq_ignore_ascii_case("w")))
+                if !handled
+                    && (key == "escape" || (mods.secondary() && key.eq_ignore_ascii_case("w")))
                 {
                     window.remove_window();
                 } else if !handled {
@@ -5143,8 +4519,8 @@ impl Render for BundleReviewWindow {
             .child(
                 div()
                     .h(px(48.0))
-                    .pl(px(78.0))
-                    .pr_4()
+                    .pl(px(platform::HEADER_LEAD))
+                    .pr(px(platform::HEADER_TRAIL))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -5153,9 +4529,7 @@ impl Render for BundleReviewWindow {
                     .bg(rgb(SIDEBAR_BG))
                     .border_b_1()
                     .border_color(rgb(LINE_COLOR))
-                    .on_mouse_down(MouseButton::Left, |_, window, _| {
-                        window.start_window_move();
-                    })
+                    .map(platform::window_drag_region)
                     .child(
                         div()
                             .flex_1()
@@ -5252,17 +4626,20 @@ impl Render for BundleReviewWindow {
                                 }),
                             )
                             .child(
-                                action_button("btn-reveal", "Show in Finder", false).on_click(
-                                    move |_, _, cx| {
-                                        let _ = std::process::Command::new("/usr/bin/open")
-                                            .arg(&send_dir)
-                                            .spawn();
-                                        c_send.update(cx, |coord, cx| {
-                                            coord.review_status = Some("Opened in Finder".into());
-                                            cx.notify();
-                                        });
-                                    },
-                                ),
+                                action_button(
+                                    "btn-reveal",
+                                    &format!("Show in {}", platform::FILE_MANAGER),
+                                    false,
+                                )
+                                .on_click(move |_, _, cx| {
+                                    let _ = crate::handoff::open_path(&send_dir);
+                                    c_send.update(cx, |coord, cx| {
+                                        coord.review_status = Some(
+                                            format!("Opened in {}", platform::FILE_MANAGER).into(),
+                                        );
+                                        cx.notify();
+                                    });
+                                }),
                             )
                             .child(
                                 action_button(
@@ -5288,7 +4665,8 @@ impl Render for BundleReviewWindow {
                                     });
                                 }),
                             ),
-                    ),
+                    )
+                    .children(platform::caption_buttons()),
             )
             .child(
                 // Main Workspace: Stage on Left + Timeline Sidebar on Right
@@ -5627,42 +5005,14 @@ fn hint_button(
         })
 }
 
-/// The GPUI display that is the screen at `frame` (global points), else the primary one.
-fn display_at(frame: [f32; 4], cx: &App) -> Option<std::rc::Rc<dyn gpui::PlatformDisplay>> {
-    let screens = crate::screens::displays();
-    let id = crate::screens::index_for_rect(&screens, frame.map(f64::from)).map(|i| screens[i].id);
-    id.and_then(|id| cx.displays().into_iter().find(|d| u32::from(d.id()) == id))
-        .or_else(|| cx.primary_display())
-}
-
-/// Moves a window to cover the screen at `frame` (global points).
-fn move_window_to_screen(ns_win: &NSWindow, frame: [f64; 4]) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let Some(primary_h) = objc2_app_kit::NSScreen::screens(mtm)
-        .firstObject()
-        .map(|s| s.frame().size.height)
-    else {
-        return;
-    };
-    let [x, y, w, h] = crate::screens::flip(frame, primary_h);
-    ns_win.setFrame_display(
-        objc2_foundation::NSRect::new(
-            objc2_foundation::NSPoint::new(x, y),
-            objc2_foundation::NSSize::new(w, h),
-        ),
-        true,
-    );
-}
-
 fn open_picker_windows(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
     close_picker_window(cx);
     let screen = coord_entity.read(cx).display_rect;
-    let display = display_at(screen, cx);
-    let display_bounds = Bounds {
-        origin: Point::default(),
-        size: size(px(screen[2]), px(screen[3])),
+    let display = platform::display_at(screen, cx);
+    // Windows wants the display's own origin, or GPUI puts the picker at its default bounds.
+    let picker_bounds = Bounds {
+        origin: platform::window_origin(display.as_deref()),
+        size: platform::layout_size(screen, display.as_deref()),
     };
     let display_id = display.as_ref().map(|d| d.id());
     let lab = coord_entity.read(cx).lab;
@@ -5670,10 +5020,7 @@ fn open_picker_windows(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
     let picker_coord = coord_entity.clone();
     let _ = cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: Point::default(),
-                size: display_bounds.size,
-            })),
+            window_bounds: Some(WindowBounds::Windowed(picker_bounds)),
             display_id,
             titlebar: None,
             focus: !lab,
@@ -5686,28 +5033,16 @@ fn open_picker_windows(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
             ..Default::default()
         },
         move |window, cx| {
-            if let Some(ns_win) = find_picker_ns_window() {
-                ns_win.setStyleMask(
-                    NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-                );
-                configure_floating_window(&ns_win, picker_coord.read(cx).lab, 1);
-                // The display the picker was opened for, or has since followed the pointer to.
-                move_window_to_screen(&ns_win, picker_coord.read(cx).display_rect.map(f64::from));
-                // gpui made it key before the style change above; make it key again so it
-                // takes the keys once Scrawl is active (see the end of this function).
-                if !lab {
-                    ns_win.makeKeyAndOrderFront(None);
-                }
-                let num = ns_win.windowNumber().max(0) as u32;
-                if num > 0 {
-                    picker_coord
-                        .read(cx)
-                        .telemetry
-                        .excluded_window_ids
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(num);
-                }
+            // The display the picker was opened for, or has since followed the pointer to.
+            let frame = picker_coord.read(cx).display_rect.map(f64::from);
+            if let Some(num) = platform::configure_picker_window(window, lab, frame, cx) {
+                picker_coord
+                    .read(cx)
+                    .telemetry
+                    .excluded_window_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(num);
             }
             let focus = cx.focus_handle();
             if !lab {
@@ -5726,11 +5061,33 @@ fn open_picker_windows(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
     // reach the picker while it is. The held switcher takes its keys from the key tap instead,
     // so it leaves the app in front alone.
     if !lab && !coord_entity.read(cx).switcher.is_held() {
-        remember_front_app();
-        cx.activate(true);
+        platform::take_keys(cx);
     }
 
     ensure_hud_pill_open(coord_entity, cx);
+}
+
+/// Puts Scrawl's floating windows back in order once they've all opened: the pill above the
+/// picker above the ink overlay (which places itself a turn later).
+fn restack_soon(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        cx.background_executor()
+            .timer(Duration::from_millis(60))
+            .await;
+        let _ = cx.update(|cx| {
+            for handle in cx.windows() {
+                if handle.downcast::<TargetPickerWindow>().is_some() {
+                    let _ = handle.update(cx, |_, window, _| platform::raise_window(window));
+                }
+            }
+            for handle in cx.windows() {
+                if handle.downcast::<HudPillWindow>().is_some() {
+                    let _ = handle.update(cx, |_, window, _| platform::raise_window(window));
+                }
+            }
+        });
+    })
+    .detach();
 }
 
 fn ensure_hud_pill_open(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
@@ -5741,13 +5098,11 @@ fn ensure_hud_pill_open(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) 
         });
         return;
     }
+    restack_soon(cx);
     for handle in cx.windows() {
         if let Some(pill) = handle.downcast::<HudPillWindow>() {
             let _ = pill.update(cx, |view, _, cx| {
-                if let Some(ref ns_win) = view.ns_window {
-                    ns_win.setLevel(NSStatusWindowLevel + 3);
-                    ns_win.orderFrontRegardless();
-                }
+                view.chrome.raise();
                 cx.notify();
             });
             return;
@@ -5765,7 +5120,7 @@ fn ensure_hud_pill_open(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) 
     };
     let near =
         in_use.or_else(|| crate::screens::pointer().map(|[x, y]| [x as f32, y as f32, 1.0, 1.0]));
-    let display = near.map_or_else(|| cx.primary_display(), |r| display_at(r, cx));
+    let display = near.map_or_else(|| cx.primary_display(), |r| platform::display_at(r, cx));
     let display_bounds = display.as_ref().map_or_else(
         || Bounds {
             origin: Point::default(),
@@ -5778,10 +5133,7 @@ fn ensure_hud_pill_open(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) 
     // Transparent Dynamic Island host positioned cleanly below the 37pt macOS menu bar
     let pill_size: Size<Pixels> = size(px(PILL_WINDOW_W), px(PILL_WINDOW_H));
     let pill_bounds = Bounds {
-        origin: point(
-            (display_bounds.size.width - pill_size.width) * 0.5,
-            px(34.0),
-        ),
+        origin: platform::hud_pill_origin(display_bounds),
         size: pill_size,
     };
     let pill_coord = coord_entity.clone();
@@ -5800,43 +5152,15 @@ fn ensure_hud_pill_open(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) 
             ..Default::default()
         },
         move |window, cx| {
-            let ns_window = find_hud_pill_ns_window();
-            let mut shell_layer = None;
-            if let Some(ref ns_win) = ns_window {
-                ns_win.setStyleMask(
-                    NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-                );
-                unsafe {
-                    let sel = sel!(_setPreventsActivation:);
-                    let responds: bool = msg_send![&**ns_win, respondsToSelector: sel];
-                    if responds {
-                        let _: () = msg_send![&**ns_win, _setPreventsActivation: true];
-                    }
-                }
-                configure_floating_window(ns_win, false, 3);
-                ns_win.orderFrontRegardless();
-                apply_pill_layer_effect(
-                    ns_win,
-                    &mut shell_layer,
-                    205.0,
-                    ISLAND_H,
-                    0.92,
-                    -6.0,
-                    0.0,
-                    false,
-                    3.5,
-                    0.015,
-                );
-                let num = ns_win.windowNumber().max(0) as u32;
-                if num > 0 {
-                    pill_coord
-                        .read(cx)
-                        .telemetry
-                        .excluded_window_ids
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(num);
-                }
+            let chrome = PillChrome::open(window, cx);
+            if let Some(num) = chrome.window_number() {
+                pill_coord
+                    .read(cx)
+                    .telemetry
+                    .excluded_window_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(num);
             }
             let focus = cx.focus_handle();
             window.focus(&focus);
@@ -5845,8 +5169,7 @@ fn ensure_hud_pill_open(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) 
                 HudPillWindow {
                     coordinator: pill_coord,
                     focus,
-                    ns_window,
-                    shell_layer,
+                    chrome,
                     frames: 0,
                 }
             })
@@ -5872,50 +5195,6 @@ fn close_capture_windows(cx: &mut App) {
     }
 }
 
-/// The app that was in front when Scrawl activated itself for the picker or the review window
-/// (0: none).
-static PREVIOUS_FRONT_APP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-
-/// Called just before Scrawl activates itself to take the keys. Scrawl in front already (one
-/// key window opening over another) keeps the app remembered first.
-fn remember_front_app() {
-    use objc2_app_kit::NSWorkspace;
-    let front = NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .map_or(0, |app| app.processIdentifier());
-    if front > 0 && front != std::process::id() as i32 {
-        PREVIOUS_FRONT_APP.store(front, std::sync::atomic::Ordering::Release);
-    }
-}
-
-/// Run (deferred) after any window closes: once neither a picker nor a review window is left,
-/// the app that was in front before gets the keys back. `NSApp.deactivate()` isn't enough: a
-/// menu bar (accessory) app stays frontmost with no windows, and keys go nowhere. Deferred, a
-/// picker replacing another one is open again by the time this looks.
-fn hand_back_keys(cx: &mut App) {
-    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-    if cx.windows().iter().any(|handle| {
-        handle.downcast::<TargetPickerWindow>().is_some()
-            || handle.downcast::<BundleReviewWindow>().is_some()
-    }) {
-        return;
-    }
-    let previous = PREVIOUS_FRONT_APP.swap(0, std::sync::atomic::Ordering::AcqRel);
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let app = NSApplication::sharedApplication(mtm);
-    if !app.isActive() {
-        return;
-    }
-    let reactivated = previous > 0
-        && NSRunningApplication::runningApplicationWithProcessIdentifier(previous)
-            .is_some_and(|prev| prev.activateWithOptions(NSApplicationActivationOptions::empty()));
-    if !reactivated {
-        app.deactivate();
-    }
-}
-
 fn close_review_window(cx: &mut App) {
     for handle in cx.windows() {
         if handle.downcast::<BundleReviewWindow>().is_some() {
@@ -5930,8 +5209,7 @@ fn close_review_window(cx: &mut App) {
 fn open_review_window(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
     for handle in cx.windows() {
         if let Some(review) = handle.downcast::<BundleReviewWindow>() {
-            remember_front_app();
-            cx.activate(true);
+            platform::take_keys(cx);
             let _ = review.update(cx, |_, window, cx| {
                 window.activate_window();
                 cx.notify();
@@ -5945,10 +5223,12 @@ fn open_review_window(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(gpui::TitlebarOptions {
-                title: None,
+                // The taskbar and Alt+Tab show it on Windows; macOS draws no title here.
+                title: cfg!(target_os = "windows").then(|| "Scrawl".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(16.0), px(16.0))),
             }),
+            app_id: Some("dev.kitlangton.scrawl".into()),
             focus: true,
             show: true,
             kind: WindowKind::Normal,
@@ -5957,6 +5237,7 @@ fn open_review_window(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
             ..Default::default()
         },
         move |window, cx| {
+            platform::decorate_app_window(window);
             let focus = cx.focus_handle();
             window.focus(&focus);
             cx.new(|cx| {
@@ -5965,8 +5246,7 @@ fn open_review_window(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
             })
         },
     );
-    remember_front_app();
-    cx.activate(true);
+    platform::take_keys(cx);
 }
 
 pub(crate) fn start_metric(name: &str, started: Instant) {
@@ -6032,16 +5312,6 @@ pub fn run_start_benchmark() {
     });
 }
 
-/// Keeps Scrawl a menu bar app with no Dock icon. Info.plist's `LSUIElement` starts it that way,
-/// but gpui 0.2.2 sets the regular activation policy once launched, so this runs after that.
-fn stay_out_of_dock() {
-    use objc2_app_kit::NSApplicationActivationPolicy;
-    if let Some(mtm) = MainThreadMarker::new() {
-        NSApplication::sharedApplication(mtm)
-            .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    }
-}
-
 /// Runs the GPUI desktop app, optionally opening an initial `.scrawl` bundle in the Review window
 /// or starting recording immediately.
 pub fn run_app(
@@ -6053,15 +5323,15 @@ pub fn run_app(
     let app = Application::new().with_assets(crate::icons::Assets);
     app.run(move |cx: &mut App| {
         scrawl_log(format!("run_app started pid={}", std::process::id()));
-        stay_out_of_dock();
+        platform::keep_alive(cx);
         // ⌘W, Esc, the close button or Scrawl itself: every way a window closes ends up here.
-        cx.on_window_closed(|cx| cx.defer(hand_back_keys)).detach();
+        cx.on_window_closed(|cx| cx.defer(platform::hand_back_keys)).detach();
         let (ui_sender, ui_receiver) = flume::unbounded();
         crate::phone::start_ingest_server(ui_sender.clone());
         let telemetry = SharedCaptureTelemetry::new(ui_sender);
         install_global_hotkeys(&telemetry);
         start_global_input_tap(Arc::clone(&telemetry));
-        crate::sparkle::start();
+        platform::start_updates();
         crate::retention::start();
         crate::hex::watch();
         crate::speech_model::ensure();
@@ -6097,31 +5367,16 @@ pub fn run_app(
                 cx.background_executor()
                     .timer(Duration::from_millis(650))
                     .await;
-                let window_num = cx
-                    .update(|_| {
-                        let mtm = MainThreadMarker::new()?;
-                        let app = NSApplication::sharedApplication(mtm);
-                        app.windows()
-                            .iter()
-                            .filter(|w| {
-                                let size = w.frame().size;
-                                size.width >= 600.0 && size.height >= 400.0
-                            })
-                            .max_by_key(|w| {
-                                let size = w.frame().size;
-                                (size.width as i64) * (size.height as i64)
-                            })
-                            .map(|w| {
-                                w.orderFrontRegardless();
-                                w.windowNumber()
-                            })
-                    })
-                    .ok()
-                    .flatten();
-                let _ = cx
-                    .background_executor()
-                    .spawn(async move { capture_own_window_screenshot(window_num, &out_path) })
-                    .await;
+                let window_num = cx.update(|_| platform::front_own_window()).ok().flatten();
+                let saved =
+                    cx.background_executor()
+                        .spawn(async move {
+                            platform::capture_own_window_screenshot(window_num, &out_path)
+                        })
+                        .await;
+                if let Err(error) = saved {
+                    scrawl_log(format!("Window screenshot failed: {error:#}"));
+                }
                 let _ = cx.update(|cx| cx.quit());
             })
             .detach();
@@ -6144,6 +5399,9 @@ pub fn run_app(
                         }
                         shown_status = status;
                     }
+                    platform::poll_status_bar();
+                    crate::onboarding_window::poll(cx);
+                    crate::settings_window::poll(cx);
                     if let Some(ref rx) = menu_rx {
                         while let Ok(action) = rx.try_recv() {
                             match action {
@@ -6191,7 +5449,7 @@ pub fn run_app(
                                     loop_coord.update(cx, |coord, _| coord.open_settings(None));
                                 }
                                 MenuAction::CheckForUpdates => {
-                                    crate::sparkle::check_for_updates();
+                                    platform::check_for_updates();
                                 }
                                 MenuAction::Quit => {
                                     should_quit = true;
@@ -6277,136 +5535,6 @@ pub fn run_app(
     });
 }
 
-fn capture_own_window_screenshot(
-    window_num: Option<isize>,
-    out_path: &std::path::Path,
-) -> anyhow::Result<()> {
-    if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if let Some(num) = window_num
-        && num > 0
-    {
-        if let Some(frame) = capture_cg_window_rgba(num as u32) {
-            crate::render::save_png(&frame, out_path)?;
-            return Ok(());
-        }
-        if std::process::Command::new("/usr/sbin/screencapture")
-            .args(["-x", "-l", &num.to_string()])
-            .arg(out_path)
-            .status()
-            .is_ok_and(|s| s.success())
-            && out_path.exists()
-        {
-            return Ok(());
-        }
-    }
-    let pid = std::process::id() as i32;
-    let content = SCShareableContent::get()
-        .map_err(|e| anyhow::anyhow!("ScreenCaptureKit unavailable: {e}"))?;
-    let window = content
-        .windows()
-        .into_iter()
-        .filter(|w| {
-            w.is_on_screen()
-                && w.owning_application()
-                    .as_ref()
-                    .is_some_and(|a| a.process_id() == pid)
-        })
-        .max_by_key(|w| (w.frame().size.width as u64) * (w.frame().size.height as u64))
-        .ok_or_else(|| anyhow::anyhow!("Could not find Scrawl window"))?;
-    let frame = window.frame();
-    let filter = SCContentFilter::create()
-        .with_window(&window)
-        .build()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let config = SCStreamConfiguration::new()
-        .with_width((frame.size.width as u32 * 2).max(400))
-        .with_height((frame.size.height as u32 * 2).max(300))
-        .with_shows_cursor(false);
-    let image =
-        SCScreenshotManager::capture_image(&filter, &config).map_err(|e| anyhow::anyhow!("{e}"))?;
-    image
-        .save(
-            out_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("invalid output path"))?,
-            screencapturekit::screenshot_manager::ImageFormat::Png,
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(())
-}
-
-fn capture_cg_window_rgba(window_id: u32) -> Option<crate::model::RgbaFrame> {
-    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
-    use std::ffi::c_void;
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGWindowListCreateImage(
-            screen_bounds: CGRect,
-            list_option: u32,
-            window_id: u32,
-            image_option: u32,
-        ) -> *mut c_void;
-        fn CGImageGetWidth(image: *const c_void) -> usize;
-        fn CGImageGetHeight(image: *const c_void) -> usize;
-        fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
-        fn CGBitmapContextCreate(
-            data: *mut c_void,
-            width: usize,
-            height: usize,
-            bits_per_component: usize,
-            bytes_per_row: usize,
-            space: *const c_void,
-            bitmap_info: u32,
-        ) -> *mut c_void;
-        fn CGContextDrawImage(context: *mut c_void, rect: CGRect, image: *const c_void);
-        fn CFRelease(cf: *const c_void);
-    }
-
-    let null_rect = CGRect::new(
-        &CGPoint::new(f64::INFINITY, f64::INFINITY),
-        &CGSize::new(0.0, 0.0),
-    );
-    // kCGWindowListOptionIncludingWindow = 1 << 3 (8), kCGWindowImageBoundsIgnoreFraming = 1
-    let cg_image = unsafe { CGWindowListCreateImage(null_rect, 8, window_id, 1) };
-    if cg_image.is_null() {
-        return None;
-    }
-    let width = unsafe { CGImageGetWidth(cg_image) };
-    let height = unsafe { CGImageGetHeight(cg_image) };
-    if width == 0 || height == 0 {
-        unsafe { CFRelease(cg_image) };
-        return None;
-    }
-    let mut rgba = vec![0_u8; width * height * 4];
-    unsafe {
-        let cs = CGColorSpaceCreateDeviceRGB();
-        // kCGImageAlphaPremultipliedLast = 1
-        let ctx =
-            CGBitmapContextCreate(rgba.as_mut_ptr().cast(), width, height, 8, width * 4, cs, 1);
-        if !ctx.is_null() {
-            let draw_rect = CGRect::new(
-                &CGPoint::new(0.0, 0.0),
-                &CGSize::new(width as f64, height as f64),
-            );
-            CGContextDrawImage(ctx, draw_rect, cg_image);
-            CFRelease(ctx);
-        }
-        if !cs.is_null() {
-            CFRelease(cs);
-        }
-        CFRelease(cg_image);
-    }
-    Some(crate::model::RgbaFrame::new(
-        0,
-        width as u32,
-        height as u32,
-        rgba,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6478,8 +5606,13 @@ mod tests {
             }
             seen
         };
-        assert_eq!(walk(true, true), [Window, Screen, Iphone, Area, Window]);
-        assert_eq!(walk(true, false), [Iphone, Screen, Window, Area, Iphone]);
+        if cfg!(target_os = "macos") {
+            assert_eq!(walk(true, true), [Window, Screen, Iphone, Area, Window]);
+            assert_eq!(walk(true, false), [Iphone, Screen, Window, Area, Iphone]);
+        } else {
+            // No cabled iPhone off macOS, even when one is plugged in.
+            assert_eq!(walk(true, true), walk(false, true));
+        }
         assert_eq!(walk(false, true), [Window, Screen, Area, Window, Screen]);
         assert_eq!(walk(false, false), [Screen, Window, Area, Screen, Window]);
         // An unplugged phone leaves the picker on a mode that is no longer listed.
@@ -6494,7 +5627,7 @@ mod tests {
         assert_eq!(pick("1", true), Some(Area));
         assert_eq!(pick("2", true), Some(Window));
         assert_eq!(pick("3", false), Some(Screen));
-        assert_eq!(pick("4", true), Some(Iphone));
+        assert_eq!(pick("4", true), cfg!(target_os = "macos").then_some(Iphone));
         assert_eq!(pick("4", false), None);
         assert_eq!(pick("0", true), None);
         assert_eq!(pick("5", true), None);
@@ -6555,13 +5688,6 @@ mod tests {
             }
             assert!((x - to).abs() < 0.5, "settled at {x}");
         }
-    }
-
-    #[test]
-    fn reveal_appkit_queries_pass_objc2_verification() {
-        let _ = reduce_motion();
-        let cls = objc2::runtime::AnyClass::get(c"NSEvent").expect("NSEvent");
-        let _: objc2_foundation::NSPoint = unsafe { msg_send![cls, mouseLocation] };
     }
 
     #[test]
@@ -6678,7 +5804,10 @@ mod tests {
     #[test]
     fn clock_template_is_width_stable() {
         assert_eq!(clock_template("12:34"), "00:00");
-        assert_eq!(completed_meta(8_000, 1), "· 1 frame · ⌥⇧V");
+        assert_eq!(
+            completed_meta(8_000, 1),
+            format!("· 1 frame · {}", crate::settings::paste_label())
+        );
         assert_eq!(completed_label(0, None), "Copied");
         assert_eq!(completed_label(0, Some("Sent to SCRAWL")), "Sent to SCRAWL");
         assert_eq!(completed_label(1, Some("Sent to SCRAWL")), "From iPhone");
@@ -6700,56 +5829,5 @@ mod tests {
             title: "SCRAWL".into(),
         };
         assert_eq!(completed_delivery_note(&sent, "SCRAWL"), "Sent to SCRAWL");
-    }
-
-    #[test]
-    fn ca_layer_and_filter_encodings_pass_objc2_verification() {
-        use objc2::runtime::AnyClass;
-        use objc2_foundation::{NSArray, NSNumber};
-        use objc2_quartz_core::{CALayer, CATransaction};
-
-        let shell = CALayer::new();
-        let content_layer = CALayer::new();
-        let transform = CATransform3D {
-            m11: 0.9,
-            m12: 0.0,
-            m13: 0.0,
-            m14: 0.0,
-            m21: 0.0,
-            m22: 0.9,
-            m23: 0.0,
-            m24: 0.0,
-            m31: 0.0,
-            m32: 0.0,
-            m33: 1.0,
-            m34: 0.0,
-            m41: 10.0,
-            m42: 4.0,
-            m43: 0.0,
-            m44: 1.0,
-        };
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
-        unsafe {
-            let bg_ns = NSColor::colorWithSRGBRed_green_blue_alpha(0.1, 0.1, 0.1, 0.95);
-            let bg_cg: *const OpaqueCGColor = msg_send![&*bg_ns, CGColor];
-            let _: () = msg_send![&*shell, setBackgroundColor: bg_cg];
-            let _: () = msg_send![&*shell, setBorderColor: bg_cg];
-            let _: () = msg_send![&*content_layer, setTransform: transform];
-            if let Some(ca_filter_cls) = AnyClass::get(c"CAFilter") {
-                let filter_type = NSString::from_str("gaussianBlur");
-                let filter: *mut AnyObject =
-                    msg_send![ca_filter_cls, filterWithType: &*filter_type];
-                assert!(!filter.is_null());
-                let radius_num = NSNumber::new_f64(6.0);
-                let radius_key = NSString::from_str("inputRadius");
-                let _: () = msg_send![filter, setValue: &*radius_num, forKey: &*radius_key];
-                let filter_ref = &*filter;
-                let filters = NSArray::from_slice(&[filter_ref]);
-                content_layer.setFilters(Some(&filters));
-            }
-            content_layer.setFilters(None);
-        }
-        CATransaction::commit();
     }
 }

@@ -26,9 +26,11 @@ const FEED_EVERY: Duration = Duration::from_millis(160);
 /// when a short recording ends takes longer, as it would after the recording too.
 const TAIL_TIMEOUT: Duration = Duration::from_secs(6);
 
-/// Whether recordings should start a live transcription now.
+/// Whether recordings should start a live transcription now. It streams to `scrawl-helper`'s
+/// SpeechAnalyzer, so only on macOS (Windows transcribes after the recording).
 pub fn wanted() -> bool {
-    crate::handoff::experiment(crate::handoff::LIVE_TRANSCRIBE)
+    cfg!(target_os = "macos")
+        && crate::handoff::experiment(crate::handoff::LIVE_TRANSCRIBE)
         && crate::transcribe::Engine::preferred() == crate::transcribe::Engine::Apple
 }
 
@@ -356,12 +358,15 @@ mod tests {
         command
     }
 
+    #[cfg(unix)]
     fn wav(samples: &[f32]) -> Vec<u8> {
         crate::audio::encode_wav_16k(samples).unwrap()
     }
 
+    #[cfg(unix)]
     const READY: &str = r#"echo '{"ready":true,"locale":"en_US"}'"#;
 
+    #[cfg(unix)]
     #[test]
     fn collects_finalized_results_and_counts_every_sample() {
         let script = format!(
@@ -392,6 +397,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn streams_exactly_the_samples_the_wav_holds() {
         let out = std::env::temp_dir().join(format!("scrawl-live-pcm-{}", std::process::id()));
@@ -412,6 +418,7 @@ mod tests {
         assert_eq!(written, le_bytes(&expected));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failing_helper_or_lost_samples_is_an_error() {
         let buffer = || Arc::new(Mutex::new(vec![0.1_f32; 320]));

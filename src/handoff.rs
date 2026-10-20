@@ -7,14 +7,52 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ScrawlBundle;
 
+/// `~/Library/Application Support/scrawl/captures` on macOS, `%LOCALAPPDATA%\scrawl\captures`
+/// on Windows (local, not roaming: the movies are large).
 pub fn default_captures_dir() -> PathBuf {
     std::env::var_os("SCRAWL_CAPTURES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("Library/Application Support/scrawl/captures")
+            if cfg!(target_os = "windows") {
+                dirs::data_local_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("scrawl/captures")
+            } else {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("Library/Application Support/scrawl/captures")
+            }
         })
+}
+
+/// Opens a file, folder or URL with its default app (Finder, Explorer, the browser).
+pub fn open_path(target: &Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::win::shell::open(target)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let status = Command::new("/usr/bin/open").arg(target).status()?;
+        ensure!(status.success(), "open {} failed", target.display());
+        Ok(())
+    }
+}
+
+/// Shows a file selected in Finder or Explorer.
+pub fn reveal_path(target: &Path) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::win::shell::reveal(target)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("/usr/bin/open")
+            .arg("-R")
+            .arg(target)
+            .spawn()?;
+        Ok(())
+    }
 }
 
 pub fn resolve_bundle_dir(path_or_id: &Path) -> Result<PathBuf> {
@@ -42,9 +80,10 @@ pub fn resolve_bundle_dir(path_or_id: &Path) -> Result<PathBuf> {
         "Bundle directory not found: {}",
         path.display()
     );
-    let path = path
-        .canonicalize()
-        .with_context(|| format!("Could not resolve {}", path.display()))?;
+    let path = plain_path(
+        path.canonicalize()
+            .with_context(|| format!("Could not resolve {}", path.display()))?,
+    );
     ensure!(
         path.extension().is_some_and(|ext| ext == "scrawl"),
         "Expected a .scrawl directory: {}",
@@ -83,7 +122,16 @@ fn newest_bundle(captures: &Path) -> Result<PathBuf> {
         .context("No .scrawl captures found")?
         .1
         .canonicalize()
+        .map(plain_path)
         .map_err(Into::into)
+}
+
+/// `canonicalize` on Windows returns `\\?\C:\…`; agents and terminals want `C:\…`.
+fn plain_path(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
+    }
 }
 
 pub fn load_bundle(bundle_dir: &Path) -> Result<(PathBuf, ScrawlBundle)> {
@@ -134,7 +182,17 @@ pub fn copy_png_to_clipboard(png_bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "windows")]
+pub fn copy_string_to_clipboard(content: &str) -> Result<()> {
+    crate::win::clipboard::set_text(content)
+}
+
+#[cfg(target_os = "windows")]
+pub fn copy_png_to_clipboard(png_bytes: &[u8]) -> Result<()> {
+    crate::win::clipboard::set_png(png_bytes)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn copy_bundle_to_clipboard(bundle_dir: &Path) -> Result<()> {
     let (directory, bundle) = load_bundle(bundle_dir)?;
     let summary = crate::sketch::summary_markdown(&bundle, &directory);
@@ -142,9 +200,10 @@ pub fn copy_bundle_to_clipboard(bundle_dir: &Path) -> Result<()> {
 }
 
 /// Pastes both the contact-sheet image and the transcript/keyframe text into the active app
-/// as a two-step sequence (`⌘V` image, then `⌘V` text). If `click_target` is provided (from
-/// dragging the Paste chip onto a window/input), clicks at that screen coordinate first to focus it.
-#[cfg(target_os = "macos")]
+/// as a two-step sequence (`⌘V` image, then `⌘V` text; Ctrl+V on Windows). If `click_target` is
+/// provided (from dragging the Paste chip onto a window/input), clicks at that screen coordinate
+/// first to focus it.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn paste_bundle_at_target(bundle_dir: &Path, click_target: Option<[f32; 2]>) -> Result<()> {
     if let Some([x, y]) = click_target {
         crate::capture::post_synthetic_click(f64::from(x), f64::from(y));
@@ -155,7 +214,7 @@ pub fn paste_bundle_at_target(bundle_dir: &Path, click_target: Option<[f32; 2]>)
     paste_bundle_image_and_text(bundle_dir)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn paste_bundle_image_and_text(bundle_dir: &Path) -> Result<()> {
     let (directory, bundle) = load_bundle(bundle_dir)?;
     let sheet_path = directory.join(&bundle.contact_sheet);
@@ -182,19 +241,19 @@ pub fn paste_bundle_image_and_text(bundle_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn copy_bundle_to_clipboard(_bundle_dir: &Path) -> Result<()> {
-    bail!("Image and text clipboard handoff requires macOS")
+    bail!("Image and text clipboard handoff requires macOS or Windows")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn paste_bundle_image_and_text(_bundle_dir: &Path) -> Result<()> {
-    bail!("Image and text paste handoff requires macOS")
+    bail!("Image and text paste handoff requires macOS or Windows")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn paste_bundle_at_target(_bundle_dir: &Path, _click_target: Option<[f32; 2]>) -> Result<()> {
-    bail!("Image and text paste handoff requires macOS")
+    bail!("Image and text paste handoff requires macOS or Windows")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -265,10 +324,20 @@ fn executable(path: &Path) -> bool {
     }
 }
 
-fn on_path(name: &str) -> Option<PathBuf> {
+/// `name` on `PATH`. On Windows `name.exe` and `name.cmd` (npm and bun shims) count too.
+pub(crate) fn on_path(name: &str) -> Option<PathBuf> {
+    let names: Vec<String> = if cfg!(windows) && Path::new(name).extension().is_none() {
+        vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            name.to_owned(),
+        ]
+    } else {
+        vec![name.to_owned()]
+    };
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
-            .map(|path| path.join(name))
+            .flat_map(|path| names.iter().map(move |name| path.join(name)))
             .find(|path| executable(path))
     })
 }
@@ -489,13 +558,25 @@ fn config() -> Config {
     load_config_from(&default_config_path())
 }
 
+fn random_bytes_32() -> Result<[u8; 32]> {
+    let mut bytes = [0_u8; 32];
+    #[cfg(windows)]
+    {
+        crate::win::shell::random_bytes(&mut bytes)?;
+    }
+    #[cfg(not(windows))]
+    {
+        use std::io::Read as _;
+        let mut file = fs::File::open("/dev/urandom").context("Could not open /dev/urandom")?;
+        file.read_exact(&mut bytes)
+            .context("Could not read 32 bytes from /dev/urandom")?;
+    }
+    Ok(bytes)
+}
+
 fn random_hex_token_32() -> Result<String> {
     use std::fmt::Write as _;
-    use std::io::Read as _;
-    let mut file = fs::File::open("/dev/urandom").context("Could not open /dev/urandom")?;
-    let mut bytes = [0_u8; 32];
-    file.read_exact(&mut bytes)
-        .context("Could not read 32 bytes from /dev/urandom")?;
+    let bytes = random_bytes_32()?;
     let mut token = String::with_capacity(64);
     for byte in bytes {
         let _ = write!(&mut token, "{byte:02x}");
@@ -596,8 +677,11 @@ pub fn hex_model() -> Option<String> {
 }
 
 /// Whether the native AppKit + Metal recording pill is enabled (`SCRAWL_NATIVE_PILL` or
-/// `nativePill` in `config.json`, default `true`).
+/// `nativePill` in `config.json`, default `true`). macOS only: elsewhere the GPUI capsule draws.
 pub fn native_pill() -> bool {
+    if cfg!(not(target_os = "macos")) {
+        return false;
+    }
     if let Ok(val) = std::env::var("SCRAWL_NATIVE_PILL") {
         let s = val.trim().to_ascii_lowercase();
         if matches!(s.as_str(), "0" | "false" | "gpui" | "off" | "no") {
@@ -691,8 +775,18 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// A system command: `/usr/bin/<name>` on macOS; on Windows the copy in System32 (OpenSSH and
+/// bsdtar ship with Windows 10 and later), found through `PATH`.
+fn system_tool(name: &str) -> PathBuf {
+    if cfg!(windows) {
+        on_path(name).unwrap_or_else(|| PathBuf::from(name))
+    } else {
+        Path::new("/usr/bin").join(name)
+    }
+}
+
 fn ssh(host: &str) -> Command {
-    let mut command = Command::new("/usr/bin/ssh");
+    let mut command = Command::new(system_tool("ssh"));
     command.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host]);
     command
 }
@@ -716,7 +810,7 @@ pub fn sync_bundle_to(host: &str, bundle_dir: &Path) -> Result<()> {
     use std::process::Stdio;
     let parent = bundle_dir.parent().context("Bundle has no parent")?;
     let name = bundle_dir.file_name().context("Bundle has no name")?;
-    let mut tar = Command::new("/usr/bin/tar")
+    let mut tar = Command::new(system_tool("tar"))
         .arg("-C")
         .arg(parent)
         .args([
@@ -781,7 +875,7 @@ pub fn sync_bundle_to(host: &str, bundle_dir: &Path) -> Result<()> {
         let _ = fs::write(&sending, host);
         std::thread::spawn(move || {
             let _done = RemoveOnDrop(sending);
-            let Ok(mut bg_tar) = Command::new("/usr/bin/tar")
+            let Ok(mut bg_tar) = Command::new(system_tool("tar"))
                 .arg("-C")
                 .arg(&parent_owned)
                 .arg("-cf")
@@ -1103,11 +1197,24 @@ pub fn send_bundle_to_session(bundle_dir: &Path, session: &str) -> Result<()> {
 }
 
 /// A `file://` URL for an absolute path, percent-encoding everything but unreserved
-/// characters and `/` ("Application Support" → "Application%20Support").
+/// characters and `/` ("Application Support" → "Application%20Support"). A Windows path
+/// (`C:\Users\…`, or `\\?\C:\…` after `canonicalize`) becomes `file:///C:/Users/…`.
 fn file_uri(path: &Path) -> String {
+    let mut text = path.to_string_lossy().into_owned();
     let mut uri = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
+    let windows_path = cfg!(windows) || text.as_bytes().get(1) == Some(&b':');
+    if windows_path {
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            text = rest.to_owned();
+        }
+        text = text.replace('\\', "/");
+        if !text.starts_with('/') {
+            uri.push('/');
+        }
+    }
+    for (index, byte) in text.bytes().enumerate() {
+        let drive_colon = windows_path && index == 1 && byte == b':';
+        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) || drive_colon {
             uri.push(char::from(byte));
         } else {
             uri.push_str(&format!("%{byte:02X}"));
@@ -1242,7 +1349,7 @@ fn existing_keyframes(
         );
         let path = directory.join(relative);
         if generated_frame(&path) {
-            let canonical = path.canonicalize()?;
+            let canonical = plain_path(path.canonicalize()?);
             ensure!(
                 canonical.starts_with(directory.join("frames")),
                 "Keyframe is outside bundle frames directory"
@@ -1314,15 +1421,15 @@ mod tests {
         let newer = fixture.bundle("new", 200);
         assert_eq!(
             resolve_bundle_dir(&older).unwrap(),
-            older.canonicalize().unwrap()
+            plain_path(older.canonicalize().unwrap())
         );
         assert_eq!(
             resolve_bundle_dir(&older.join("scrawl.json")).unwrap(),
-            older.canonicalize().unwrap()
+            plain_path(older.canonicalize().unwrap())
         );
         assert_eq!(
             newest_bundle(&fixture.0).unwrap(),
-            newer.canonicalize().unwrap()
+            plain_path(newer.canonicalize().unwrap())
         );
         assert!(resolve_bundle_dir(&fixture.0).is_err());
         assert!(resolve_bundle_dir(&fixture.0.join("missing.scrawl")).is_err());
@@ -1343,7 +1450,7 @@ mod tests {
         let fixture = Fixture::new();
         let path = fixture.bundle("example", 123);
         let (resolved, bundle) = load_bundle(&path.join("scrawl.json")).unwrap();
-        assert_eq!(resolved, path.canonicalize().unwrap());
+        assert_eq!(resolved, plain_path(path.canonicalize().unwrap()));
         assert_eq!(bundle.id, "example");
         assert_eq!(bundle.created_at_ms, 123);
         fs::write(path.join("scrawl.json"), b"not json").unwrap();

@@ -193,13 +193,13 @@ pub fn save_shortcut_in(
     crate::handoff::set_config_value_in(path, "shortcuts", shortcuts)
 }
 
-/// The label of the paste shortcut, for hints (`⌥⇧V` unless changed).
+/// The label of the paste shortcut, for hints (`⌥⇧V`, or `Alt+Shift+V`, unless changed).
 pub fn paste_label() -> String {
     PASTE_LABEL
         .lock()
         .ok()
         .and_then(|label| label.clone())
-        .unwrap_or_else(|| "⌥⇧V".to_owned())
+        .unwrap_or_else(|| ShortcutConfig::default_paste().label)
 }
 
 static PASTE_LABEL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -244,8 +244,19 @@ pub enum Rejection {
 impl Rejection {
     pub fn message(&self) -> String {
         match self {
+            Self::NoModifier if cfg!(target_os = "windows") => {
+                "Hold Ctrl, Alt or Win with the key.".to_owned()
+            }
             Self::NoModifier => "Hold ⌘, ⌥ or ⌃ with the key.".to_owned(),
             Self::UnsupportedKey => "Scrawl can't use that key. Try a letter or number.".to_owned(),
+            Self::Reserved(label) if cfg!(target_os = "windows") => {
+                if label.starts_with("Ctrl+") && !label.contains("Alt+") && !label.contains("Win+")
+                {
+                    format!("Apps use {label}. Add Alt.")
+                } else {
+                    format!("Windows uses {label}.")
+                }
+            }
             Self::Reserved(label) if label.starts_with('⌘') && !label.contains(['⌃', '⌥']) => {
                 format!("Apps use {label}. Add ⌥ or ⌃.")
             }
@@ -256,6 +267,44 @@ impl Rejection {
     }
 }
 
+/// Virtual-key codes: F1–F16, then the keys named rather than typed.
+#[cfg(target_os = "windows")]
+const FUNCTION_KEYS: [(u32, &str); 16] = [
+    (0x70, "F1"),
+    (0x71, "F2"),
+    (0x72, "F3"),
+    (0x73, "F4"),
+    (0x74, "F5"),
+    (0x75, "F6"),
+    (0x76, "F7"),
+    (0x77, "F8"),
+    (0x78, "F9"),
+    (0x79, "F10"),
+    (0x7A, "F11"),
+    (0x7B, "F12"),
+    (0x7C, "F13"),
+    (0x7D, "F14"),
+    (0x7E, "F15"),
+    (0x7F, "F16"),
+];
+
+#[cfg(target_os = "windows")]
+const NAMED_KEYS: [(u32, &str); 8] = [
+    (0x20, "Space"),
+    (0x0D, "Enter"),
+    (0x09, "Tab"),
+    (0x08, "Backspace"),
+    (0x25, "Left"),
+    (0x27, "Right"),
+    (0x28, "Down"),
+    (0x26, "Up"),
+];
+
+#[cfg(target_os = "windows")]
+const KEY_ESCAPE: u32 = 0x1B;
+
+/// macOS virtual key codes (`kVK_*`).
+#[cfg(not(target_os = "windows"))]
 const FUNCTION_KEYS: [(u32, &str); 16] = [
     (122, "F1"),
     (120, "F2"),
@@ -275,6 +324,7 @@ const FUNCTION_KEYS: [(u32, &str); 16] = [
     (106, "F16"),
 ];
 
+#[cfg(not(target_os = "windows"))]
 const NAMED_KEYS: [(u32, &str); 8] = [
     (49, "Space"),
     (36, "↩"),
@@ -286,6 +336,7 @@ const NAMED_KEYS: [(u32, &str); 8] = [
     (126, "↑"),
 ];
 
+#[cfg(not(target_os = "windows"))]
 const KEY_ESCAPE: u32 = 53;
 
 /// The name a key is shown with: a function key, a named key, or the typed character in capitals.
@@ -322,6 +373,21 @@ fn reserved(modifiers: u32, key: &str) -> bool {
     const SHIFT: u32 = CARBON_SHIFT_KEY;
     const OPT: u32 = CARBON_OPTION_KEY;
     const CTRL: u32 = CARBON_CONTROL_KEY;
+    if cfg!(target_os = "windows") {
+        // Win (⌘'s bit) with a key, alone or with Shift, is Windows' own (Win+R, Win+Shift+S…);
+        // Ctrl with one key is an app's (Ctrl+C, Ctrl+Shift+T…).
+        return modifiers & CMD != 0 && modifiers & (CTRL | OPT) == 0
+            || modifiers & (CTRL | CMD | OPT) == CTRL
+            || [
+                (OPT, "Tab"),
+                (OPT | SHIFT, "Tab"),
+                (OPT, "F4"),
+                (OPT, "Space"),
+                (CTRL | OPT, "Tab"),
+                (CTRL | CMD | OPT, "Space"),
+            ]
+            .contains(&(modifiers, key));
+    }
     // ⌘ with one key is an app's menu shortcut somewhere (⌘Q, ⌘W, ⌘R…).
     if modifiers == CMD || modifiers == CMD | SHIFT && ["3", "4", "5", "6", "Q", "/"].contains(&key)
     {
@@ -384,78 +450,106 @@ pub fn validate(
     })
 }
 
-// MARK: Launch at login (SMAppService, macOS 13+)
-
-#[link(name = "ServiceManagement", kind = "framework")]
-unsafe extern "C" {}
+// MARK: Launch at login (SMAppService on macOS 13+, the Run key on Windows)
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginItem {
     Off,
     On,
-    /// Registered, waiting for the user in System Settings › Login Items.
+    /// Registered, waiting for the user in System Settings › Login Items (on Windows: switched
+    /// off in Settings › Apps › Startup).
     NeedsApproval,
     /// Not running from Scrawl.app (a development build).
     Unavailable,
 }
 
-fn main_app_service() -> Option<objc2::rc::Retained<objc2::runtime::AnyObject>> {
-    use objc2::runtime::{AnyClass, AnyObject};
-    let class = AnyClass::get(c"SMAppService")?;
-    let exe = std::env::current_exe().ok()?;
-    // SMAppService registers the bundle this executable is in; outside one it can't.
-    exe.ancestors()
-        .find(|p| p.extension().is_some_and(|ext| ext == "app"))?;
-    unsafe {
-        let service: *mut AnyObject = objc2::msg_send![class, mainAppService];
-        objc2::rc::Retained::retain(service)
-    }
-}
+#[cfg(target_os = "macos")]
+pub use self::login::{login_item, open_login_items_settings, set_login_item};
 
-pub fn login_item() -> LoginItem {
-    let Some(service) = main_app_service() else {
-        return LoginItem::Unavailable;
-    };
-    let status: isize = unsafe { objc2::msg_send![&*service, status] };
-    match status {
-        1 => LoginItem::On,
-        2 => LoginItem::NeedsApproval,
-        3 => LoginItem::Unavailable,
-        _ => LoginItem::Off,
-    }
-}
+#[cfg(target_os = "macos")]
+mod login {
+    use super::LoginItem;
 
-pub fn set_login_item(on: bool) -> anyhow::Result<()> {
-    use objc2::runtime::Bool;
-    use objc2_foundation::NSError;
-    let service =
-        main_app_service().ok_or_else(|| anyhow::anyhow!("not running from Scrawl.app"))?;
-    let mut error: Option<objc2::rc::Retained<NSError>> = None;
-    let ok: Bool = unsafe {
-        if on {
-            objc2::msg_send![&*service, registerAndReturnError: &mut error]
-        } else {
-            objc2::msg_send![&*service, unregisterAndReturnError: &mut error]
+    #[link(name = "ServiceManagement", kind = "framework")]
+    unsafe extern "C" {}
+
+    fn main_app_service() -> Option<objc2::rc::Retained<objc2::runtime::AnyObject>> {
+        use objc2::runtime::{AnyClass, AnyObject};
+        let class = AnyClass::get(c"SMAppService")?;
+        let exe = std::env::current_exe().ok()?;
+        // SMAppService registers the bundle this executable is in; outside one it can't.
+        exe.ancestors()
+            .find(|p| p.extension().is_some_and(|ext| ext == "app"))?;
+        unsafe {
+            let service: *mut AnyObject = objc2::msg_send![class, mainAppService];
+            objc2::rc::Retained::retain(service)
         }
-    };
-    if ok.as_bool() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "{}",
-            error.map_or_else(
-                || "unknown error".to_owned(),
-                |e| e.localizedDescription().to_string()
+    }
+
+    pub fn login_item() -> LoginItem {
+        let Some(service) = main_app_service() else {
+            return LoginItem::Unavailable;
+        };
+        let status: isize = unsafe { objc2::msg_send![&*service, status] };
+        match status {
+            1 => LoginItem::On,
+            2 => LoginItem::NeedsApproval,
+            3 => LoginItem::Unavailable,
+            _ => LoginItem::Off,
+        }
+    }
+
+    pub fn set_login_item(on: bool) -> anyhow::Result<()> {
+        use objc2::runtime::Bool;
+        use objc2_foundation::NSError;
+        let service =
+            main_app_service().ok_or_else(|| anyhow::anyhow!("not running from Scrawl.app"))?;
+        let mut error: Option<objc2::rc::Retained<NSError>> = None;
+        let ok: Bool = unsafe {
+            if on {
+                objc2::msg_send![&*service, registerAndReturnError: &mut error]
+            } else {
+                objc2::msg_send![&*service, unregisterAndReturnError: &mut error]
+            }
+        };
+        if ok.as_bool() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "{}",
+                error.map_or_else(
+                    || "unknown error".to_owned(),
+                    |e| e.localizedDescription().to_string()
+                )
             )
-        )
+        }
+    }
+
+    pub fn open_login_items_settings() {
+        use objc2::runtime::AnyClass;
+        if let Some(class) = AnyClass::get(c"SMAppService") {
+            let _: () = unsafe { objc2::msg_send![class, openSystemSettingsLoginItems] };
+        }
     }
 }
 
-fn open_login_items_settings() {
-    use objc2::runtime::AnyClass;
-    if let Some(class) = AnyClass::get(c"SMAppService") {
-        let _: () = unsafe { objc2::msg_send![class, openSystemSettingsLoginItems] };
+#[cfg(target_os = "windows")]
+pub fn login_item() -> LoginItem {
+    match crate::win::login::status() {
+        (false, _) => LoginItem::Off,
+        (true, false) => LoginItem::On,
+        (true, true) => LoginItem::NeedsApproval,
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_login_item(on: bool) -> anyhow::Result<()> {
+    crate::win::login::set(on)
+}
+
+#[cfg(target_os = "windows")]
+fn open_login_items_settings() {
+    crate::win::login::open_startup_settings();
 }
 
 // MARK: What the window shows
@@ -740,15 +834,20 @@ fn retention_note(policy: &crate::retention::Policy) -> String {
             format!("{n} days")
         }
     };
+    let bin = if cfg!(target_os = "windows") {
+        "Recycle Bin"
+    } else {
+        "Trash"
+    };
     match (policy.media_days, policy.bundle_days) {
         (None, None) => String::new(),
         (Some(media), Some(bundle)) => format!(
-            "Video and audio go to the Trash after {}, the rest of each capture after {}.",
+            "Video and audio go to the {bin} after {}, the rest of each capture after {}.",
             days(media),
             days(bundle)
         ),
-        (Some(media), None) => format!("Video and audio go to the Trash after {}.", days(media)),
-        (None, Some(bundle)) => format!("Captures go to the Trash after {}.", days(bundle)),
+        (Some(media), None) => format!("Video and audio go to the {bin} after {}.", days(media)),
+        (None, Some(bundle)) => format!("Captures go to the {bin} after {}.", days(bundle)),
     }
 }
 
@@ -1071,12 +1170,17 @@ impl Panel {
         let command_checked = command_enabled && engine == crate::transcribe::Engine::Command;
         let policy = crate::retention::Policy::load_from(&host.config_path());
         let login = login_item();
-        let order = [
-            Permission::ScreenRecording,
-            Permission::Microphone,
-            Permission::Accessibility,
-            Permission::Camera,
-        ];
+        // Windows asks for no screen or accessibility grant, and has no cabled iPhone.
+        let order: &[Permission] = if cfg!(target_os = "windows") {
+            &[Permission::Microphone]
+        } else {
+            &[
+                Permission::ScreenRecording,
+                Permission::Microphone,
+                Permission::Accessibility,
+                Permission::Camera,
+            ]
+        };
         View {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             login: LoginView {
@@ -1143,8 +1247,8 @@ impl Panel {
             },
             captures_size: self.captures_size.map(crate::retention::format_bytes),
             permissions: order
-                .into_iter()
-                .map(|permission| PermissionView {
+                .iter()
+                .map(|&permission| PermissionView {
                     permission,
                     status: self.status(permission),
                     required: permission.required(),
@@ -1152,7 +1256,7 @@ impl Panel {
                     relaunch: permission == Permission::ScreenRecording && self.screen_relaunch(),
                 })
                 .collect(),
-            updates: crate::sparkle::available(),
+            updates: updates_available(),
             command_line: CommandLineView::new(
                 &crate::command_line::state(&host.command_line()),
                 self.cli_error.as_deref(),
@@ -1161,6 +1265,25 @@ impl Panel {
         }
     }
 }
+
+/// Whether this copy can check for updates: Sparkle in Scrawl.app; on Windows the releases
+/// page always opens.
+fn updates_available() -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::sparkle::available();
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+fn check_for_updates() {
+    #[cfg(target_os = "macos")]
+    crate::sparkle::check_for_updates();
+    #[cfg(not(target_os = "macos"))]
+    let _ = crate::handoff::open_path(Path::new(RELEASES_URL));
+}
+
+#[cfg(not(target_os = "macos"))]
+const RELEASES_URL: &str = "https://github.com/kitlangton/scrawl/releases/latest";
 
 // MARK: The live window
 
@@ -1214,11 +1337,20 @@ pub enum Event {
     Exited,
 }
 
+/// Where the window runs: the SwiftUI helper on macOS, a GPUI window in this process on Windows
+/// (`settings_window`). Both take the same JSON messages and report the same `Action`s.
+enum Transport {
+    Helper {
+        child: std::process::Child,
+        stdin: Option<std::process::ChildStdin>,
+    },
+    InProcess(Option<flume::Sender<serde_json::Value>>),
+}
+
 /// The open Settings window.
 pub struct Session {
     panel: Panel,
-    child: std::process::Child,
-    stdin: Option<std::process::ChildStdin>,
+    transport: Transport,
     polling: std::sync::Arc<std::sync::atomic::AtomicBool>,
     events: std::sync::Arc<dyn Fn(Event) + Send + Sync>,
     last_view: String,
@@ -1231,45 +1363,16 @@ impl Session {
         grants: Option<Grants>,
         events: impl Fn(Event) + Send + Sync + 'static,
     ) -> anyhow::Result<Self> {
-        use std::io::BufRead;
-        use std::process::{Command, Stdio};
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let events: std::sync::Arc<dyn Fn(Event) + Send + Sync> = std::sync::Arc::new(events);
-        let mut command = Command::new(crate::helper::path()?);
-        command.arg("settings");
-        if let Some(serde_json::Value::String(pane)) = pane.map(serde_json::to_value).transpose()? {
-            command.args(["--pane", &pane]);
-        }
-        let dev_icon = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/app-icon.png");
-        if Path::new(dev_icon).is_file() {
-            command.args(["--icon", dev_icon]);
-        }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-
-        let reader = std::sync::Arc::clone(&events);
-        std::thread::spawn(move || {
-            if let Some(stdout) = stdout {
-                for line in std::io::BufReader::new(stdout)
-                    .lines()
-                    .map_while(Result::ok)
-                {
-                    match serde_json::from_str::<Action>(&line) {
-                        Ok(action) => reader(Event::Action(action)),
-                        Err(error) => {
-                            crate::capture::scrawl_log(format!("settings: {error}: {line}"))
-                        }
-                    }
-                }
-            }
-            reader(Event::Exited);
-        });
+        let transport = if cfg!(target_os = "windows") {
+            let (sender, receiver) = flume::unbounded();
+            crate::settings_window::request_open(receiver, pane, std::sync::Arc::clone(&events));
+            Transport::InProcess(Some(sender))
+        } else {
+            Self::spawn_helper(pane, std::sync::Arc::clone(&events))?
+        };
 
         let polling = std::sync::Arc::new(AtomicBool::new(true));
         let alive = std::sync::Arc::clone(&polling);
@@ -1307,13 +1410,56 @@ impl Session {
         }
         Ok(Self {
             panel,
-            child,
-            stdin,
+            transport,
             polling,
             events,
             last_view: String::new(),
             _microphones: microphones,
         })
+    }
+
+    /// `scrawl-helper settings`, reading its actions off stdout.
+    fn spawn_helper(
+        pane: Option<Pane>,
+        events: std::sync::Arc<dyn Fn(Event) + Send + Sync>,
+    ) -> anyhow::Result<Transport> {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+
+        let mut command = Command::new(crate::helper::path()?);
+        command.arg("settings");
+        if let Some(serde_json::Value::String(pane)) = pane.map(serde_json::to_value).transpose()? {
+            command.args(["--pane", &pane]);
+        }
+        let dev_icon = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/app-icon.png");
+        if Path::new(dev_icon).is_file() {
+            command.args(["--icon", dev_icon]);
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+
+        std::thread::spawn(move || {
+            if let Some(stdout) = stdout {
+                for line in std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    match serde_json::from_str::<Action>(&line) {
+                        Ok(action) => events(Event::Action(action)),
+                        Err(error) => {
+                            crate::capture::scrawl_log(format!("settings: {error}: {line}"))
+                        }
+                    }
+                }
+            }
+            events(Event::Exited);
+        });
+        Ok(Transport::Helper { child, stdin })
     }
 
     /// Feeds an event in, redraws, and returns what the app must do (`Relaunch`, `Tour`,
@@ -1363,11 +1509,11 @@ impl Session {
             Effect::ShowCaptures => {
                 let dir = crate::handoff::default_captures_dir();
                 let _ = std::fs::create_dir_all(&dir);
-                let _ = std::process::Command::new("/usr/bin/open").arg(dir).spawn();
+                let _ = crate::handoff::open_path(&dir);
                 Effect::None
             }
             Effect::CheckForUpdates => {
-                crate::sparkle::check_for_updates();
+                check_for_updates();
                 Effect::None
             }
             Effect::Measure => {
@@ -1410,12 +1556,23 @@ impl Session {
 
     fn send(&mut self, message: &serde_json::Value) {
         use std::io::Write;
-        if let Some(stdin) = self.stdin.as_mut()
-            && writeln!(stdin, "{message}")
-                .and_then(|()| stdin.flush())
-                .is_err()
-        {
-            self.stdin = None;
+        match &mut self.transport {
+            Transport::Helper { stdin, .. } => {
+                if let Some(pipe) = stdin.as_mut()
+                    && writeln!(pipe, "{message}")
+                        .and_then(|()| pipe.flush())
+                        .is_err()
+                {
+                    *stdin = None;
+                }
+            }
+            Transport::InProcess(sender) => {
+                if let Some(channel) = sender.as_ref()
+                    && channel.send(message.clone()).is_err()
+                {
+                    *sender = None;
+                }
+            }
         }
     }
 }
@@ -1425,8 +1582,13 @@ impl Drop for Session {
         self.polling
             .store(false, std::sync::atomic::Ordering::Release);
         self.send(&serde_json::json!({"type": "close"}));
-        self.stdin = None;
-        let _ = self.child.wait();
+        match &mut self.transport {
+            Transport::Helper { child, stdin } => {
+                *stdin = None;
+                let _ = child.wait();
+            }
+            Transport::InProcess(sender) => *sender = None,
+        }
     }
 }
 
@@ -1434,8 +1596,22 @@ impl Drop for Session {
 mod tests {
     use super::*;
 
-    const R: u32 = 15; // ANSI R
+    // Key codes: macOS `kVK_*` (ANSI), Windows virtual keys.
+    const WIN: bool = cfg!(target_os = "windows");
+    const R: u32 = if WIN { 0x52 } else { 15 };
+    const V: u32 = if WIN { 0x56 } else { 9 };
+    const F1: u32 = if WIN { 0x70 } else { 122 };
+    const F5: u32 = if WIN { 0x74 } else { 96 };
+    const ESC: u32 = if WIN { 0x1B } else { 53 };
+    const SPACE: u32 = if WIN { 0x20 } else { 49 };
+    const SLASH: u32 = if WIN { 0xBF } else { 44 };
     const OPT_SHIFT: u32 = CARBON_OPTION_KEY | CARBON_SHIFT_KEY;
+    const CTRL_OPT: u32 = CARBON_CONTROL_KEY | CARBON_OPTION_KEY;
+
+    /// A shortcut's label on this platform: `⌃⌥R` on macOS, `Ctrl+Alt+R` on Windows.
+    fn label(modifiers: u32, key: &str) -> String {
+        crate::capture::shortcut_label(modifiers, key)
+    }
 
     struct Fake {
         shortcuts: Shortcuts,
@@ -1520,13 +1696,13 @@ mod tests {
         let paste = ShortcutConfig::default_paste();
         let ok = validate(
             ShortcutKind::Record,
-            &pressed(R, CARBON_CONTROL_KEY | CARBON_OPTION_KEY, "r"),
+            &pressed(R, CTRL_OPT, "r"),
             &paste,
         )
         .unwrap();
-        assert_eq!(ok.label, "⌃⌥R");
+        assert_eq!(ok.label, label(CTRL_OPT, "R"));
         assert_eq!(ok.key_label(), "R");
-        // Labels follow macOS's order whatever order the bits come in.
+        // Labels follow the platform's order whatever order the bits come in.
         let ok = validate(
             ShortcutKind::Record,
             &pressed(
@@ -1537,21 +1713,47 @@ mod tests {
             &paste,
         )
         .unwrap();
-        assert_eq!(ok.label, "⌃⌥⇧⌘R");
+        assert_eq!(
+            ok.label,
+            if WIN {
+                "Ctrl+Win+Alt+Shift+R"
+            } else {
+                "⌃⌥⇧⌘R"
+            }
+        );
         let no = |p: Pressed| validate(ShortcutKind::Record, &p, &paste).unwrap_err();
         assert_eq!(no(pressed(R, 0, "r")), Rejection::NoModifier);
         assert_eq!(no(pressed(R, CARBON_SHIFT_KEY, "r")), Rejection::NoModifier);
         // A function key may stand alone.
         assert_eq!(
-            validate(ShortcutKind::Record, &pressed(96, 0, ""), &paste)
+            validate(ShortcutKind::Record, &pressed(F5, 0, ""), &paste)
                 .unwrap()
                 .label,
             "F5"
         );
         assert_eq!(
-            no(pressed(53, CARBON_OPTION_KEY, "\u{1b}")),
+            no(pressed(ESC, CARBON_OPTION_KEY, "\u{1b}")),
             Rejection::UnsupportedKey
         );
+        let mut system = pressed(R, CTRL_OPT, "r");
+        system.reserved = true;
+        assert_eq!(no(system), Rejection::Reserved(label(CTRL_OPT, "R")));
+        // Scrawl's other shortcut.
+        assert_eq!(
+            no(pressed(V, OPT_SHIFT, "v")),
+            Rejection::Taken(ShortcutKind::Paste)
+        );
+        assert_eq!(
+            Rejection::Taken(ShortcutKind::Paste).message(),
+            "Paste last capture already uses this."
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apps_and_macos_keep_their_shortcuts() {
+        let paste = ShortcutConfig::default_paste();
+        let no = |p: Pressed| validate(ShortcutKind::Record, &p, &paste).unwrap_err();
         // ⌘ and one key belongs to apps; macOS's own combinations are refused.
         assert_eq!(
             no(pressed(R, CARBON_CMD_KEY, "r")),
@@ -1566,20 +1768,57 @@ mod tests {
             Rejection::Reserved("⇧⌘4".into())
         );
         assert_eq!(
-            no(pressed(49, CARBON_CONTROL_KEY, " ")).message(),
+            no(pressed(SPACE, CARBON_CONTROL_KEY, " ")).message(),
             "macOS uses ⌃Space."
         );
-        let mut system = pressed(R, CARBON_CONTROL_KEY | CARBON_OPTION_KEY, "r");
-        system.reserved = true;
-        assert_eq!(no(system), Rejection::Reserved("⌃⌥R".into()));
-        // Scrawl's other shortcut.
         assert_eq!(
-            no(pressed(9, OPT_SHIFT, "v")),
-            Rejection::Taken(ShortcutKind::Paste)
+            Rejection::NoModifier.message(),
+            "Hold ⌘, ⌥ or ⌃ with the key."
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn apps_and_windows_keep_their_shortcuts() {
+        let paste = ShortcutConfig::default_paste();
+        let no = |p: Pressed| validate(ShortcutKind::Record, &p, &paste).unwrap_err();
+        // Ctrl and one key belongs to apps; Win and a key, and Alt+Tab and friends, to Windows.
+        assert_eq!(
+            no(pressed(R, CARBON_CONTROL_KEY, "r")),
+            Rejection::Reserved("Ctrl+R".into())
         );
         assert_eq!(
-            Rejection::Taken(ShortcutKind::Paste).message(),
-            "Paste last capture already uses this."
+            no(pressed(R, CARBON_CONTROL_KEY | CARBON_SHIFT_KEY, "r")).message(),
+            "Apps use Ctrl+Shift+R. Add Alt."
+        );
+        assert_eq!(
+            no(pressed(R, CARBON_CMD_KEY, "r")).message(),
+            "Windows uses Win+R."
+        );
+        assert_eq!(
+            no(pressed(0x53, CARBON_CMD_KEY | CARBON_SHIFT_KEY, "s")).message(),
+            "Windows uses Win+Shift+S."
+        );
+        assert_eq!(
+            no(pressed(0x73, CARBON_OPTION_KEY, "")).message(),
+            "Windows uses Alt+F4."
+        );
+        assert_eq!(
+            no(pressed(SPACE, CARBON_OPTION_KEY, " ")),
+            Rejection::Reserved("Alt+Space".into())
+        );
+        // Win with Ctrl or Alt is free (Ctrl+Win+Alt+S is one of the default's aliases).
+        assert!(
+            validate(
+                ShortcutKind::Record,
+                &pressed(R, CARBON_CMD_KEY | CARBON_OPTION_KEY, "r"),
+                &paste
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            Rejection::NoModifier.message(),
+            "Hold Ctrl, Alt or Win with the key."
         );
     }
 
@@ -1588,12 +1827,12 @@ mod tests {
         assert_eq!(
             key_label(41, "s").as_deref(),
             Some("S"),
-            "Dvorak S sits on ANSI ;"
+            "the typed letter names the key (Dvorak S sits on ANSI ;)"
         );
-        assert_eq!(key_label(49, " ").as_deref(), Some("Space"));
-        assert_eq!(key_label(122, "").as_deref(), Some("F1"));
-        assert_eq!(key_label(44, "/").as_deref(), Some("/"));
-        assert_eq!(key_label(53, "\u{1b}"), None);
+        assert_eq!(key_label(SPACE, " ").as_deref(), Some("Space"));
+        assert_eq!(key_label(F1, "").as_deref(), Some("F1"));
+        assert_eq!(key_label(SLASH, "/").as_deref(), Some("/"));
+        assert_eq!(key_label(ESC, "\u{1b}"), None);
         assert_eq!(key_label(0, ""), None);
     }
 
@@ -1708,8 +1947,11 @@ mod tests {
         );
         assert_eq!(host.paused, [true, false]);
         assert_eq!(panel.recording(), None);
-        assert_eq!(host.shortcuts.record.label, "⌃⌥R");
-        assert_eq!(read_json(&host.path)["shortcuts"]["record"]["label"], "⌃⌥R");
+        assert_eq!(host.shortcuts.record.label, label(CTRL_OPT, "R"));
+        assert_eq!(
+            read_json(&host.path)["shortcuts"]["record"]["label"],
+            label(CTRL_OPT, "R")
+        );
         let view = panel.view(&host);
         let record = &view.shortcuts[0];
         assert_eq!(
@@ -1756,10 +1998,10 @@ mod tests {
         press(&mut panel, &mut host, pressed(R, CARBON_SHIFT_KEY, "r"));
         assert_eq!(host.shortcuts, Shortcuts::default());
         assert_eq!(
-            panel.view(&host).shortcuts[1].error.as_deref(),
-            Some("Hold ⌘, ⌥ or ⌃ with the key.")
+            panel.view(&host).shortcuts[1].error,
+            Some(Rejection::NoModifier.message())
         );
-        host.refuse = Some("⌃⌥R".into());
+        host.refuse = Some(label(CTRL_OPT, "R"));
         press(
             &mut panel,
             &mut host,
@@ -1857,7 +2099,10 @@ mod tests {
         assert_eq!(view.retention.preset, Some("month"));
         assert_eq!(
             view.retention.note,
-            "Video and audio go to the Trash after 30 days, the rest of each capture after 90 days."
+            format!(
+                "Video and audio go to the {} after 30 days, the rest of each capture after 90 days.",
+                if WIN { "Recycle Bin" } else { "Trash" }
+            )
         );
         let config = read_json(&host.path);
         assert_eq!(config["transcriber"], "hex");
@@ -1997,19 +2242,25 @@ mod tests {
             Effect::OpenSettings(Permission::Camera)
         );
         let view = panel.view(&host);
-        let order: Vec<_> = view.permissions.iter().map(|p| p.permission).collect();
-        assert_eq!(
-            order,
-            [
-                Permission::ScreenRecording,
-                Permission::Microphone,
-                Permission::Accessibility,
-                Permission::Camera
-            ],
-            "no Input Monitoring"
-        );
-        assert!(view.permissions[..3].iter().all(|p| p.required));
-        assert!(!view.permissions[3].required);
+        if WIN {
+            // Only the microphone has a switch on Windows.
+            assert_eq!(view.permissions.len(), 1);
+            assert_eq!(view.permissions[0].permission, Permission::Microphone);
+        } else {
+            let order: Vec<_> = view.permissions.iter().map(|p| p.permission).collect();
+            assert_eq!(
+                order,
+                [
+                    Permission::ScreenRecording,
+                    Permission::Microphone,
+                    Permission::Accessibility,
+                    Permission::Camera
+                ],
+                "no Input Monitoring"
+            );
+            assert!(view.permissions[..3].iter().all(|p| p.required));
+            assert!(!view.permissions[3].required);
+        }
         // Screen Recording granted but not yet usable: Reopen relaunches.
         assert_eq!(panel.on(Action::Reopen, &mut host), Effect::None);
         grants
@@ -2017,7 +2268,7 @@ mod tests {
             .insert(Permission::ScreenRecording, Status::Granted);
         grants.screen_needs_relaunch = true;
         panel.set_grants(grants);
-        assert!(panel.view(&host).permissions[0].relaunch);
+        assert_eq!(panel.view(&host).permissions[0].relaunch, !WIN);
         assert_eq!(panel.on(Action::Reopen, &mut host), Effect::Relaunch);
     }
 
@@ -2030,7 +2281,7 @@ mod tests {
             ),
             Action::Shortcut {
                 kind: ShortcutKind::Paste,
-                pressed: pressed(R, CARBON_CONTROL_KEY | CARBON_OPTION_KEY, "r")
+                pressed: pressed(15, CARBON_CONTROL_KEY | CARBON_OPTION_KEY, "r")
             }
         );
         assert_eq!(
@@ -2060,6 +2311,8 @@ mod tests {
         assert_eq!(parse(r#"{"action":"uninstall-cli"}"#), Action::UninstallCli);
     }
 
+    /// Links are a unix thing; Windows has no Scrawl.app to link (`State::Unavailable`).
+    #[cfg(unix)]
     #[test]
     fn the_command_line_row_installs_uninstalls_and_says_why_not() {
         let dir = TempDir::new("cli");
