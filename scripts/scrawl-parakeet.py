@@ -19,12 +19,19 @@ run downloads the model (about 1.2 GB) from Hugging Face, which can outlast Scra
 Once the model is in the hub cache the script runs offline. Point Scrawl at the tool's Python,
 not at `uv run --script`, which can stall on uv's cache lock when the app launches it.
 SCRAWL_PARAKEET_MODEL picks another parakeet-mlx model repo.
+
+With "transcribePrestart": true, Scrawl starts this when a recording begins, with
+SCRAWL_PRESTART=1 and "-" for the audio. It loads the model and runs it once on a second of
+silence while the user talks, which is most of a cold run's time, then transcribes the WAV whose
+path Scrawl sends on stdin. Empty stdin means the recording was cancelled.
 """
 
 import glob
 import json
 import os
 import sys
+import tempfile
+import wave
 
 DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 MODEL_NAME = os.environ.get("SCRAWL_PARAKEET_MODEL", DEFAULT_MODEL)
@@ -82,14 +89,35 @@ def words_from_tokens(tokens):
     return words
 
 
+def warm_up(model) -> None:
+    """The first pass in a process puts the weights on the GPU and compiles its kernels."""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+        silence = handle.name
+    try:
+        with wave.open(silence, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16000)
+            audio.writeframes(b"\0\0" * 16000)
+        model.transcribe(silence)
+    finally:
+        os.unlink(silence)
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: scrawl-parakeet.py AUDIO.wav", file=sys.stderr)
         return 2
     model_name = MODEL_NAME
     model = from_pretrained(model_name)
+    audio = sys.argv[1]
+    if os.environ.get("SCRAWL_PRESTART") == "1":
+        warm_up(model)
+        audio = sys.stdin.readline().strip()
+        if not audio:
+            return 0
     result = model.transcribe(
-        sys.argv[1], chunk_duration=CHUNK_SECONDS, overlap_duration=OVERLAP_SECONDS
+        audio, chunk_duration=CHUNK_SECONDS, overlap_duration=OVERLAP_SECONDS
     )
     segments = [
         {"t0": ms(sentence.start), "t1": ms(sentence.end), "text": sentence.text.strip()}

@@ -141,6 +141,47 @@ pub fn set_override(engine: Engine) {
     );
 }
 
+/// The command transcriber for a recording that is starting, when it will handle that
+/// recording and `transcribePrestart` is on, so its model loads while the user talks.
+pub fn prestart() -> Option<crate::command_transcriber::Prestarted> {
+    if Engine::preferred() != Engine::Command {
+        return None;
+    }
+    let settings = crate::handoff::transcribe_command().filter(|settings| settings.prestart)?;
+    crate::command_transcriber::prestart(&settings)
+        .inspect_err(|error| {
+            crate::capture::scrawl_log(format!("Prestarting the command transcriber failed: {error:#}"))
+        })
+        .ok()
+}
+
+/// A recording's prestarted transcriber, taken once by its transcription. `RecordedAudio` is
+/// shared by reference, so the slot gives the owned transcriber out from behind a lock.
+#[derive(Clone, Default)]
+pub struct PrestartSlot(
+    std::sync::Arc<std::sync::Mutex<Option<crate::command_transcriber::Prestarted>>>,
+);
+
+impl PrestartSlot {
+    pub fn new(prestarted: Option<crate::command_transcriber::Prestarted>) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(prestarted)))
+    }
+
+    fn take(&self) -> Option<crate::command_transcriber::Prestarted> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
+impl std::fmt::Debug for PrestartSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let held = self.0.lock().map(|slot| slot.is_some()).unwrap_or(false);
+        f.debug_tuple("PrestartSlot").field(&held).finish()
+    }
+}
+
 /// Missing microphones and a failed transcriber never prevent saving a bundle.
 pub fn transcribe(wav: Option<&Path>, audio: Option<&RecordedAudio>) -> TranscriptData {
     let (Some(wav), Some(audio)) = (wav, audio.filter(|audio| audio.sample_count > 0)) else {
@@ -221,6 +262,14 @@ fn try_command(wav: &Path, audio: &RecordedAudio) -> Result<Option<TranscriptDat
         });
         return Ok(None);
     };
+    if let Some(prestarted) = audio.prestarted.take() {
+        match prestarted.finish(wav, audio.duration_ms) {
+            Ok(transcript) => return Ok(Some(transcript)),
+            Err(error) => crate::capture::scrawl_log(format!(
+                "Prestarted command transcriber failed, running it again: {error:#}"
+            )),
+        }
+    }
     crate::command_transcriber::transcribe(&settings, wav, audio.duration_ms).map(Some)
 }
 

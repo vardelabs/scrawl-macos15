@@ -741,7 +741,13 @@ network use for it.
   without it, the path is added last. The program also gets `SCRAWL_AUDIO` and
   `SCRAWL_TRANSCRIBE_VERSION=1` in its environment, and `/dev/null` on stdin.
 - `transcribeTimeoutSeconds` is optional. The default is `max(300, 60 + 10 × audio seconds)`,
-  counted from launch, model loading included.
+  counted from launch, model loading included (from the hand-over, with `transcribePrestart`).
+- `"transcribePrestart": true` starts the program when a recording begins, so it can load its
+  model while you talk. It runs with `SCRAWL_PRESTART=1` and `-` in place of `{audio}`, reads the
+  WAV's path as one line on stdin when the recording finishes, and prints its JSON as usual.
+  Empty stdin means the recording was cancelled, and Scrawl kills it. If the prestarted run
+  fails, Scrawl runs the program again the usual way. `scripts/scrawl-parakeet.py` supports it:
+  its first pass in a process costs about 2 s, which this moves into the recording.
 - **Command** in Settings › Recording › **Transcription** is greyed out as "Command (not set up)"
   until `transcribeCommand` is a non-empty array whose first entry is an absolute path.
 - Input: the whole recording as a 16 kHz mono 16-bit WAV, the same audio Apple Speech gets.

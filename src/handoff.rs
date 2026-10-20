@@ -419,6 +419,10 @@ pub struct Config {
     /// How long that program may run, in seconds (default: grows with the recording).
     #[serde(default)]
     pub transcribe_timeout_seconds: Option<u64>,
+    /// Starts that program when a recording begins, so it loads its model while the user talks
+    /// and gets the WAV's path on stdin at the end (default off; `command_transcriber`).
+    #[serde(default)]
+    pub transcribe_prestart: Option<bool>,
     /// Drops "um", "uh" and comma-wrapped "like" from transcripts (default on; `fillers`).
     #[serde(default)]
     pub remove_fillers: Option<bool>,
@@ -551,6 +555,7 @@ pub fn transcribe_command_from(config: &Config) -> Option<crate::command_transcr
     crate::command_transcriber::settings(
         config.transcribe_command.as_deref(),
         config.transcribe_timeout_seconds,
+        config.transcribe_prestart.unwrap_or(false),
     )
 }
 
