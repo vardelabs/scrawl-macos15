@@ -2531,6 +2531,7 @@ impl ScrawlCoordinator {
             "start_recording_with_target invoked: mode={:?} frame={:?}",
             target.mode, target.frame
         ));
+        crate::mute::mute();
         // Without the picker the start needs its own cue: the overlay flashes an edge glow.
         let quick = !self.is_selecting();
         self.telemetry.start_glow.store(
@@ -2685,6 +2686,7 @@ impl ScrawlCoordinator {
             return;
         }
         self.remember_mode(SelectionMode::Iphone);
+        crate::mute::mute();
         self.recording_shortcut_key = false;
         self.selection_drag = None;
         self.hovered_window = None;
@@ -2740,6 +2742,7 @@ impl ScrawlCoordinator {
                     scrawl_log(format!("iPhone capture could not start: {error:#}"));
                     self.telemetry.finish_session();
                     let _ = std::fs::remove_dir_all(&bundle_dir);
+                    crate::mute::restore();
                     self.dismiss_island(cx);
                     return;
                 }
@@ -2791,6 +2794,7 @@ impl ScrawlCoordinator {
     pub fn cancel_recording(&mut self, cx: &mut Context<Self>) {
         scrawl_log("cancel_recording invoked");
         self.discard_recording();
+        crate::mute::restore();
         self.dismiss_island(cx);
     }
 
@@ -2800,6 +2804,7 @@ impl ScrawlCoordinator {
         let Some(rec) = self.active_recording.take() else {
             return;
         };
+        crate::mute::restore();
         let (events, strokes) = self.telemetry.finish_session();
         let bundle_dir = rec.bundle_dir;
         let target = rec.target;
