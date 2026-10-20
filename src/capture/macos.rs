@@ -1682,6 +1682,13 @@ fn current_mouse_location() -> Option<CGPoint> {
     Some(loc)
 }
 
+/// Whether a mouse button is down right now (no permission needed).
+pub fn mouse_button_down() -> bool {
+    (0..2).any(|button| unsafe {
+        CGEventSourceButtonState(0, button) || CGEventSourceButtonState(1, button)
+    })
+}
+
 pub fn current_mouse_screen() -> Option<[f32; 2]> {
     current_mouse_location().map(|p| [p.x as f32, p.y as f32])
 }

@@ -60,6 +60,8 @@ impl Dictation {
         false
     }
 
+    pub fn cede(&mut self) {}
+
     pub fn tick(&mut self, _telemetry: &crate::capture::SharedCaptureTelemetry, _capture_busy: bool) {}
 }
 

@@ -88,10 +88,19 @@ impl Default for Dictation {
 }
 
 impl Dictation {
-    /// Dictating, or still pasting the last one: the capture shortcut waits. A chord that may
-    /// still turn out to be a shortcut does not count.
+    /// Latched, or still pasting the last one: the capture shortcut is ignored. A held chord
+    /// gives way to it instead (`cede`).
     pub fn is_busy(&self) -> bool {
-        self.started.is_some() || self.working.is_some()
+        self.chord.is_latched() || self.working.is_some()
+    }
+
+    /// The capture shortcut went down: a held, unlatched chord was the start of it (a capture
+    /// shortcut that contains the chord's modifiers), so that recording is dropped.
+    pub fn cede(&mut self) {
+        if self.chord.is_active() && !self.chord.is_latched() {
+            let action = self.chord.cancel();
+            self.apply(action, true);
+        }
     }
 
     /// `capture_busy`: a capture is recording, selecting or processing, so the chord is ignored.
@@ -117,6 +126,12 @@ impl Dictation {
         }
         let action = self.chord.tick(now_ms, mods, keys);
         self.apply(action, capture_busy);
+        if self.chord.is_active() && !self.chord.is_latched() && crate::capture::mouse_button_down()
+        {
+            // A modifier-click or drag, not dictation.
+            let action = self.chord.cancel();
+            self.apply(action, capture_busy);
+        }
         if self.chord.is_active() && telemetry.take_escape() {
             let action = self.chord.cancel();
             self.apply(action, capture_busy);
@@ -166,9 +181,12 @@ impl Dictation {
                 self.place_pill();
             }
             Action::Finish => self.finish(),
-            // Dropping the recorder stops the microphone without encoding what it heard.
+            // Dropping the recorder stops the microphone without encoding what it heard. The drop
+            // waits for the device to finish opening, so it happens off the UI thread.
             Action::Discard => {
-                self.recorder = None;
+                if let Some(recorder) = self.recorder.take() {
+                    std::thread::spawn(move || drop(recorder));
+                }
                 self.stop_listening();
             }
         }
@@ -258,7 +276,8 @@ fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) {
         transcript.source,
         started.elapsed().as_millis()
     ));
-    if text.is_empty() {
+    // Silence can come back as a lone full stop.
+    if !text.chars().any(char::is_alphanumeric) {
         return;
     }
     if let Err(error) = crate::handoff::paste_text(&text, restore_clipboard) {

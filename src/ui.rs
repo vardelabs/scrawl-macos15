@@ -1184,6 +1184,7 @@ impl ScrawlCoordinator {
 
     /// The capture shortcut went down (from Carbon, the event tap or the HID poller).
     pub fn press_shortcut(&mut self, cx: &mut Context<Self>) {
+        self.dictation.cede();
         let activity = self.activity();
         if self.gate.is_pending() || self.dictation.is_busy() {
             return;

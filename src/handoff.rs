@@ -259,7 +259,7 @@ pub fn paste_text(text: &str, restore: bool) -> Result<()> {
     let ours = pasteboard.changeCount();
     std::thread::sleep(std::time::Duration::from_millis(20));
     crate::capture::post_synthetic_cmd_v();
-    if let Some(saved) = saved.filter(|items| !items.is_empty()) {
+    if let Some(saved) = saved {
         std::thread::sleep(std::time::Duration::from_millis(RESTORE_DELAY_MS));
         if pasteboard.changeCount() == ours {
             restore_pasteboard(&pasteboard, &saved);
@@ -307,7 +307,7 @@ fn restore_pasteboard(pasteboard: &objc2_app_kit::NSPasteboard, saved: &[SavedIt
         })
         .collect();
     pasteboard.clearContents();
-    if !pasteboard.writeObjects(&NSArray::from_retained_slice(&items)) {
+    if !items.is_empty() && !pasteboard.writeObjects(&NSArray::from_retained_slice(&items)) {
         crate::capture::scrawl_log("Dictation: the previous clipboard could not be restored");
     }
 }
