@@ -390,7 +390,7 @@ pub struct Config {
     /// holding it still switches modes (default off).
     #[serde(default)]
     pub tap_chooses: Option<bool>,
-    /// Mutes the sound output while recording and restores it after (default on; `mute`).
+    /// Read only to carry an older setting over: `false` means `playbackMode` `"unchanged"`.
     #[serde(default)]
     pub mute_audio: Option<bool>,
     /// Esc discards a running recording, as it cancels the picker (default on). Off for a
@@ -401,6 +401,13 @@ pub struct Config {
     /// (`transcribe`).
     #[serde(default)]
     pub transcriber: Option<String>,
+    /// `"mute"` (this fork's default), `"lower"` or `"unchanged"`: what playback does while
+    /// recording (`playback`).
+    #[serde(default)]
+    pub playback_mode: Option<String>,
+    /// How far `"lower"` turns playback down, in percent of its volume (default 20).
+    #[serde(default)]
+    pub playback_level: Option<u8>,
     /// The Hex model to use when `transcriber` is `"hex"` (default: the first ready one of
     /// `hex::PREFERRED_MODELS`).
     #[serde(default)]
@@ -678,9 +685,16 @@ pub fn tap_chooses() -> bool {
     config().tap_chooses.unwrap_or(false)
 }
 
-/// Whether recordings mute the sound output (`muteAudio`, default on; `mute`).
-pub fn mute_audio() -> bool {
-    config().mute_audio.unwrap_or(true)
+/// What playback does while recording: a valid `playbackMode`, else `"unchanged"` when the
+/// older `"muteAudio": false` is set, else `"mute"`.
+pub fn playback_mode_in(config: &Config) -> &'static str {
+    match config.playback_mode.as_deref() {
+        Some("mute") => "mute",
+        Some("lower") => "lower",
+        Some("unchanged") => "unchanged",
+        _ if config.mute_audio == Some(false) => "unchanged",
+        _ => "mute",
+    }
 }
 
 /// Whether Esc discards a running recording (`escapeCancels`, default on).
@@ -1390,6 +1404,22 @@ fn existing_keyframes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_mutes_unless_told_otherwise() {
+        let mode = |playback: Option<&str>, mute: Option<bool>| {
+            playback_mode_in(&Config {
+                playback_mode: playback.map(Into::into),
+                mute_audio: mute,
+                ..Default::default()
+            })
+        };
+        assert_eq!(mode(None, None), "mute");
+        assert_eq!(mode(None, Some(false)), "unchanged");
+        assert_eq!(mode(Some("lower"), Some(false)), "lower");
+        assert_eq!(mode(Some("unchanged"), None), "unchanged");
+        assert_eq!(mode(Some("loud"), None), "mute");
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct Fixture(PathBuf);

@@ -126,6 +126,8 @@ struct SettingsState: Decodable, Equatable {
   ]
   var microphone = SettingsMicrophone()
   var transcriber = SettingsTranscriber()
+  var playbackMode = "mute"
+  var playbackLevel = 20
   var videoExport = false
   var tapChooses = false
   var retention = SettingsRetention()
@@ -254,8 +256,10 @@ enum SettingsMotion {
 
 /// Sizes: 16 titles, 14 rows, 12 captions, 11 keycap names, 20 keycap letters.
 enum SettingsMetrics {
-  static let width: CGFloat = 620
-  static let height: CGFloat = 512
+  static let width: CGFloat = 780
+  static let height: CGFloat = 600
+  static let minWidth: CGFloat = width
+  static let minHeight: CGFloat = height
   static let sidebar: CGFloat = 210
   static let titlebar: CGFloat = 52
   static let inset: CGFloat = 20
@@ -694,7 +698,8 @@ struct SettingsView: View {
         if model.state.recording != nil { model.act("cancel-shortcut") }
       }
     }
-    .frame(width: SettingsMetrics.width, height: SettingsMetrics.height)
+    .frame(minWidth: SettingsMetrics.minWidth, maxWidth: .infinity,
+           minHeight: SettingsMetrics.minHeight, maxHeight: .infinity)
     .environment(\.settingsTheme, theme)
   }
 
@@ -773,7 +778,13 @@ struct SettingsView: View {
       .frame(height: SettingsMetrics.titlebar)
       switch pane {
       case .general: general
-      case .recording: recording
+      case .recording:
+        if model.rendering {
+          // ImageRenderer cannot draw the AppKit-backed scroll view.
+          recording.frame(maxHeight: .infinity, alignment: .top).clipped()
+        } else {
+          ScrollView { recording.padding(.bottom, 16) }
+        }
       case .storage: storage
       case .permissions: permissions
       case .agents: agents
@@ -844,6 +855,27 @@ struct SettingsView: View {
           .transition(.opacity)
       }
       Color.clear.frame(height: 20)
+      SettingsGroup {
+        SettingsRow(title: "Playback during recording") {
+          SettingsPopup(value: state.playbackMode == "mute" ? "Mute" : state.playbackMode == "lower" ? "Lower volume" : "Unchanged",
+                        options: [("unchanged", "Unchanged", true), ("mute", "Mute", true), ("lower", "Lower volume", true)],
+                        selected: state.playbackMode) { model.set("playbackMode", $0) }
+        }
+        if state.playbackMode == "lower" {
+          SettingsSeparator()
+          SettingsRow(title: "Relative volume") {
+            HStack {
+              Slider(value: Binding(get: { Double(model.state.playbackLevel) }, set: {
+                model.state.playbackLevel = Int($0.rounded())
+                model.set("playbackLevel", Int($0.rounded()))
+              }), in: 0...100).frame(width: 150)
+              Text("\(state.playbackLevel)%").monospacedDigit().frame(width: 40)
+            }
+          }
+        }
+      }
+      SettingsCaption(text: "Restores the previous volume after recording. Requires an output device with volume control.")
+        .padding(.bottom, 16)
       SettingsGroup {
         SettingsRow(title: "Transcription") {
           SettingsPopup(value: engineTitle, options: engines, selected: t.engine) {
@@ -1165,7 +1197,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func applicationDidFinishLaunching(_: Notification) {
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: SettingsMetrics.width, height: SettingsMetrics.height),
-      styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+      styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
       backing: .buffered,
       defer: false
     )
@@ -1189,12 +1221,24 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.setFrame(NSRect(x: 0, y: 0, width: SettingsMetrics.width, height: SettingsMetrics.height), display: false)
     host.frame = window.contentLayoutRect.union(NSRect(origin: .zero, size: window.frame.size))
     host.autoresizingMask = [.width, .height]
-    window.center()
+    window.minSize = NSSize(width: SettingsMetrics.minWidth, height: SettingsMetrics.minHeight)
+    if !window.setFrameUsingName("ScrawlSettings") { window.center() }
+    // Saved frames can predate the minimum size. Clamp them explicitly too.
+    var restored = window.frame
+    restored.size.width = max(restored.width, SettingsMetrics.minWidth)
+    restored.size.height = max(restored.height, SettingsMetrics.minHeight)
+    window.setFrame(restored, display: false)
+    window.setFrameAutosaveName("ScrawlSettings")
     self.window = window
     _ = keys
     model.send = { emit($0) }
     paneWatch = model.$pane.sink { [weak self] pane in self?.updateMeter(pane: pane) }
     readCommands()
+  }
+
+  func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+    NSSize(width: max(frameSize.width, SettingsMetrics.minWidth),
+           height: max(frameSize.height, SettingsMetrics.minHeight))
   }
 
   func windowDidChangeOcclusionState(_: Notification) {
@@ -1316,6 +1360,8 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var custom = base
     custom.shortcuts[0] = SettingsShortcut(kind: "record", title: "Record", label: "⌃⌥⌘R", key: "R", shift: false, control: true, option: true, command: true, isDefault: false)
     custom.login.on = true
+    var lower = base
+    lower.playbackMode = "lower"
     var hex = base
     hex.transcriber = SettingsTranscriber(engine: "hex", hexTitle: "Hex", hexEnabled: true, models: [
       SettingsModelOption(id: "parakeet-tdt-0.6b-v3", title: "Parakeet TDT v3", chosen: true),
@@ -1365,6 +1411,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("general-recording-shortcut", .general, listening, [.control, .option]),
       ("general-refused", .general, refused, []),
       ("recording", .recording, base, []),
+      ("recording-lower", .recording, lower, []),
       ("recording-hex", .recording, hex, []),
       ("recording-mic-chosen", .recording, micChosen, []),
       ("recording-mic-missing", .recording, micMissing, []),
@@ -1392,6 +1439,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.liveModifiers = live
         model.meter.level = 0.44
         let view = SettingsView(model: model)
+          .frame(width: SettingsMetrics.width, height: SettingsMetrics.height)
           .environment(\.colorScheme, scheme)
           .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         let renderer = ImageRenderer(content: view)

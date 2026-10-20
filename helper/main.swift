@@ -159,6 +159,8 @@ case "sck-probe":
   runAsync { await ScreenProbe.run(watch: watch) }
 case "onboarding":
   Onboarding.run(arguments: arguments)
+case "playback-volume":
+  runPlaybackVolume(arguments: Array(arguments.dropFirst()))
 case "settings":
   SettingsWindow.run(arguments: arguments)
 case "qr":

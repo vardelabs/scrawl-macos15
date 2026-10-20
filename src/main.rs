@@ -1,5 +1,6 @@
 mod agent_context;
 mod audio;
+mod playback;
 mod autocrop;
 // Windows looks elements up through UI Automation (`win/uia.rs`); other systems have no lookup.
 #[cfg_attr(
@@ -26,7 +27,6 @@ mod keyframes;
 #[cfg(target_os = "macos")]
 mod laser_overlay;
 mod live_transcribe;
-mod mute;
 mod mic;
 mod model;
 mod native;
@@ -1506,6 +1506,7 @@ fn main() -> Result<()> {
                     .ok()
                     .and_then(|mut d| d.drain(..).next().map(|p| p.id))
             });
+            let playback = playback::Guard::start();
             let session = phone::PhoneSession::start(
                 &bundle_dir.join("recording.mov"),
                 dev_id.as_deref(),
@@ -1523,6 +1524,7 @@ fn main() -> Result<()> {
             while !session.has_ended() && record_started.elapsed() < target_dur {
                 std::thread::sleep(Duration::from_millis(50));
             }
+            drop(playback);
             let recording = session.stop()?;
             let (_dir, _bundle, summary) =
                 phone::finalize_live_capture(&bundle_dir, recording, Vec::new(), Vec::new(), note)?;
@@ -1542,6 +1544,7 @@ fn main() -> Result<()> {
             });
             std::fs::create_dir_all(&bundle_dir)?;
             let video_path = bundle_dir.join("recording.mp4");
+            let playback = playback::Guard::start();
             let audio = AudioRecorder::start().ok();
             let session = ScreenCaptureSession::start(
                 target.clone(),
@@ -1556,6 +1559,7 @@ fn main() -> Result<()> {
                 )
             });
             std::thread::sleep(Duration::from_secs(duration.max(1)));
+            drop(playback);
             let recording = session.stop();
             let activity = window_log
                 .map(windows::WindowLogger::stop)
