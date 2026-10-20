@@ -1868,6 +1868,8 @@ impl ScrawlCoordinator {
         }
         match action {
             Action::None => {}
+            // On a large screen a full-screen capture costs the most, so a tap can pick instead.
+            Action::RecordScreen if crate::handoff::tap_chooses() => self.begin_target_selection(cx),
             Action::RecordScreen => self.record_screen_now(cx),
             Action::Open(mode) => {
                 self.open_picker(Some(SelectionMode::Screen), true, cx);

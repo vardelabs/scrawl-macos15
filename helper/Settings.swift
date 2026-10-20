@@ -127,6 +127,7 @@ struct SettingsState: Decodable, Equatable {
   var microphone = SettingsMicrophone()
   var transcriber = SettingsTranscriber()
   var videoExport = false
+  var tapChooses = false
   var retention = SettingsRetention()
   var capturesSize: String?
   var permissions: [SettingsPermission] = ["screen-recording", "microphone", "accessibility", "camera"]
@@ -602,6 +603,7 @@ struct ShortcutRecorder: View {
   @Environment(\.settingsTheme) private var theme
   @ObservedObject var model: SettingsModel
   let shortcut: SettingsShortcut
+  var tapChooses = false
 
   var body: some View {
     let live = shortcut.recording ? model.liveModifiers : []
@@ -657,8 +659,9 @@ struct ShortcutRecorder: View {
   private var caption: String {
     if shortcut.recording { return "Press the new shortcut. Esc cancels." }
     if let error = shortcut.error { return error }
-    return shortcut.kind == "paste"
-      ? "Pastes the last capture into the app in front."
+    if shortcut.kind == "paste" { return "Pastes the last capture into the app in front." }
+    return tapChooses
+      ? "Tap to choose what to record. Hold to switch modes."
       : "Tap to record. Hold to choose what to record."
   }
 }
@@ -800,8 +803,14 @@ struct SettingsView: View {
         SettingsCaption(text: "Launch at login works in the installed Scrawl.app.")
       }
       ForEach(state.shortcuts) { shortcut in
-        ShortcutRecorder(model: model, shortcut: shortcut)
+        ShortcutRecorder(model: model, shortcut: shortcut, tapChooses: state.tapChooses)
       }
+      SettingsGroup {
+        SettingsRow(title: "Tap opens the picker") {
+          SettingsSwitch(on: state.tapChooses) { model.set("tapChooses", $0) }
+        }
+      }
+      SettingsCaption(text: "On: a tap chooses what to record, and holding the shortcut on Screen records the whole screen. Off: a tap records the whole screen.")
     }
   }
 

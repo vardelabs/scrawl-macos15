@@ -484,6 +484,7 @@ pub struct View {
     pub microphone: MicrophoneView,
     pub transcriber: TranscriberView,
     pub video_export: bool,
+    pub tap_chooses: bool,
     pub retention: RetentionView,
     /// How much the captures folder takes, once measured.
     pub captures_size: Option<String>,
@@ -995,7 +996,9 @@ impl Panel {
                     return Effect::OpenLoginItems;
                 }
             }
-            ("autoSend" | "videoExport", serde_json::Value::Bool(on)) => write(key, (*on).into()),
+            ("autoSend" | "videoExport" | "tapChooses", serde_json::Value::Bool(on)) => {
+                write(key, (*on).into())
+            }
             ("microphone", serde_json::Value::String(id)) => {
                 let inputs = self.inputs.clone().unwrap_or_default();
                 if let Err(error) = crate::mic::save_in(&path, id, &inputs) {
@@ -1126,6 +1129,7 @@ impl Panel {
                 command_enabled,
             },
             video_export: config.video_export.unwrap_or(false),
+            tap_chooses: config.tap_chooses.unwrap_or(false),
             retention: RetentionView {
                 preset: policy.preset().map(preset_id),
                 options: crate::retention::Preset::ALL

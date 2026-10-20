@@ -317,6 +317,10 @@ pub struct Config {
     /// Feature flag: shows **Export Last Capture as Video…** in the menu (default off).
     #[serde(default)]
     pub video_export: Option<bool>,
+    /// A tap of the record shortcut opens the picker instead of recording the whole screen;
+    /// holding it still switches modes (default off).
+    #[serde(default)]
+    pub tap_chooses: Option<bool>,
     /// `"apple"` (default), `"hex"` or `"command"`: which engine transcribes recordings
     /// (`transcribe`).
     #[serde(default)]
@@ -571,6 +575,11 @@ pub fn auto_send() -> bool {
 /// either way.
 pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
+}
+
+/// Whether a tap of the record shortcut opens the picker (`tapChooses`, default off).
+pub fn tap_chooses() -> bool {
+    config().tap_chooses.unwrap_or(false)
 }
 
 /// The configured transcriber name (`transcriber`) as written, unvalidated.
