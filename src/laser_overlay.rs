@@ -41,13 +41,13 @@ const MAX_DRAWABLE_PX: f32 = 3840.0 * 2160.0;
 const INK_VISIBLE_MS: u64 = 1_300;
 
 /// `scale`, lowered as far as needed to keep a `width`×`height`-point drawable within
-/// `MAX_DRAWABLE_PX`, and never below 1.
+/// `MAX_DRAWABLE_PX`, below 1 if the screen is that large.
 fn drawable_scale(width: f32, height: f32, scale: f32) -> f32 {
     let pixels = width * height * scale * scale;
     if pixels <= MAX_DRAWABLE_PX {
         return scale;
     }
-    (scale * (MAX_DRAWABLE_PX / pixels).sqrt()).max(1.0)
+    scale * (MAX_DRAWABLE_PX / pixels).sqrt()
 }
 
 /// What a frame shows when no ink, pin, laser tip or glow is on screen: only the target
@@ -577,7 +577,15 @@ impl SharedMetalOverlay {
         let nothing_drawn = segments.len() == 1 && segments[0].width == 0.0;
         let no_pins = pins.len() == 1 && pins[0].radius == 0.0;
         let glowing = is_active && self.telemetry.start_glow.load(Ordering::Acquire);
-        let quiet = (!is_selecting && !is_device_pending && (!is_active || (nothing_drawn && no_pins && !shift_held && !glowing)))
+        // Only a recording reaches here quiet: the picker and a pending iPhone animate, and an
+        // idle overlay returned at the top of `draw`.
+        let quiet = (is_active
+            && !is_selecting
+            && !is_device_pending
+            && nothing_drawn
+            && no_pins
+            && !shift_held
+            && !glowing)
             .then_some(QuietFrame {
                 target_rect: [tx, ty, tw, th],
                 constrained: is_constrained,
@@ -1106,9 +1114,10 @@ mod tests {
         assert_eq!(drawable_scale(1920.0, 1080.0, 2.0), 2.0);
         let ultrawide = drawable_scale(3840.0, 1080.0, 2.0);
         assert!(ultrawide < 2.0 && ultrawide >= 1.0);
-        let pixels = 3840.0 * 1080.0 * ultrawide * ultrawide;
-        assert!((pixels - MAX_DRAWABLE_PX).abs() / MAX_DRAWABLE_PX < 1e-3, "{pixels}");
-        assert_eq!(drawable_scale(7680.0, 4320.0, 2.0), 1.0);
+        for (w, h, s) in [(3840.0, 1080.0, 2.0), (7680.0, 4320.0, 2.0), (7680.0, 4320.0, 1.0)] {
+            let pixels = w * h * drawable_scale(w, h, s).powi(2);
+            assert!((pixels - MAX_DRAWABLE_PX).abs() / MAX_DRAWABLE_PX < 1e-3, "{pixels}");
+        }
     }
 
     #[test]
