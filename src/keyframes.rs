@@ -1009,8 +1009,8 @@ mod tests {
         assert_eq!(marks[4].frame, marks[5].frame);
         assert_eq!(selected[4].0.t, 11_000);
 
-        // On one unchanged screen, marks drawn in one go group until they span more than
-        // `GROUP_MS`; a pause longer than `GROUP_GAP_MS` starts a new keyframe.
+        // On one unchanged screen, marks drawn in one go share a keyframe; a pause longer than
+        // `GROUP_GAP_MS` starts a new one.
         let frames: Vec<_> = (0..=50).map(|i| frame(i * 1_000, 128)).collect();
         let mut marks: Vec<_> = (1..=10)
             .map(|i| mark(&format!("m{i}"), i * 1_000))
@@ -1027,6 +1027,26 @@ mod tests {
         let at: Vec<_> = selected.iter().map(|(k, _)| k.t).collect();
         assert_eq!(at, [10_000, 33_000, 40_000]);
         assert!(marks.iter().all(|m| m.frame.is_some()));
+
+        // Long strokes with no pause still close the group once it spans more than `GROUP_MS`.
+        let mut marks: Vec<_> = [(1_000, 9_000), (9_000, 17_000), (17_000, 25_000)]
+            .iter()
+            .enumerate()
+            .map(|(i, &(t0, t1))| Mark {
+                t0,
+                ..mark(&format!("l{i}"), t1)
+            })
+            .collect();
+        let selected = select_keyframes(
+            &frames,
+            &[],
+            &mut marks,
+            &[],
+            &TranscriptData::default(),
+            MAX_KEYFRAMES,
+        );
+        let at: Vec<_> = selected.iter().map(|(k, _)| k.t).collect();
+        assert_eq!(at, [17_000, 25_000]);
 
         // Drawings with a pause between them, each talked through, get a keyframe each.
         let mut marks: Vec<_> = [(1_190, 2_887), (6_361, 8_273), (9_683, 11_990)]
