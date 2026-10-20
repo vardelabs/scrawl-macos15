@@ -806,12 +806,66 @@ then `granted` or `cancelled` with a `reason` (`back`, `settings-closed`, `no-se
 X,Y,W,H --visible X,Y,W,H` prints where the card would dock (`below`, `inside`, `right`, `left` or
 `clamped`); `scripts/check-permission-panel-dock.sh` checks the cases.
 
+## Windows
+
+Scrawl runs on Windows 10 (2004) and later as the same app: the same capsule, picker, overlay,
+review window, welcome tour and Settings, from the same GPUI code. Only the parts the operating
+system owns differ:
+
+| | macOS | Windows |
+|---|---|---|
+| Shortcut | `⌥⇧S`, `⌥⇧V` | `Alt+Shift+S`, `Alt+Shift+V` |
+| Menu | Menu bar item | Notification area icon (left or right click) |
+| Screen and window capture | ScreenCaptureKit | Windows.Graphics.Capture, H.264 through Media Foundation |
+| Clicks, keys, Shift ink | Mouse monitor, Accessibility key tap, modifier state | Low-level hooks and key state |
+| Ink overlay | Metal panel | Click-through GPUI window, left out of recordings |
+| Transcription | SpeechAnalyzer, or Hex | Parakeet on device (`transcribe.cpp`), from the model Hex installed |
+| Movie decoding | `scrawl-helper` (AVFoundation) | Media Foundation, in process |
+| Paste | `⌘V` | `Ctrl+V` |
+| Settings and welcome tour | SwiftUI (`scrawl-helper`) | GPUI windows in process, same panes and protocol |
+| Recording capsule | Native AppKit + Metal pill (or GPUI) | GPUI capsule |
+| Launch at login | `SMAppService` | The user's `Run` key (Settings › Apps › Startup) |
+| Captures | `~/Library/Application Support/scrawl/captures` | `%LOCALAPPDATA%\scrawl\captures` |
+| Log | `~/Library/Logs/Scrawl/scrawl.log` | `%LOCALAPPDATA%\Scrawl\Logs\scrawl.log` |
+
+- **Permissions:** none, apart from the microphone switch in Settings › Privacy & security, which
+  the welcome tour and Scrawl's Settings › Permissions check. Screen capture, input hooks and
+  pasting need no grant on Windows.
+- **Shortcuts:** both are recorded in Settings › General like on macOS, as `Ctrl`, `Alt`, `Win` and
+  `Shift` combinations. Scrawl turns down `Ctrl` with one key (apps use those), `Win` with a key
+  (Windows uses those), and `Alt+Tab`, `Alt+F4` and `Alt+Space`.
+- **Transcription:** install [Hex](https://github.com/anomalyco/hex) and download a model in it;
+  Scrawl loads it from `%APPDATA%\voice-control\models` with measured word timings, so spoken cues
+  ("look here") cut keyframes as on macOS. Scrawl never downloads a model. Without one, captures
+  have no transcript.
+- **Command-line tool:** **Install** in Settings › Agents writes a `scrawl.cmd` shim into
+  `%LOCALAPPDATA%\Microsoft\WindowsApps`, which is on every user's PATH, so agents and terminals
+  can run `scrawl`.
+- **agentContext:** what clicks and marks land on comes from UI Automation, as it does from the
+  Accessibility tree on macOS.
+- **Not on Windows:** the cabled iPhone (it needs AVFoundation's screen capture devices), video
+  export, Sparkle updates (**Check for Updates…** opens the releases page) and the dev-site tab URL
+  (`/sdk.js` registrations still route).
+
+Build with the MSVC toolchain, CMake and the Windows SDK (Visual Studio Build Tools with the C++
+workload). Release builds also need GPUI's shader compiler: set `GPUI_FXC_PATH` to the SDK's
+`fxc.exe` (for example `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe`).
+
+```powershell
+cargo build --release
+.\target\release\scrawl.exe app
+```
+
 ## Testing
 
 ```sh
 taskpolicy -c utility cargo test -j 3 --offline -- --test-threads=2
 ./scripts/install-app.sh
 ```
+
+On Windows, `cargo test`; then run `scrawl.exe app` and record with `Alt+Shift+S`.
+`SCRAWL_SHOW_OWN_WINDOWS=1` keeps Scrawl's own windows (capsule, overlay, picker) in screenshots,
+which normally leave them out.
 
 - **iPhone:** connect a phone, hold `⌥⇧` and press `S` three times, release, talk, draw over the mirror, press M,
   Finish. Inspect the bundle's `summary.md`, `scrawl.json` (`source`, `device`), contact sheet, and

@@ -3,16 +3,21 @@
 //! background thread with a short messaging timeout, so a hung app never holds up input. Secure
 //! text fields are never read, input fields' values are never read, and text is cut short.
 
+#[cfg(target_os = "macos")]
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
+#[cfg(target_os = "macos")]
 use core_foundation::string::{CFString, CFStringRef};
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
 type AxElement = *const c_void;
 
+#[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXUIElementCreateSystemWide() -> AxElement;
@@ -37,6 +42,7 @@ unsafe extern "C" {
 const MAX_CHARS: usize = 60;
 
 /// Each Accessibility message to an app gives up after this.
+#[cfg(target_os = "macos")]
 const MESSAGE_TIMEOUT_S: f32 = 0.1;
 
 /// A lookup stops reading more attributes after this, whatever it has by then.
@@ -95,6 +101,7 @@ pub fn clip(raw: &str) -> Option<String> {
 }
 
 /// Roles whose value is what the user typed; their value is never read.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_input(role: &str, subrole: &str) -> bool {
     subrole == "AXSecureTextField"
         || matches!(
@@ -104,10 +111,12 @@ fn is_input(role: &str, subrole: &str) -> bool {
 }
 
 /// Roles that are usually a piece of a control (its text or icon), so the control names it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_part(role: &str) -> bool {
     matches!(role, "AXStaticText" | "AXImage" | "AXGroup" | "AXUnknown")
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_control(role: &str) -> bool {
     matches!(
         role,
@@ -128,8 +137,10 @@ fn is_control(role: &str) -> bool {
 }
 
 /// Owns a CoreFoundation value returned under the create rule.
+#[cfg(target_os = "macos")]
 struct Owned(CFTypeRef);
 
+#[cfg(target_os = "macos")]
 impl Drop for Owned {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -138,6 +149,7 @@ impl Drop for Owned {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn attribute(element: AxElement, name: &'static str) -> Option<Owned> {
     let key = CFString::from_static_string(name);
     let mut out: CFTypeRef = std::ptr::null();
@@ -146,6 +158,7 @@ fn attribute(element: AxElement, name: &'static str) -> Option<Owned> {
     (status == 0 && !out.is_null()).then_some(Owned(out))
 }
 
+#[cfg(target_os = "macos")]
 fn string_attribute(element: AxElement, name: &'static str) -> Option<String> {
     let value = attribute(element, name)?;
     let value = unsafe { CFType::wrap_under_get_rule(value.0) };
@@ -155,6 +168,7 @@ fn string_attribute(element: AxElement, name: &'static str) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
+#[cfg(target_os = "macos")]
 fn element_attribute(element: AxElement, name: &'static str) -> Option<Owned> {
     let value = attribute(element, name)?;
     let is_element =
@@ -162,11 +176,13 @@ fn element_attribute(element: AxElement, name: &'static str) -> Option<Owned> {
     is_element.then_some(value)
 }
 
+#[cfg(target_os = "macos")]
 fn pid_of(element: AxElement) -> Option<i32> {
     let mut pid = 0;
     (unsafe { AXUIElementGetPid(element, &raw mut pid) } == 0).then_some(pid)
 }
 
+#[cfg(target_os = "macos")]
 fn element_at(root: AxElement, x: f64, y: f64) -> Option<Owned> {
     let mut out: AxElement = std::ptr::null();
     let status =
@@ -176,6 +192,7 @@ fn element_at(root: AxElement, x: f64, y: f64) -> Option<Owned> {
 
 /// The topmost element at a global top-left point, looking past Scrawl's own windows. Blocking;
 /// call it off the main thread.
+#[cfg(target_os = "macos")]
 pub fn hit_test(x: f64, y: f64) -> Option<Hit> {
     let started = Instant::now();
     let own = std::process::id() as i32;
@@ -249,7 +266,15 @@ pub fn hit_test(x: f64, y: f64) -> Option<Hit> {
     Some(hit)
 }
 
+/// The element at a global point (physical pixels) from UI Automation, looking past Scrawl's own
+/// windows. Blocking; call it off the main thread.
+#[cfg(target_os = "windows")]
+pub fn hit_test(x: f64, y: f64) -> Option<Hit> {
+    crate::win::uia::hit_test(x, y, LOOKUP_BUDGET)
+}
+
 /// `file:///Users/kit/src/main.rs` → `main.rs`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn document_name(url: &str) -> Option<String> {
     let path = url.strip_prefix("file://").unwrap_or(url);
     let name = path.trim_end_matches('/').rsplit('/').next()?;
