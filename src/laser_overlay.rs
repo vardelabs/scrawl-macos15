@@ -39,6 +39,11 @@ const INK_REACH_PT: f32 = 4.6;
 const MAX_DRAWABLE_PX: f32 = 3840.0 * 2160.0;
 /// A released ink stroke holds for 650 ms, fades for 650 ms, then is gone from the overlay.
 const INK_VISIBLE_MS: u64 = 1_300;
+/// The shader animates the recording's first moments from `now_sec`: the intro (dim, tint and
+/// border settling, `t_intro`) for 0.24 s, and the full-screen start glow until 1.1 s. A frame
+/// inside them changes with time, so it is never quiet.
+const INTRO_MS: u64 = 240;
+const START_GLOW_MS: u64 = 1_100;
 
 /// `scale`, lowered as far as needed to keep a `width`×`height`-point drawable within
 /// `MAX_DRAWABLE_PX`, below 1 if the screen is that large.
@@ -576,7 +581,10 @@ impl SharedMetalOverlay {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let nothing_drawn = segments.len() == 1 && segments[0].width == 0.0;
         let no_pins = pins.len() == 1 && pins[0].radius == 0.0;
-        let glowing = is_active && self.telemetry.start_glow.load(Ordering::Acquire);
+        let glowing = is_active
+            && now_ms < START_GLOW_MS
+            && self.telemetry.start_glow.load(Ordering::Acquire);
+        let intro = now_ms < INTRO_MS;
         // Only a recording reaches here quiet: the picker and a pending iPhone animate, and an
         // idle overlay returned at the top of `draw`.
         let quiet = (is_active
@@ -585,7 +593,8 @@ impl SharedMetalOverlay {
             && nothing_drawn
             && no_pins
             && !shift_held
-            && !glowing)
+            && !glowing
+            && !intro)
             .then_some(QuietFrame {
                 target_rect: [tx, ty, tw, th],
                 constrained: is_constrained,
@@ -1105,9 +1114,6 @@ mod tests {
         }
     }
 
-    /// The shader must load on the oldest macOS Scrawl supports (`LSMinimumSystemVersion` 15.0).
-    /// Without `-mmacosx-version-min`, `xcrun metal` targets the build machine's macOS and the
-    /// overlay (ink, laser, edge glow) silently fails to open on older systems.
     #[test]
     fn drawable_scale_caps_big_screens_and_leaves_others_alone() {
         assert_eq!(drawable_scale(1512.0, 982.0, 2.0), 2.0);
@@ -1120,6 +1126,9 @@ mod tests {
         }
     }
 
+    /// The shader must load on the oldest macOS Scrawl supports (`LSMinimumSystemVersion` 15.0).
+    /// Without `-mmacosx-version-min`, `xcrun metal` targets the build machine's macOS and the
+    /// overlay (ink, laser, edge glow) silently fails to open on older systems.
     #[test]
     fn shader_targets_the_minimum_supported_macos() {
         let library = include_bytes!(concat!(env!("OUT_DIR"), "/laser_overlay.metallib"));
