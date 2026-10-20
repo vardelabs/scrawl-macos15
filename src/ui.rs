@@ -3893,58 +3893,6 @@ fn mode_segment_level(mode: SelectionMode, level: f32) -> gpui::Stateful<Div> {
         .child(mode.label())
 }
 
-/// CleanShot-style floating camera cursor rendered at `(x, y)` in `SelectionMode::Window`.
-fn camera_cursor_badge(x: f32, y: f32) -> Div {
-    div()
-        .absolute()
-        .left(px(x - 20.0))
-        .top(px(y - 20.0))
-        .size(px(40.0))
-        .rounded_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .bg(rgba(0x161619eb))
-        .border_1()
-        .border_color(rgba(0xffffff38))
-        .shadow(vec![BoxShadow {
-            color: gpui::hsla(0.0, 0.0, 0.0, 0.45),
-            offset: point(px(0.0), px(3.0)),
-            blur_radius: px(10.0),
-            spread_radius: px(0.0),
-        }])
-        .child(
-            // Top viewfinder hump
-            div()
-                .w(px(9.0))
-                .h(px(2.5))
-                .rounded_t(px(1.5))
-                .bg(rgb(0xf5f5f7)),
-        )
-        .child(
-            // Camera body + lens
-            div()
-                .w(px(21.0))
-                .h(px(14.5))
-                .rounded(px(3.5))
-                .bg(rgb(0xf5f5f7))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .size(px(9.0))
-                        .rounded_full()
-                        .bg(rgb(0x161619))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(div().size(px(4.5)).rounded_full().bg(rgb(0xf5f5f7))),
-                ),
-        )
-}
-
 pub struct TargetPickerWindow {
     coordinator: Entity<ScrawlCoordinator>,
     focus: FocusHandle,
@@ -3960,7 +3908,6 @@ impl Render for TargetPickerWindow {
         let drag = coord.selection_drag;
         let hovered = coord.hovered_window.clone();
         let anim_rect = coord.animated_window_rect;
-        let pointer = coord.selection_pointer;
         let picker_fade = ease_out_cubic(motion::age(coord.island_phase_since) / 0.15);
 
         let c_down = self.coordinator.clone();
@@ -4049,7 +3996,8 @@ impl Render for TargetPickerWindow {
         }
         .map(|(rect, label)| (clip_rect(rect, screen), label));
 
-        let badge = highlight.as_ref().map(|(rect, label)| {
+        // A picked window is plain to see under the tint, so Window mode names nothing.
+        let badge = highlight.as_ref().filter(|_| mode != SelectionMode::Window).map(|(rect, label)| {
             let max_text = (screen[0] - 2.0 * BADGE_MARGIN - 2.0 * BADGE_PX - 2.0).min(480.0);
             let measured_label = if mode == SelectionMode::Area {
                 clock_template(label)
@@ -4076,27 +4024,19 @@ impl Render for TargetPickerWindow {
         // window swap or border jump on recording start. `TargetPickerWindow` only provides the
         // hit-test surface, cursor style, camera cursor follower, and tabular dimension badge.
         let _ = picker_fade;
-        let mut root = div()
+        let root = div()
             .id("scrawl-target-picker")
             .track_focus(&self.focus)
             .size_full()
             .relative()
             .when(mode == SelectionMode::Area, |d| d.cursor_crosshair())
             .when(
-                matches!(mode, SelectionMode::Iphone | SelectionMode::Screen),
+                matches!(
+                    mode,
+                    SelectionMode::Iphone | SelectionMode::Screen | SelectionMode::Window
+                ),
                 |d| d.cursor_pointer(),
-            )
-            .when(mode == SelectionMode::Window, |d| {
-                d.cursor(gpui::CursorStyle::None)
-            });
-
-        if mode == SelectionMode::Window
-            && let Some([px_screen, py_screen]) = pointer
-        {
-            let cx_local = (px_screen - origin[0]) * k;
-            let cy_local = (py_screen - origin[1]) * k;
-            root = root.child(camera_cursor_badge(cx_local, cy_local));
-        }
+            );
 
         root.when_some(badge, |d, ([bx, by], text_w, label)| {
             d.child(
