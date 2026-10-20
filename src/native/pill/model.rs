@@ -1089,7 +1089,8 @@ impl PillModel {
         let new_w = self.metrics.clock_width(clock);
         self.clock.clear();
         self.clock.push_str(clock);
-        if (old_w - new_w).abs() > 0.5 && matches!(self.pres, Pres::Recording { .. } | Pres::Dictating { .. }) {
+        let has_clock = matches!(self.pres, Pres::Recording { .. } | Pres::Dictating { .. });
+        if (old_w - new_w).abs() > 0.5 && has_clock {
             self.apply_geometry();
         }
     }

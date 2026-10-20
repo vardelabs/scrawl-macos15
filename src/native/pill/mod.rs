@@ -567,10 +567,10 @@ impl Drop for NativePill {
     }
 }
 
-/// The panel's top-left (global points) on the screen holding `point`, else the primary one.
 /// Space between the dictation capsule and the Dock or the screen's bottom edge.
 const BOTTOM_GAP: f64 = 16.0;
 
+/// The panel's top-left (global points) on the screen holding `point`, else the primary one.
 fn panel_origin(screens: &[crate::screens::Screen], point: Option<[f64; 2]>) -> Option<[f32; 2]> {
     let index = point
         .and_then(|p| crate::screens::index_at(screens, p))

@@ -88,9 +88,10 @@ impl Default for Dictation {
 }
 
 impl Dictation {
-    /// Listening, or still pasting the last one: the capture shortcut waits.
+    /// Dictating, or still pasting the last one: the capture shortcut waits. A chord that may
+    /// still turn out to be a shortcut does not count.
     pub fn is_busy(&self) -> bool {
-        self.chord.is_active() || self.working.is_some()
+        self.started.is_some() || self.working.is_some()
     }
 
     /// `capture_busy`: a capture is recording, selecting or processing, so the chord is ignored.
@@ -109,6 +110,11 @@ impl Dictation {
         let now_ms = self.clock.elapsed().as_millis() as u64;
         let mods = self.settings.mods(crate::capture::modifier_flags());
         let keys = telemetry.key_downs.load(std::sync::atomic::Ordering::Acquire);
+        if capture_busy && self.started.is_none() && self.chord.is_active() {
+            // A capture started while the chord was undecided: it was the capture's shortcut.
+            let action = self.chord.cancel();
+            self.apply(action, capture_busy);
+        }
         let action = self.chord.tick(now_ms, mods, keys);
         self.apply(action, capture_busy);
         if self.chord.is_active() && telemetry.take_escape() {
