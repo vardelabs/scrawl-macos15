@@ -872,6 +872,9 @@ fn display_of(screens: &[crate::screens::Screen], rect: [f64; 4]) -> (u32, f64) 
     )
 }
 
+/// `scrawl-helper`'s windows (Settings, onboarding) are Scrawl's own, not something to record.
+const HELPER_BUNDLE_ID: &str = "dev.kitlangton.scrawl.helper";
+
 /// Lists all on-screen normal (`window_layer == 0`) windows in front-to-back order for the Window picker.
 pub fn list_selectable_windows() -> Vec<TargetInfo> {
     let Ok(content) = SCShareableContent::get() else {
@@ -879,8 +882,18 @@ pub fn list_selectable_windows() -> Vec<TargetInfo> {
     };
     let our_pid = std::process::id() as i32;
     let screens = crate::screens::displays();
+    // ScreenCaptureKit lists windows in no promised order, so a window behind another (a
+    // Settings window under the browser) could win the hit test. CoreGraphics lists the
+    // on-screen windows front to back: that order decides, and a window it doesn't list (an
+    // invisible helper) is dropped.
+    let z_order: std::collections::HashMap<u32, usize> = crate::windows::raw_windows()
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.alpha > 0.0)
+        .map(|(index, w)| (w.id, index))
+        .collect();
 
-    content
+    let mut windows: Vec<_> = content
         .windows()
         .into_iter()
         .filter(|w| {
@@ -889,10 +902,15 @@ pub fn list_selectable_windows() -> Vec<TargetInfo> {
                 && w.window_layer() == 0
                 && f.size.width >= 80.0
                 && f.size.height >= 80.0
-                && w.owning_application()
-                    .as_ref()
-                    .is_some_and(|a| a.process_id() != our_pid)
+                && z_order.contains_key(&w.window_id())
+                && w.owning_application().as_ref().is_some_and(|a| {
+                    a.process_id() != our_pid && a.bundle_identifier() != HELPER_BUNDLE_ID
+                })
         })
+        .collect();
+    windows.sort_by_key(|w| z_order.get(&w.window_id()).copied().unwrap_or(usize::MAX));
+    windows
+        .into_iter()
         .map(|w| {
             let f = w.frame();
             let rect = [f.origin.x, f.origin.y, f.size.width, f.size.height];

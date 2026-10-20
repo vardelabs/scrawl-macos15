@@ -207,7 +207,7 @@ Preview every pane, dark and light, with the recorder listening and a combinatio
 - **Hold `⇧` (Shift) + move**: Draw a persistent red marker stroke (`#ff3b30`) on screen that fades out after release
 - **`⇧`-click**: Drop a numbered pin where you click (a press that moves under 12 pt and lets go within 1 s; longer is ink)
 - **`⌘Z`**: Undo the last stroke
-- **`Esc`**: Cancel the active selection or capture
+- **`Esc`**: Cancel the active selection, or discard a running capture (`"escapeCancels": false` keeps captures running, for keyboards that send Esc on their own)
 
 While picking a target, the island shows the modes **Area**, **Window**, **Screen**, and **iPhone**
 (when one is cabled). It opens on the mode you used last:

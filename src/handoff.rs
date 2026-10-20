@@ -386,6 +386,10 @@ pub struct Config {
     /// Feature flag: shows **Export Last Capture as Video…** in the menu (default off).
     #[serde(default)]
     pub video_export: Option<bool>,
+    /// Esc discards a running recording, as it cancels the picker (default on). Off for a
+    /// keyboard that sends Esc on its own, such as CapsLock-as-Control remaps.
+    #[serde(default)]
+    pub escape_cancels: Option<bool>,
     /// `"apple"` (default), `"hex"` or `"command"`: which engine transcribes recordings
     /// (`transcribe`).
     #[serde(default)]
@@ -652,6 +656,11 @@ pub fn auto_send() -> bool {
 /// either way.
 pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
+}
+
+/// Whether Esc discards a running recording (`escapeCancels`, default on).
+pub fn escape_cancels() -> bool {
+    config().escape_cancels.unwrap_or(true)
 }
 
 /// The configured transcriber name (`transcriber`) as written, unvalidated.
