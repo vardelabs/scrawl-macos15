@@ -187,39 +187,39 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.take() {
                     std::thread::spawn(move || drop(recorder));
                 }
-                self.stop_listening();
+                self.stop_listening(Pres::Hidden);
             }
         }
     }
 
-    fn stop_listening(&mut self) -> Option<RecordedAudio> {
+    /// Stops ducking playback and shows `pres` in place of the listening pill.
+    fn stop_listening(&mut self, pres: Pres) {
         self.started = None;
         self.playback = None;
-        let audio = self.recorder.take().and_then(|recorder| {
-            recorder
-                .stop()
-                .inspect_err(|error| scrawl_log(format!("Dictation: {error:#}")))
-                .ok()
-        });
-        self.show(Pres::Hidden);
-        audio
+        self.show(pres);
     }
 
+    /// Stopping the recorder joins its worker (which may still be opening the device) and encodes
+    /// the WAV, so it happens on the worker with the transcription, not on the UI thread.
     fn finish(&mut self) {
-        let Some(audio) = self.stop_listening() else {
+        let Some(recorder) = self.recorder.take() else {
+            self.stop_listening(Pres::Hidden);
             return;
         };
-        if audio.duration_ms < MIN_AUDIO_MS {
-            return;
-        }
-        self.show(Pres::Processing);
+        self.stop_listening(Pres::Processing);
         let restore = self.settings.restore_clipboard;
         let (done, working) = flume::bounded(1);
         self.working = Some(working);
         let spawned = std::thread::Builder::new()
             .name("scrawl-dictation".into())
             .spawn(move || {
-                transcribe_and_paste(&audio, restore);
+                match recorder.stop() {
+                    Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
+                        transcribe_and_paste(&audio, restore);
+                    }
+                    Ok(_) => {}
+                    Err(error) => scrawl_log(format!("Dictation: {error:#}")),
+                }
                 let _ = done.send(());
             });
         if let Err(error) = spawned {
