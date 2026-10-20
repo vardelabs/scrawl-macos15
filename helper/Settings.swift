@@ -116,6 +116,23 @@ struct SettingsCommandLine: Decodable, Equatable {
   var error = false
 }
 
+struct SettingsReplacement: Decodable, Equatable, Hashable {
+  var heard: String
+  var write: String
+}
+
+struct SettingsDictation: Decodable, Equatable {
+  var available = true
+  var on = false
+  var shortcut = "⌃⌥"
+  var shortcuts = ["⌃⌥", "⌃⌘", "⌥⌘", "⌃⇧"]
+  var restoreClipboard = true
+  var removeFillers = true
+  var words: [String] = []
+  var replacements: [SettingsReplacement] = []
+  var error: String?
+}
+
 struct SettingsState: Decodable, Equatable {
   var version = "0.3.2"
   var login = SettingsLogin()
@@ -131,9 +148,7 @@ struct SettingsState: Decodable, Equatable {
   var videoExport = false
   var tapChooses = false
   var cropWindowCaptures = true
-  var dictation = false
-  var dictationShortcut = "⌃⌥"
-  var dictationRestoreClipboard = true
+  var dictation = SettingsDictation()
   var retention = SettingsRetention()
   var capturesSize: String?
   var permissions: [SettingsPermission] = ["screen-recording", "microphone", "accessibility", "camera"]
@@ -147,12 +162,13 @@ struct SettingsState: Decodable, Equatable {
 }
 
 enum SettingsPane: String, CaseIterable {
-  case general, recording, storage, permissions, agents, about
+  case general, recording, dictation, storage, permissions, agents, about
 
   var title: String {
     switch self {
     case .general: "General"
     case .recording: "Recording"
+    case .dictation: "Dictation"
     case .storage: "Storage"
     case .permissions: "Permissions"
     case .agents: "Agents"
@@ -164,6 +180,7 @@ enum SettingsPane: String, CaseIterable {
     switch self {
     case .general: "gearshape.fill"
     case .recording: "record.circle"
+    case .dictation: "waveform"
     case .storage: "internaldrive.fill"
     case .permissions: "hand.raised.fill"
     case .agents: "terminal.fill"
@@ -176,6 +193,7 @@ enum SettingsPane: String, CaseIterable {
     switch self {
     case .general, .about: (Color(white: 0.62), Color(white: 0.45))
     case .recording: (Color(red: 1, green: 0.42, blue: 0.38), Color(red: 0.92, green: 0.2, blue: 0.17))
+    case .dictation: (Color(red: 0.72, green: 0.5, blue: 1), Color(red: 0.52, green: 0.3, blue: 0.93))
     case .storage: (Color(red: 0.36, green: 0.66, blue: 1), Color(red: 0.16, green: 0.45, blue: 0.95))
     case .permissions: (Color(red: 0.36, green: 0.82, blue: 0.56), Color(red: 0.16, green: 0.66, blue: 0.4))
     case .agents: (Color(white: 0.36), Color(white: 0.18))
@@ -242,10 +260,20 @@ private struct ThemeKey: EnvironmentKey {
   static let defaultValue = SettingsTheme(.dark)
 }
 
+private struct RenderingKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
 extension EnvironmentValues {
   var settingsTheme: SettingsTheme {
     get { self[ThemeKey.self] }
     set { self[ThemeKey.self] = newValue }
+  }
+
+  /// Drawn by `ImageRenderer`, which can't draw AppKit-backed controls such as text fields.
+  var settingsRendering: Bool {
+    get { self[RenderingKey.self] }
+    set { self[RenderingKey.self] = newValue }
   }
 }
 
@@ -468,6 +496,113 @@ extension SettingsHeader where Trailing == EmptyView {
   init(_ title: String) {
     self.title = title
     trailing = { EmptyView() }
+  }
+}
+
+/// A saved word, or a replacement as "heard → write", with a remove button.
+struct DictionaryEntryRow: View {
+  @Environment(\.settingsTheme) private var theme
+  let title: String
+  var detail: String?
+  let remove: () -> Void
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Text(title).font(.system(size: 14)).foregroundStyle(theme.text).lineLimit(1)
+      if let detail {
+        Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.tertiary)
+        Text(detail).font(.system(size: 14)).foregroundStyle(theme.text).lineLimit(1)
+      }
+      Spacer(minLength: 8)
+      Button(action: remove) {
+        Image(systemName: "minus.circle.fill")
+          .font(.system(size: 15))
+          .foregroundStyle(theme.secondary)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help("Remove")
+    }
+    .padding(.horizontal, 12)
+    .frame(height: SettingsMetrics.row)
+  }
+}
+
+struct DictionaryField: View {
+  @Environment(\.settingsTheme) private var theme
+  @Environment(\.settingsRendering) private var rendering
+  let placeholder: String
+  @Binding var text: String
+  let submit: () -> Void
+
+  var body: some View {
+    if rendering {
+      Text(placeholder).font(.system(size: 14)).foregroundStyle(theme.tertiary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    } else {
+      TextField(placeholder, text: $text)
+        .textFieldStyle(.plain)
+        .font(.system(size: 14))
+        .foregroundStyle(theme.text)
+        .onSubmit(submit)
+    }
+  }
+}
+
+/// The last row of the Words group: type a word or phrase and press Return or Add.
+struct DictionaryAddRow: View {
+  let placeholder: String
+  var enabled = true
+  let add: (String) -> Void
+  @State private var text = ""
+
+  var body: some View {
+    HStack(spacing: 8) {
+      DictionaryField(placeholder: placeholder, text: $text, submit: commit)
+      SettingsButton(title: "Add", enabled: enabled && !text.trimmingCharacters(in: .whitespaces).isEmpty, action: commit)
+    }
+    .padding(.horizontal, 12)
+    .frame(height: SettingsMetrics.row)
+    .disabled(!enabled)
+  }
+
+  private func commit() {
+    let word = text.trimmingCharacters(in: .whitespaces)
+    guard enabled, !word.isEmpty else { return }
+    add(word)
+    text = ""
+  }
+}
+
+/// The last row of the Replacements group: what is heard, what to write instead.
+struct ReplacementAddRow: View {
+  @Environment(\.settingsTheme) private var theme
+  var enabled = true
+  let add: (String, String) -> Void
+  @State private var heard = ""
+  @State private var write = ""
+
+  var body: some View {
+    HStack(spacing: 8) {
+      DictionaryField(placeholder: "Heard", text: $heard, submit: commit)
+      Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.tertiary)
+      DictionaryField(placeholder: "Write", text: $write, submit: commit)
+      SettingsButton(title: "Add", enabled: enabled && ready, action: commit)
+    }
+    .padding(.horizontal, 12)
+    .frame(height: SettingsMetrics.row)
+    .disabled(!enabled)
+  }
+
+  private var ready: Bool {
+    !heard.trimmingCharacters(in: .whitespaces).isEmpty && !write.trimmingCharacters(in: .whitespaces).isEmpty
+  }
+
+  private func commit() {
+    guard enabled, ready else { return }
+    add(heard.trimmingCharacters(in: .whitespaces), write.trimmingCharacters(in: .whitespaces))
+    heard = ""
+    write = ""
   }
 }
 
@@ -713,6 +848,7 @@ struct SettingsView: View {
     .frame(minWidth: SettingsMetrics.minWidth, maxWidth: .infinity,
            minHeight: SettingsMetrics.minHeight, maxHeight: .infinity)
     .environment(\.settingsTheme, theme)
+    .environment(\.settingsRendering, model.rendering)
   }
 
   // Sidebar
@@ -724,6 +860,7 @@ struct SettingsView: View {
       section("Settings")
       VStack(spacing: 2) {
         item(.recording)
+        item(.dictation)
         item(.storage)
         item(.permissions)
         item(.agents)
@@ -797,6 +934,13 @@ struct SettingsView: View {
         } else {
           ScrollView { recording.padding(.bottom, 16) }
         }
+      case .dictation:
+        if model.rendering {
+          // Taller than the window: an explicit height keeps the top in view.
+          dictation.frame(height: SettingsMetrics.height - SettingsMetrics.titlebar, alignment: .top).clipped()
+        } else {
+          ScrollView { dictation.padding(.bottom, 16) }
+        }
       case .storage: storage
       case .permissions: permissions
       case .agents: agents
@@ -834,25 +978,60 @@ struct SettingsView: View {
               })
             : nil)
       }
-      Color.clear.frame(height: 20)
+    }
+  }
+
+  private var dictation: some View {
+    let d = state.dictation
+    let usage = d.available
+      ? "Hold \(d.shortcut) and talk; let go and the text is pasted where you type. Double tap \(d.shortcut) for hands-free, then press it again or ✓ to paste. Esc cancels."
+      : "Dictation works on macOS."
+    return VStack(spacing: 0) {
       SettingsGroup {
-        SettingsRow(title: "Dictation") {
-          SettingsSwitch(on: state.dictation) { model.set("dictation", $0) }
+        SettingsRow(title: "Dictation", enabled: d.available) {
+          SettingsSwitch(on: d.on, enabled: d.available) { model.set("dictation", $0) }
         }
-        if state.dictation {
-          SettingsSeparator()
-          SettingsRow(title: "Dictation shortcut") {
-            SettingsPopup(value: state.dictationShortcut,
-                          options: ["⌃⌥", "⌃⌘", "⌥⌘", "⌃⇧"].map { ($0, $0, true) },
-                          selected: state.dictationShortcut) { model.set("dictationShortcut", $0) }
-          }
-          SettingsSeparator()
-          SettingsRow(title: "Restore the clipboard after pasting") {
-            SettingsSwitch(on: state.dictationRestoreClipboard) { model.set("dictationRestoreClipboard", $0) }
+        SettingsSeparator()
+        SettingsRow(title: "Shortcut", enabled: d.available) {
+          SettingsPopup(value: d.shortcut, options: d.shortcuts.map { ($0, $0, true) }, selected: d.shortcut) {
+            model.set("dictationShortcut", $0)
           }
         }
       }
-      SettingsCaption(text: "Hold \(state.dictationShortcut) and talk, or double tap it for hands-free; the text is pasted where you type. Esc cancels.")
+      SettingsCaption(text: usage)
+      SettingsHeader("Pasting")
+      SettingsGroup {
+        SettingsRow(title: "Restore the clipboard after pasting") {
+          SettingsSwitch(on: d.restoreClipboard) { model.set("dictationRestoreClipboard", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Remove filler words") {
+          SettingsSwitch(on: d.removeFillers) { model.set("removeFillers", $0) }
+        }
+      }
+      SettingsCaption(text: "Drops “um” and “uh” from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
+      SettingsHeader(title: "Words") {
+        SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
+      }
+      SettingsGroup {
+        ForEach(d.words, id: \.self) { word in
+          DictionaryEntryRow(title: word) { model.act("remove-word", ["word": word]) }
+          SettingsSeparator()
+        }
+        DictionaryAddRow(placeholder: "Add a word or phrase", enabled: d.error == nil) { model.act("add-word", ["word": $0]) }
+      }
+      SettingsCaption(text: d.error ?? "Written exactly as saved. Near misses of words of seven letters or more are fixed too.", error: d.error != nil)
+      SettingsHeader("Replacements")
+      SettingsGroup {
+        ForEach(d.replacements, id: \.self) { entry in
+          DictionaryEntryRow(title: entry.heard, detail: entry.write) {
+            model.act("remove-replacement", ["heard": entry.heard])
+          }
+          SettingsSeparator()
+        }
+        ReplacementAddRow(enabled: d.error == nil) { model.act("add-replacement", ["heard": $0, "write": $1]) }
+      }
+      SettingsCaption(text: "When Scrawl hears the words on the left, it writes the ones on the right.")
     }
   }
 
@@ -1442,6 +1621,17 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     )
     var micNotAllowed = base
     micNotAllowed.microphone.meter = nil
+    var dictating = base
+    dictating.dictation.on = true
+    dictating.dictation.words = ["Corvus", "Varde Labs", "Parakeet"]
+    dictating.dictation.replacements = [
+      SettingsReplacement(heard: "corvis", write: "Corvus"),
+      SettingsReplacement(heard: "var de labs", write: "Varde Labs"),
+    ]
+    var replacementsOnly = dictating
+    replacementsOnly.dictation.words = []
+    var dictionaryBroken = base
+    dictionaryBroken.dictation.error = "~/.config/scrawl/dictionary.json isn't a valid dictionary. Fix it with Edit as Text…; Scrawl won't change it until then."
     let samples: [(String, SettingsPane, SettingsState, NSEvent.ModifierFlags)] = [
       ("general", .general, base, []),
       ("general-custom", .general, custom, []),
@@ -1454,6 +1644,10 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("recording-mic-missing", .recording, micMissing, []),
       ("recording-mic-not-allowed", .recording, micNotAllowed, []),
       ("recording-downloading", .recording, downloading, []),
+      ("dictation", .dictation, dictating, []),
+      ("dictation-empty", .dictation, base, []),
+      ("dictation-replacements", .dictation, replacementsOnly, []),
+      ("dictation-broken", .dictation, dictionaryBroken, []),
       ("storage", .storage, base, []),
       ("permissions", .permissions, base, []),
       ("permissions-missing", .permissions, missing, []),

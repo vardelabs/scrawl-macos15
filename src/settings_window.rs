@@ -251,6 +251,7 @@ fn pane_title(pane: Pane) -> &'static str {
     match pane {
         Pane::General => "General",
         Pane::Recording => "Recording",
+        Pane::Dictation => "Dictation",
         Pane::Storage => "Storage",
         Pane::Permissions => "Permissions",
         Pane::Agents => "Agents",
@@ -261,7 +262,7 @@ fn pane_title(pane: Pane) -> &'static str {
 fn pane_icon(pane: Pane) -> (&'static str, Tint) {
     match pane {
         Pane::General => (crate::icons::GEAR, GREY),
-        Pane::Recording => (crate::icons::RECORD, RED),
+        Pane::Recording | Pane::Dictation => (crate::icons::RECORD, RED),
         Pane::Storage => (crate::icons::DRIVE, BLUE),
         Pane::Permissions => (crate::icons::HAND, GREEN),
         Pane::Agents => (crate::icons::TERMINAL, (0x5c5c5c, 0x2e2e2e)),
@@ -823,7 +824,8 @@ impl SettingsWindow {
     fn content(&self, theme: Theme, state: &ViewState, cx: &mut Context<Self>) -> Stateful<Div> {
         let (path, tint) = pane_icon(self.pane);
         let body = match self.pane {
-            Pane::General => self.general(theme, state, cx),
+            // Dictation is macOS only, so its pane is never listed here.
+            Pane::General | Pane::Dictation => self.general(theme, state, cx),
             Pane::Recording => self.recording_pane(theme, state, cx),
             Pane::Storage => self.storage(theme, state, cx),
             Pane::Permissions => self.permissions(theme, state, cx),

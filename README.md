@@ -802,7 +802,7 @@ usual; the log says which (`Live transcription: …`). Hex and iPhone recordings
 
 ## Dictation
 
-Scrawl can also type for you, with no screen recorded. Turn on Settings › General › **Dictation**
+Scrawl can also type for you, with no screen recorded. Turn on Settings › **Dictation**
 (or `"dictation": true` in `~/.config/scrawl/config.json`), then:
 
 - **Hold `⌃⌥`** and talk; let go and the text is pasted where you type.
@@ -812,7 +812,8 @@ Scrawl can also type for you, with no screen recorded. Turn on Settings › Gene
 `⌃⌥` followed by another key (`⌃⌥←`) stays an ordinary shortcut. `"dictationShortcut"` picks
 another chord (`"⌃⌘"`, `"⌥⌘"`, `"⌃⇧"`), and `"dictationRestoreClipboard": false` leaves the text
 on the clipboard. Dictation uses the transcriber set for recordings and needs Accessibility to
-paste. Words it gets wrong go in `~/.config/scrawl/dictionary.json`:
+paste. Words it gets wrong go in the Dictation pane's **Words** and **Replacements** lists, which
+live in `~/.config/scrawl/dictionary.json` (**Edit as Text…** opens it):
 
 ```json
 { "words": ["Corvus", "Varde Labs"], "replacements": { "corvis": "Corvus" } }
