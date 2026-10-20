@@ -8,6 +8,9 @@
 //! - **Local** points, top-left origin at one display's top-left corner: what an overlay
 //!   covering that display draws in, and `SCStreamConfiguration.sourceRect`.
 //!
+//! On Windows, global coordinates are physical pixels (per-monitor DPI aware), top-left origin
+//! at the primary display's top-left, and `Screen::scale` is the display's DPI scale.
+//!
 //! Capture pixels are a target's normalized coordinates (`SharedCaptureTelemetry::normalize_point`)
 //! times its recording's size (`capture::capture_size`, at most the display's own scale).
 //!
@@ -31,6 +34,7 @@ pub struct Screen {
 
 /// AppKit rect → global rect (and back: the flip is its own inverse). `primary_h` is the
 /// primary display's height.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn flip(r: Rect, primary_h: f64) -> Rect {
     [r[0], primary_h - r[1] - r[3], r[2], r[3]]
 }
@@ -79,6 +83,7 @@ pub fn index_for_rect(screens: &[Screen], r: Rect) -> Option<usize> {
 }
 
 /// Global point → points from `screen`'s top-left corner.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn to_local(screen: Rect, p: [f64; 2]) -> [f64; 2] {
     [p[0] - screen[0], p[1] - screen[1]]
 }
@@ -98,6 +103,7 @@ pub fn clamp_to(r: Rect, screen: Rect) -> Rect {
 
 /// `SCStreamConfiguration.sourceRect` for an area: points from its display's top-left corner,
 /// not global ones.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn source_rect(area: Rect, display: Rect) -> Rect {
     let [x, y, w, h] = clamp_to(area, display);
     let [lx, ly] = to_local(display, [x, y]);
@@ -125,6 +131,7 @@ pub fn area_on_display(screens: &[Screen], area: Rect) -> Option<(usize, Rect)> 
 }
 
 /// `frame` with its display's scale.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn with_scale(frame: Rect, scale: f64) -> TargetFrame {
     TargetFrame {
         x: frame[0],
@@ -150,8 +157,18 @@ pub fn pill_origin(screen: &Screen, width: f64, panel_y: f64) -> [f64; 2] {
     ]
 }
 
+/// The GPUI pill window's rect on `screen` (Windows, global pixels): `w`×`h` points at the
+/// screen's scale, placed as `pill_origin` places the capsule (below a taskbar on top).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn pill_window_rect(screen: &Screen, w: f64, h: f64, top: f64) -> Rect {
+    let width = (w * screen.scale).round();
+    let [x, y] = pill_origin(screen, width, top * screen.scale);
+    [x, y, width, (h * screen.scale).round()]
+}
+
 /// Every active display from CoreGraphics (any thread). `visible` is the whole frame and
 /// `safe_top` 0: only `NSScreen` knows the menu bar and the notch (`current`).
+#[cfg(target_os = "macos")]
 pub fn displays() -> Vec<Screen> {
     use core_graphics::display::CGDisplay;
     let ids = CGDisplay::active_displays().unwrap_or_default();
@@ -188,6 +205,7 @@ pub fn displays() -> Vec<Screen> {
 
 /// Every screen with its menu bar, Dock and notch, from `NSScreen` (main thread only; falls
 /// back to `displays` elsewhere).
+#[cfg(target_os = "macos")]
 pub fn current() -> Vec<Screen> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSScreen;
@@ -227,8 +245,36 @@ pub fn current() -> Vec<Screen> {
 }
 
 /// The global pointer, from `CGEvent` (any thread).
+#[cfg(target_os = "macos")]
 pub fn pointer() -> Option<[f64; 2]> {
     crate::capture::current_mouse_screen().map(|[x, y]| [f64::from(x), f64::from(y)])
+}
+
+/// Every display, the primary first, in global pixels; `id` is its index (`TargetInfo::display_id`).
+#[cfg(target_os = "windows")]
+pub fn displays() -> Vec<Screen> {
+    crate::win::monitors()
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| Screen {
+            id: i as u32,
+            frame: m.rect,
+            visible: m.work,
+            scale: m.scale,
+            safe_top: 0.0,
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+pub fn current() -> Vec<Screen> {
+    displays()
+}
+
+/// The global pointer, physical pixels.
+#[cfg(target_os = "windows")]
+pub fn pointer() -> Option<[f64; 2]> {
+    crate::win::cursor_position().map(|(x, y)| [x, y])
 }
 
 #[cfg(test)]
@@ -414,5 +460,24 @@ mod tests {
             ..screen(4, [0.0, 0.0, 1512.0, 982.0], 2.0)
         };
         assert_eq!(pill_origin(&tall, 640.0, 34.0)[1], 42.0);
+    }
+
+    #[test]
+    fn the_windows_pill_window_lands_on_its_own_monitor_in_pixels() {
+        // A 150% monitor left of the primary, taskbar at the bottom: centred, 14 pt down.
+        let left = screen(1, [-2880.0, 0.0, 2880.0, 1620.0], 1.5);
+        assert_eq!(
+            pill_window_rect(&left, 400.0, 100.0, 14.0),
+            [-1740.0, 21.0, 600.0, 150.0]
+        );
+        // The primary at 100% with the taskbar on top (48 px): below it.
+        let top_bar = Screen {
+            visible: [0.0, 48.0, 1920.0, 1032.0],
+            ..screen(0, [0.0, 0.0, 1920.0, 1080.0], 1.0)
+        };
+        assert_eq!(
+            pill_window_rect(&top_bar, 400.0, 100.0, 14.0),
+            [760.0, 45.0, 400.0, 100.0]
+        );
     }
 }

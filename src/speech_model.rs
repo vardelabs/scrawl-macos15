@@ -158,6 +158,7 @@ fn work() {
 }
 
 /// The plain sentence for a capture without a transcript, from the helper's `missing`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn missing(why: &str, locale: &str, error: Option<&str>) -> MissingTranscript {
     let model = format!("Apple's speech model ({locale})");
     match why {

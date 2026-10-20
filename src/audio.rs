@@ -120,6 +120,12 @@ impl AudioRecorder {
     ) -> Result<cpal::Stream> {
         let supported = device.default_input_config()?;
         let config = supported.config();
+        crate::capture::scrawl_log(format!(
+            "Microphone: {} Hz, {} ch, {:?}",
+            config.sample_rate,
+            config.channels,
+            supported.sample_format()
+        ));
         ensure!(
             config.channels > 0 && config.sample_rate > 0,
             "Invalid microphone format"
@@ -246,6 +252,10 @@ where
             }
         },
         move |err| {
+            // A buffer under- or overrun drops a few samples; the recording goes on.
+            if err.kind() == cpal::ErrorKind::Xrun {
+                return;
+            }
             if let Ok(mut error) = error.lock() {
                 *error = Some(err.to_string());
             }

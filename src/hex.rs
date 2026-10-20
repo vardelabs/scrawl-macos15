@@ -72,16 +72,21 @@ struct Discovery {
     api_version: String,
 }
 
-pub fn discovery_path() -> PathBuf {
+/// Hex's support folder, as Hex's `app_paths::support_dir` resolves it: `~/Library/Application
+/// Support/voice-control` on macOS, `%APPDATA%\voice-control` on Windows.
+pub fn support_dir() -> PathBuf {
     std::env::var_os("HEX_APPLICATION_SUPPORT_DIR")
         .map(PathBuf::from)
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or_else(|| {
-            dirs::home_dir()
+            dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("Library/Application Support/voice-control")
+                .join("voice-control")
         })
-        .join("local-api.json")
+}
+
+pub fn discovery_path() -> PathBuf {
+    support_dir().join("local-api.json")
 }
 
 pub fn parse_discovery(bytes: &[u8]) -> Result<Endpoint> {

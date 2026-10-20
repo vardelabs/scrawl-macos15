@@ -250,7 +250,7 @@ pub fn serve(dir: &Path, bundle: &ScrawlBundle, port: u16, open: bool) -> Result
     );
     println!("{url}");
     if open {
-        let _ = std::process::Command::new("open").arg(&url).status();
+        let _ = crate::handoff::open_path(std::path::Path::new(&url));
     }
     let input = input_for_bundle(dir, bundle);
     let page = playground_page(dir, bundle, true)?;

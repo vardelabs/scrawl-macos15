@@ -346,13 +346,5 @@ fn open_backdrop(display: [f32; 2], cx: &mut App) {
     if opened.is_err() {
         return;
     }
-    if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
-        for win in objc2_app_kit::NSApplication::sharedApplication(mtm).windows() {
-            let f = win.frame().size;
-            if (f.width - f64::from(w)).abs() < 1.0 && (f.height - f64::from(h)).abs() < 1.0 {
-                win.setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless);
-                super::configure_floating_window(&win, true, 4);
-            }
-        }
-    }
+    super::platform::configure_lab_backdrop(w, h);
 }

@@ -13,6 +13,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -222,10 +223,20 @@ fn modified_ago(path: &Path, now: SystemTime) -> Option<Duration> {
 
 /// When anything last changed in the folder itself: an entry added, removed or renamed (a copy
 /// arriving, a zoom, a re-encode). Uses the change time, which `tar` can't backdate.
+#[cfg(unix)]
 fn changed_ago(path: &Path, now: SystemTime) -> Option<Duration> {
     use std::os::unix::fs::MetadataExt;
     let meta = path.metadata().ok()?;
     let changed = UNIX_EPOCH + Duration::new(meta.ctime().max(0) as u64, meta.ctime_nsec() as u32);
+    Some(now.duration_since(changed).unwrap_or_default())
+}
+
+/// NTFS's change time for the folder (`ChangeTime`), which moves when an entry is added, removed
+/// or renamed, like the Unix ctime.
+#[cfg(windows)]
+fn changed_ago(path: &Path, now: SystemTime) -> Option<Duration> {
+    let changed =
+        crate::win::shell::change_time(path).or_else(|| path.metadata().ok()?.modified().ok())?;
     Some(now.duration_since(changed).unwrap_or_default())
 }
 
@@ -337,6 +348,18 @@ fn shrinkable(dir: &Path, manifest: &Manifest) -> Option<PathBuf> {
 /// Moves `path` to the Trash.
 pub type Trasher<'a> = &'a dyn Fn(&Path) -> Result<()>;
 
+#[cfg(windows)]
+pub fn trash(path: &Path) -> Result<()> {
+    crate::win::shell::recycle(path)?;
+    ensure!(
+        !path.exists(),
+        "Could not move {} to the Recycle Bin",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(windows))]
 pub fn trash(path: &Path) -> Result<()> {
     let output = Command::new("/usr/bin/trash")
         .arg(path)
@@ -627,9 +650,12 @@ static WORKER: std::sync::OnceLock<flume::Sender<Job>> = std::sync::OnceLock::ne
 
 fn lower_priority() {
     // SAFETY: only changes the calling thread's scheduling class.
+    #[cfg(target_os = "macos")]
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
     }
+    #[cfg(windows)]
+    crate::win::shell::background_thread();
 }
 
 /// Starts the app's cleanup: a pass shortly after launch, then daily, plus shrinking each

@@ -2,6 +2,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
+    #[cfg(windows)]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_windows_resources();
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
@@ -20,6 +24,59 @@ fn main() {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_runtime}");
         }
     }
+}
+
+/// The app icon (Explorer, the taskbar, Alt+Tab, and each window's title bar icon) and version
+/// info. GPUI's `windows-manifest` feature embeds the DPI-aware manifest, so none is added here.
+#[cfg(windows)]
+fn embed_windows_resources() {
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let output_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let icon = manifest_dir.join("assets/Scrawl.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let numeric = version
+        .split(['.', '-'])
+        .take(3)
+        .map(|part| part.parse::<u16>().unwrap_or(0).to_string())
+        .chain(std::iter::repeat("0".to_owned()))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        r#"#include <winver.h>
+1 ICON "{icon}"
+1 VERSIONINFO
+FILEVERSION {numeric}
+PRODUCTVERSION {numeric}
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Scrawl"
+      VALUE "ProductName", "Scrawl"
+      VALUE "FileVersion", "{version}"
+      VALUE "ProductVersion", "{version}"
+      VALUE "OriginalFilename", "scrawl.exe"
+      VALUE "InternalName", "scrawl"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"#,
+        icon = icon.display().to_string().replace('\\', "/")
+    );
+    let resource = output_dir.join("scrawl.rc");
+    std::fs::write(&resource, script).expect("write the Windows resource script");
+    embed_resource::compile(&resource, embed_resource::NONE)
+        .manifest_optional()
+        .expect("compile the Windows resources");
 }
 
 fn compile_laser_shader() {
