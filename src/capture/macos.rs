@@ -1684,7 +1684,8 @@ fn current_mouse_location() -> Option<CGPoint> {
 
 /// Whether a mouse button is down right now (no permission needed).
 pub fn mouse_button_down() -> bool {
-    (0..2).any(|button| unsafe {
+    // Left, right, middle and two side buttons.
+    (0..5).any(|button| unsafe {
         CGEventSourceButtonState(0, button) || CGEventSourceButtonState(1, button)
     })
 }

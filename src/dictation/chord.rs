@@ -58,8 +58,11 @@ struct Input {
 pub struct Chord {
     state: State,
     started_ms: u64,
-    /// The key tap's key-down count when the chord last went down.
+    /// The key tap's key-down count at the poll before the chord last went down, so a key
+    /// pressed in the same poll interval as the modifiers still counts as typed.
     keys: u64,
+    /// The count at the last poll.
+    seen: u64,
     was_down: bool,
 }
 
@@ -78,8 +81,9 @@ impl Chord {
         let pressed = down && !self.was_down;
         self.was_down = down;
         if pressed {
-            self.keys = key_downs;
+            self.keys = self.seen;
         }
+        self.seen = key_downs;
         let typed = key_downs != self.keys;
         if self.is_active() && now_ms.saturating_sub(self.started_ms) >= MAX_MS {
             return self.end(Action::Finish);
@@ -236,6 +240,15 @@ mod tests {
         assert_eq!(c.tick(1_400, Exact, 5), Action::Show { latched: false });
         assert_eq!(c.tick(1_500, Extra, 5), Action::Discard);
         assert_eq!(c.tick(1_600, Up, 5), Action::None);
+    }
+
+    #[test]
+    fn a_key_in_the_same_poll_as_the_chord_still_discards() {
+        let mut c = Chord::default();
+        assert_eq!(c.tick(0, Up, 3), Action::None);
+        // ⌃⌥ and ← both landed between this poll and the last.
+        assert_eq!(c.tick(8, Exact, 4), Action::Start);
+        assert_eq!(c.tick(16, Exact, 4), Action::Discard);
     }
 
     #[test]
