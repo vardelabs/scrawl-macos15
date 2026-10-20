@@ -130,6 +130,7 @@ struct SettingsState: Decodable, Equatable {
   var playbackLevel = 20
   var videoExport = false
   var tapChooses = false
+  var cropWindowCaptures = true
   var retention = SettingsRetention()
   var capturesSize: String?
   var permissions: [SettingsPermission] = ["screen-recording", "microphone", "accessibility", "camera"]
@@ -875,6 +876,13 @@ struct SettingsView: View {
         }
       }
       SettingsCaption(text: "Restores the previous volume after recording. Requires an output device with volume control.")
+        .padding(.bottom, 16)
+      SettingsGroup {
+        SettingsRow(title: "Zoom window captures") {
+          SettingsSwitch(on: state.cropWindowCaptures) { model.set("cropWindowCaptures", $0) }
+        }
+      }
+      SettingsCaption(text: "Crops each screenshot to what you worked on in the window. The full frames are kept too.")
         .padding(.bottom, 16)
       SettingsGroup {
         SettingsRow(title: "Transcription") {
