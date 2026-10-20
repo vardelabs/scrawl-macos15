@@ -879,7 +879,7 @@ fn shortcut_view(
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
-    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport` (bool), `microphone`
+    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses` (bool), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
     Set {
