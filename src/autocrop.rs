@@ -1757,7 +1757,12 @@ pub fn annotate_and_crop(
 ) {
     use crate::render::annotate_keyframe_marks_in_place;
     let plan = settings
-        .filter(|_| target.mode == crate::model::CaptureMode::Display && !selected.is_empty())
+        .filter(|_| {
+            matches!(
+                target.mode,
+                crate::model::CaptureMode::Display | crate::model::CaptureMode::Window
+            ) && !selected.is_empty()
+        })
         .and_then(|settings| {
             let changes: Vec<Vec<Rect>> = (0..selected.len())
                 .map(|i| match (i, baseline) {
@@ -2204,9 +2209,9 @@ mod tests {
         assert_eq!((c.kind, info.label.as_str()), (CropKind::Window, "Finder"));
         assert!(!serde_json::to_string(&info).unwrap().contains("Secret"));
 
-        // Other capture modes and auto-crop off leave the frames alone.
+        // Area captures and auto-crop off leave the frames alone.
         for (mode, settings) in [
-            (CaptureMode::Window, Some(Settings::default())),
+            (CaptureMode::Region, Some(Settings::default())),
             (CaptureMode::Display, None),
         ] {
             let target = TargetInfo {

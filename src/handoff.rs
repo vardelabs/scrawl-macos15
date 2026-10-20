@@ -390,6 +390,10 @@ pub struct Config {
     /// holding it still switches modes (default off).
     #[serde(default)]
     pub tap_chooses: Option<bool>,
+    /// Zooms a window capture's keyframes in to the activity inside the window, as full-screen
+    /// captures are (default on; `autocrop`).
+    #[serde(default)]
+    pub crop_window_captures: Option<bool>,
     /// Read only to carry an older setting over: `false` means `playbackMode` `"unchanged"`.
     #[serde(default)]
     pub mute_audio: Option<bool>,
@@ -683,6 +687,21 @@ pub fn auto_send() -> bool {
 /// either way.
 pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
+}
+
+/// Whether a capture in `mode` gets keyframe crops: full-screen ones always, window ones unless
+/// `cropWindowCaptures` is false. `"autocrop": false` turns both off.
+pub fn crops_mode(mode: crate::model::CaptureMode) -> bool {
+    crops_mode_in(&config(), mode)
+}
+
+fn crops_mode_in(config: &Config, mode: crate::model::CaptureMode) -> bool {
+    use crate::model::CaptureMode;
+    match mode {
+        CaptureMode::Display => true,
+        CaptureMode::Window => config.crop_window_captures.unwrap_or(true),
+        CaptureMode::Region | CaptureMode::Device => false,
+    }
 }
 
 /// Whether a tap of the record shortcut opens the picker (`tapChooses`, default off).
@@ -1409,6 +1428,21 @@ fn existing_keyframes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_captures_crop_unless_turned_off() {
+        use crate::model::CaptureMode;
+        let on = Config::default();
+        assert!(crops_mode_in(&on, CaptureMode::Display));
+        assert!(crops_mode_in(&on, CaptureMode::Window));
+        assert!(!crops_mode_in(&on, CaptureMode::Region));
+        let off = Config {
+            crop_window_captures: Some(false),
+            ..Default::default()
+        };
+        assert!(crops_mode_in(&off, CaptureMode::Display));
+        assert!(!crops_mode_in(&off, CaptureMode::Window));
+    }
 
     #[test]
     fn playback_mutes_unless_told_otherwise() {

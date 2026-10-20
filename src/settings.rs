@@ -581,6 +581,7 @@ pub struct View {
     pub playback_level: u8,
     pub video_export: bool,
     pub tap_chooses: bool,
+    pub crop_window_captures: bool,
     pub retention: RetentionView,
     /// How much the captures folder takes, once measured.
     pub captures_size: Option<String>,
@@ -881,7 +882,7 @@ fn shortcut_view(
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
-    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses` (bool), `microphone`
+    /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures` (bool), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
     Set {
@@ -1097,7 +1098,10 @@ impl Panel {
                     return Effect::OpenLoginItems;
                 }
             }
-            ("autoSend" | "videoExport" | "tapChooses", serde_json::Value::Bool(on)) => {
+            (
+                "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures",
+                serde_json::Value::Bool(on),
+            ) => {
                 write(key, (*on).into())
             }
             ("playbackMode", serde_json::Value::String(mode))
@@ -1248,6 +1252,7 @@ impl Panel {
             },
             video_export: config.video_export.unwrap_or(false),
             tap_chooses: config.tap_chooses.unwrap_or(false),
+            crop_window_captures: config.crop_window_captures.unwrap_or(true),
             retention: RetentionView {
                 preset: policy.preset().map(preset_id),
                 options: crate::retention::Preset::ALL
