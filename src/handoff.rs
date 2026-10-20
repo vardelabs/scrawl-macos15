@@ -412,6 +412,9 @@ pub struct Config {
     /// How long that program may run, in seconds (default: grows with the recording).
     #[serde(default)]
     pub transcribe_timeout_seconds: Option<u64>,
+    /// Drops "um", "uh" and comma-wrapped "like" from transcripts (default on; `fillers`).
+    #[serde(default)]
+    pub remove_fillers: Option<bool>,
     /// Whether to use the native Metal recording pill instead of GPUI's `HudPillWindow` (default `true`).
     #[serde(default)]
     pub native_pill: Option<bool>,
@@ -530,6 +533,11 @@ pub fn load_config_from(path: &Path) -> Config {
 /// The command transcriber's settings when `transcribeCommand` is usable.
 pub fn transcribe_command() -> Option<crate::command_transcriber::Settings> {
     transcribe_command_from(&config())
+}
+
+/// Whether transcripts lose their spoken fillers (`removeFillers`, default on).
+pub fn remove_fillers() -> bool {
+    config().remove_fillers.unwrap_or(true)
 }
 
 pub fn transcribe_command_from(config: &Config) -> Option<crate::command_transcriber::Settings> {
