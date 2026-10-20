@@ -255,7 +255,7 @@ enum SettingsMotion {
 /// Sizes: 16 titles, 14 rows, 12 captions, 11 keycap names, 20 keycap letters.
 enum SettingsMetrics {
   static let width: CGFloat = 620
-  static let height: CGFloat = 448
+  static let height: CGFloat = 512
   static let sidebar: CGFloat = 210
   static let titlebar: CGFloat = 52
   static let inset: CGFloat = 20
@@ -804,13 +804,14 @@ struct SettingsView: View {
       }
       ForEach(state.shortcuts) { shortcut in
         ShortcutRecorder(model: model, shortcut: shortcut, tapChooses: state.tapChooses)
-      }
-      SettingsGroup {
-        SettingsRow(title: "Tap opens the picker") {
-          SettingsSwitch(on: state.tapChooses) { model.set("tapChooses", $0) }
+        if shortcut.kind == "record" {
+          SettingsGroup {
+            SettingsRow(title: "Tap opens the picker") {
+              SettingsSwitch(on: state.tapChooses) { model.set("tapChooses", $0) }
+            }
+          }
         }
       }
-      SettingsCaption(text: "On: a tap chooses what to record, and holding the shortcut on Screen records the whole screen. Off: a tap records the whole screen.")
     }
   }
 

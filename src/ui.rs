@@ -1878,6 +1878,11 @@ impl ScrawlCoordinator {
                 }
             }
             Action::Show(mode) => self.show_switcher_mode(mode, cx),
+            // A tap that ran a little long reads as a short hold on Screen: it still chooses.
+            Action::Commit(SelectionMode::Screen) if crate::handoff::tap_chooses() => {
+                self.cancel_recording(cx);
+                self.begin_target_selection(cx);
+            }
             Action::Commit(mode) => self.commit_switcher(mode, cx),
             Action::Cancel => {
                 if self.is_selecting() {
