@@ -5509,7 +5509,9 @@ pub fn run_app(
                     if loop_coord.read(cx).switcher.is_held() {
                         loop_coord.update(cx, |coord, cx| coord.tick_switcher(cx));
                     } else if loop_coord.read(cx).telemetry.take_escape()
-                        && loop_coord.read(cx).is_selecting()
+                        && (loop_coord.read(cx).is_selecting()
+                            || (loop_coord.read(cx).is_recording()
+                                && crate::handoff::escape_cancels()))
                     {
                         // The picker may not have the keys (another app is active), but the
                         // key tap sees Esc anyway.

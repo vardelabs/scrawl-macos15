@@ -389,6 +389,10 @@ pub struct Config {
     /// Mutes the sound output while recording and restores it after (default on; `mute`).
     #[serde(default)]
     pub mute_audio: Option<bool>,
+    /// Esc discards a running recording, as it cancels the picker (default on). Off for a
+    /// keyboard that sends Esc on its own, such as CapsLock-as-Control remaps.
+    #[serde(default)]
+    pub escape_cancels: Option<bool>,
     /// `"apple"` (default), `"hex"` or `"command"`: which engine transcribes recordings
     /// (`transcribe`).
     #[serde(default)]
@@ -660,6 +664,11 @@ pub fn video_export() -> bool {
 /// Whether recordings mute the sound output (`muteAudio`, default on; `mute`).
 pub fn mute_audio() -> bool {
     config().mute_audio.unwrap_or(true)
+}
+
+/// Whether Esc discards a running recording (`escapeCancels`, default on).
+pub fn escape_cancels() -> bool {
+    config().escape_cancels.unwrap_or(true)
 }
 
 /// The configured transcriber name (`transcriber`) as written, unvalidated.
