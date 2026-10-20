@@ -253,7 +253,11 @@ pub fn paste_text(text: &str, restore: bool) -> Result<()> {
     use objc2_app_kit::NSPasteboard;
 
     let pasteboard = NSPasteboard::generalPasteboard();
-    let saved = restore.then(|| saved_pasteboard(&pasteboard));
+    // A password manager's copy is marked concealed or transient so it is never kept; putting it
+    // back would also outlive the manager's timed clear, which watches `changeCount`.
+    let saved = restore
+        .then(|| saved_pasteboard(&pasteboard))
+        .filter(|items| !items.iter().flatten().any(|(kind, _)| private_type(kind)));
     crate::capture::wait_for_modifiers_released(350);
     copy_string_to_clipboard(text)?;
     let ours = pasteboard.changeCount();
@@ -273,6 +277,12 @@ type SavedItem = Vec<(
     objc2::rc::Retained<objc2_foundation::NSString>,
     objc2::rc::Retained<objc2_foundation::NSData>,
 )>;
+
+#[cfg(target_os = "macos")]
+fn private_type(kind: &objc2_foundation::NSString) -> bool {
+    let kind = kind.to_string();
+    ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"].contains(&kind.as_str())
+}
 
 #[cfg(target_os = "macos")]
 fn saved_pasteboard(pasteboard: &objc2_app_kit::NSPasteboard) -> Vec<SavedItem> {

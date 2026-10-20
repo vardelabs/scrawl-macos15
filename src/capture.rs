@@ -932,6 +932,12 @@ impl SharedCaptureTelemetry {
         scrawl_log(format!("session clicks from {clicks}, keys from {keys}"));
     }
 
+    /// Whether the key tap is delivering key presses (Accessibility on, Secure Input off).
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    pub fn key_tap_live(&self) -> bool {
+        self.tap_live.load(Ordering::Acquire)
+    }
+
     /// Whether Esc went down since the last call (the switcher cancels on it).
     pub fn take_escape(&self) -> bool {
         self.escape_pressed.swap(false, Ordering::AcqRel)

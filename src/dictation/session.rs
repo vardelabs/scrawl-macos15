@@ -99,7 +99,7 @@ impl Dictation {
     pub fn cede(&mut self) {
         if self.chord.is_active() && !self.chord.is_latched() {
             let action = self.chord.cancel();
-            self.apply(action, true);
+            self.apply(action, true, true);
         }
     }
 
@@ -116,25 +116,26 @@ impl Dictation {
         if !self.settings.enabled {
             return;
         }
+        let key_tap_live = telemetry.key_tap_live();
         let now_ms = self.clock.elapsed().as_millis() as u64;
         let mods = self.settings.mods(crate::capture::modifier_flags());
         let keys = telemetry.key_downs.load(std::sync::atomic::Ordering::Acquire);
         if capture_busy && self.started.is_none() && self.chord.is_active() {
             // A capture started while the chord was undecided: it was the capture's shortcut.
             let action = self.chord.cancel();
-            self.apply(action, capture_busy);
+            self.apply(action, capture_busy, key_tap_live);
         }
         let action = self.chord.tick(now_ms, mods, keys);
-        self.apply(action, capture_busy);
+        self.apply(action, capture_busy, key_tap_live);
         if self.chord.is_active() && !self.chord.is_latched() && crate::capture::mouse_button_down()
         {
             // A modifier-click or drag, not dictation.
             let action = self.chord.cancel();
-            self.apply(action, capture_busy);
+            self.apply(action, capture_busy, key_tap_live);
         }
         if self.chord.is_active() && telemetry.take_escape() {
             let action = self.chord.cancel();
-            self.apply(action, capture_busy);
+            self.apply(action, capture_busy, key_tap_live);
         }
         for pill_action in self.pill.as_ref().map(NativePill::drain_actions).unwrap_or_default() {
             let action = match pill_action {
@@ -142,7 +143,7 @@ impl Dictation {
                 PillAction::Finish => self.chord.confirm(),
                 _ => Action::None,
             };
-            self.apply(action, capture_busy);
+            self.apply(action, capture_busy, key_tap_live);
         }
         if self.started.is_some() && self.chord.is_latched() {
             self.show(Pres::Dictating { latched: true });
@@ -151,7 +152,7 @@ impl Dictation {
         }
     }
 
-    fn apply(&mut self, action: Action, capture_busy: bool) {
+    fn apply(&mut self, action: Action, capture_busy: bool, key_tap_live: bool) {
         if action != Action::None {
             scrawl_log(format!("dictation -> {action:?}"));
         }
@@ -160,9 +161,10 @@ impl Dictation {
             Action::Start if capture_busy || self.working.is_some() => {
                 self.chord.cancel();
             }
-            // Without Accessibility the paste can't be posted, nor a shortcut told apart.
-            Action::Start if !crate::capture::accessibility_granted() => {
-                scrawl_log("Dictation needs Accessibility");
+            // Without the key tap a shortcut can't be told apart (nor, without Accessibility, the
+            // paste posted). Secure Input, as in a password field, turns the tap off too.
+            Action::Start if !key_tap_live => {
+                scrawl_log("Dictation: the key tap is off (Accessibility, or Secure Input is on)");
                 self.chord.cancel();
             }
             Action::Start => match AudioRecorder::start_mic() {

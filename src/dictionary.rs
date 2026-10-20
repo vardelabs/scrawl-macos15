@@ -109,18 +109,19 @@ fn replace_phrase(
     }
 }
 
-/// A near miss of a dictionary word: same first letter, one edit away (two from 9 letters),
-/// and only for words of 5 letters or more, where a single edit rarely makes another word. The
-/// word with an ending added ("parakeets") is that word, not a miss of it.
+/// A near miss of a dictionary word: same first letter, one edit away (two from 10 letters),
+/// and only for words of 7 letters or more. Shorter words have real neighbours one edit away
+/// ("corpus" and "Corvus", "sprawl" and "Scrawl"); those need a replacement. The word with an
+/// ending added ("parakeets") is that word, not a miss of it.
 fn near(heard: &str, word: &str) -> bool {
     let len = word.chars().count();
     let inflected = heard
         .strip_prefix(word)
         .is_some_and(|ending| ["s", "es", "ed", "er", "ing"].contains(&ending));
-    if len < 5 || inflected || heard.chars().next() != word.chars().next() {
+    if len < 7 || inflected || heard.chars().next() != word.chars().next() {
         return false;
     }
-    let allowed = if len >= 9 { 2 } else { 1 };
+    let allowed = if len >= 10 { 2 } else { 1 };
     heard.chars().count().abs_diff(len) <= allowed && edit_distance(heard, word) <= allowed
 }
 
@@ -179,11 +180,11 @@ mod tests {
 
     #[test]
     fn near_misses_of_long_words_are_fixed_but_short_words_are_left() {
-        let d = dict(&["Parakeet", "Scrawl", "Vega", "Kubernetes"], &[]);
-        assert_eq!(d.apply("parakeat and scrawll"), "Parakeet and Scrawl");
+        let d = dict(&["Parakeet", "Scrawl", "Corvus", "Vega", "Kubernetes"], &[]);
+        assert_eq!(d.apply("parakeat"), "Parakeet");
         assert_eq!(d.apply("kubernetis"), "Kubernetes");
-        // Short words and a different first letter are never guessed.
-        assert_eq!(d.apply("vegan barakeet"), "vegan barakeet");
+        // Real words next to short dictionary words, and a different first letter, stay.
+        assert_eq!(d.apply("corpus sprawl vegan barakeet"), "corpus sprawl vegan barakeet");
         assert_eq!(d.apply("two parakeets, scrawled"), "two parakeets, scrawled");
     }
 
