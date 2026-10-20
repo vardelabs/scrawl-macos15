@@ -497,8 +497,8 @@ fn draw_keyframe_badge(
     }
     let badge_k = badge_k.max(0.45);
     let num_label = format!("#{}", keyframe.index);
-    let time_label = (!keyframe.file.is_empty() || !keyframe.event.is_empty())
-        .then(|| format_clock(keyframe.t));
+    let time_label =
+        (!keyframe.file.is_empty() || !keyframe.event.is_empty()).then(|| format_clock(keyframe.t));
     let num_size = 15.5 * badge_k;
     let time_size = 12.5 * badge_k;
     let badge_h = 28.0 * badge_k;
@@ -518,8 +518,7 @@ fn draw_keyframe_badge(
     };
 
     let margin = 7.0 * badge_k;
-    let dodge =
-        dodge_top_right || keyframe.cursor.is_some_and(|[x, y]| x < 0.30 && y < 0.18);
+    let dodge = dodge_top_right || keyframe.cursor.is_some_and(|[x, y]| x < 0.30 && y < 0.18);
     let bx = if dodge {
         (rx + rw - badge_w - margin).max(rx + margin)
     } else {
@@ -840,8 +839,7 @@ fn plan_contact_sheet_rows(aspects: &[f32]) -> Vec<std::ops::Range<usize>> {
 
             let mut sorted_areas = areas;
             sorted_areas[..n].sort_by(f32::total_cmp);
-            let median_area =
-                (sorted_areas[(n - 1) / 2] + sorted_areas[n / 2]).max(1e-6) * 0.5;
+            let median_area = (sorted_areas[(n - 1) / 2] + sorted_areas[n / 2]).max(1e-6) * 0.5;
             let mut under_pen = 0.0f32;
             for &ar in &areas[..n] {
                 let ratio = ar / median_area;
@@ -1653,10 +1651,86 @@ mod native_text {
     }
 }
 
+/// Arial (Windows' Helvetica) from the system fonts, through `ab_glyph`.
+#[cfg(target_os = "windows")]
+mod native_text {
+    use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
+    use std::sync::OnceLock;
+
+    fn font(bold: bool) -> Option<&'static FontVec> {
+        static REGULAR: OnceLock<Option<FontVec>> = OnceLock::new();
+        static BOLD: OnceLock<Option<FontVec>> = OnceLock::new();
+        let load = |name: &str| {
+            let dir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+            let bytes = std::fs::read(std::path::Path::new(&dir).join("Fonts").join(name)).ok()?;
+            FontVec::try_from_vec(bytes).ok()
+        };
+        if bold {
+            BOLD.get_or_init(|| load("arialbd.ttf")).as_ref()
+        } else {
+            REGULAR.get_or_init(|| load("arial.ttf")).as_ref()
+        }
+    }
+
+    /// Glyph positions along the baseline, kerned.
+    fn layout(text: &str, size: f32, bold: bool) -> Option<(f32, Vec<ab_glyph::Glyph>)> {
+        let font = font(bold)?.as_scaled(PxScale::from(size));
+        let mut x = 0.0;
+        let mut previous = None;
+        let mut glyphs = Vec::new();
+        for ch in text.chars() {
+            let id = font.glyph_id(ch);
+            if let Some(prev) = previous {
+                x += font.kern(prev, id);
+            }
+            glyphs.push(id.with_scale_and_position(size, ab_glyph::point(x, font.ascent())));
+            x += font.h_advance(id);
+            previous = Some(id);
+        }
+        Some((x, glyphs))
+    }
+
+    pub fn width(text: &str, size: f32, bold: bool) -> Option<f32> {
+        layout(text, size, bold).map(|(w, _)| w)
+    }
+
+    /// An 8-bit coverage mask with 2 px of padding, like the macOS CoreText one.
+    pub fn mask(text: &str, size: f32, bold: bool) -> Option<(usize, usize, Vec<u8>)> {
+        let font = font(bold)?;
+        let scaled = font.as_scaled(PxScale::from(size));
+        let (w, glyphs) = layout(text, size, bold)?;
+        let width = w.ceil().max(1.0) as usize + 4;
+        let height = (scaled.ascent() - scaled.descent() + scaled.line_gap())
+            .ceil()
+            .max(1.0) as usize
+            + 4;
+        let mut pixels = vec![0_u8; width * height];
+        for glyph in glyphs {
+            let Some(outline) = font.outline_glyph(glyph) else {
+                continue;
+            };
+            let bounds = outline.px_bounds();
+            outline.draw(|gx, gy, coverage| {
+                let x = bounds.min.x as i32 + gx as i32 + 2;
+                let y = bounds.min.y as i32 + gy as i32 + 2;
+                if x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height {
+                    let p = &mut pixels[y as usize * width + x as usize];
+                    *p = (*p).max((coverage.clamp(0.0, 1.0) * 255.0) as u8);
+                }
+            });
+        }
+        Some((width, height, pixels))
+    }
+}
+
 fn text_width(text: &str, size: f32, bold: bool) -> f32 {
     #[cfg(target_os = "macos")]
     if let Some((_, line)) = native_text::line(text, size, bold) {
         return line.get_typographic_bounds().width as f32;
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(width) = native_text::width(text, size, bold) {
+        return width;
     }
     let _ = bold;
     text.chars().count() as f32 * size * 6.0 / 7.0
@@ -1674,7 +1748,7 @@ fn draw_text(
     if text.is_empty() || size <= 0.0 {
         return;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Some((width, height, pixels)) = native_text::mask(text, size, bold) {
         for py in 0..height {
             for px in 0..width {

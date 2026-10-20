@@ -3,6 +3,8 @@
 //! `scrawl-helper` through its real path (`helper::path`), so it works through the link.
 //! Homebrew's cask (`binary "#{appdir}/Scrawl.app/Contents/MacOS/scrawl"`) makes the same link,
 //! and `brew` accepts one Scrawl made because it points at the same file.
+//!
+//! Windows has no Scrawl.app (`State::Unavailable`); `scrawl.exe` is a console program already.
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +63,12 @@ pub enum State {
     Nowhere,
 }
 
+#[cfg(not(unix))]
+fn writable(_dir: &Path) -> bool {
+    false
+}
+
+#[cfg(unix)]
 fn writable(dir: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
     let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
@@ -137,12 +145,21 @@ pub fn install(places: &Places) -> Result<PathBuf> {
     // Made beside it and renamed over, so a stale link is replaced in one step.
     let temp = dir.join(format!(".{NAME}-{}", std::process::id()));
     let _ = std::fs::remove_file(&temp);
-    std::os::unix::fs::symlink(target, &temp)
-        .with_context(|| format!("couldn't write to {}", tilde(dir)))?;
+    symlink(target, &temp).with_context(|| format!("couldn't write to {}", tilde(dir)))?;
     std::fs::rename(&temp, &link).inspect_err(|_| {
         let _ = std::fs::remove_file(&temp);
     })?;
     Ok(link)
+}
+
+#[cfg(unix)]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(unix))]
+fn symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 /// Removes the link Install made (or a stale one). Anything that isn't a link to Scrawl stays.
@@ -175,7 +192,7 @@ pub fn usually_on_path(link: &Path) -> bool {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

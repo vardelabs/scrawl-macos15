@@ -40,5 +40,6 @@ Read the matching `docs/` file before changing a subsystem. Each one holds that 
 | iPhone capture, ScrawlKit ingest and delivery, dev-site routing and `sdk.js` | `src/phone.rs`, `src/delivery.rs`, `src/routing.rs`, `src/web.rs`, `src/sdk.js`, `Sources/ScrawlKit/`, `helper/` | `docs/iphone-and-routing.md` |
 | Capsule motion, the pill lab, tuning | `src/ui/lab.rs`, `src/ui/motion.rs`, `perf/pill/` | `docs/motion.md` |
 | Video export, retention and shrinking | `src/export/`, `src/retention.rs`, `helper/Export.swift`, `helper/Media.swift` | `docs/export-and-retention.md` |
+| Windows: the OS shell behind `platform::`, overlay, hotkeys, Media Foundation, Parakeet, GPUI Settings and tour | `src/capture/windows.rs`, `src/ui/windows.rs`, `src/win/`, `src/settings_window.rs`, `src/onboarding_window.rs`, `src/ax_other.rs` | `docs/windows.md` |
 
 `docs/brief.md` is the original product brief.
