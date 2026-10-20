@@ -2730,6 +2730,7 @@ impl ScrawlCoordinator {
                     scrawl_log(format!("iPhone capture could not start: {error:#}"));
                     self.telemetry.finish_session();
                     let _ = std::fs::remove_dir_all(&bundle_dir);
+                    crate::mute::restore();
                     self.dismiss_island(cx);
                     return;
                 }
