@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(timed.timeout, Some(Duration::from_secs(90)));
         let absurd = settings(Some(&strings(&["/bin/true"])), Some(u64::MAX)).unwrap();
         assert_eq!(absurd.timeout, Some(Duration::from_secs(MAX_TIMEOUT_SECONDS)));
-        assert!(Instant::now().checked_add(absurd.timeout.unwrap()).is_some());
+        assert!(std::time::Instant::now().checked_add(absurd.timeout.unwrap()).is_some());
     }
 
     #[test]
