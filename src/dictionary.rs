@@ -2,32 +2,102 @@
 //! vocabulary prompt. `~/.config/scrawl/dictionary.json`; see `docs/dictation.md`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Dictionary {
     pub words: Vec<String>,
     pub replacements: BTreeMap<String, String>,
+    /// Keys Scrawl doesn't know (a later version's), kept when Settings saves the file.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 pub fn default_path() -> PathBuf {
-    crate::handoff::default_config_path().with_file_name("dictionary.json")
+    path_beside(&crate::handoff::default_config_path())
+}
+
+/// The dictionary next to `config.json`.
+pub fn path_beside(config: &Path) -> PathBuf {
+    config.with_file_name("dictionary.json")
 }
 
 impl Dictionary {
     /// A missing file is an empty dictionary; a broken one is logged and empty.
     pub fn load() -> Self {
         let path = default_path();
-        let Ok(bytes) = std::fs::read(&path) else {
-            return Self::default();
-        };
-        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            crate::capture::scrawl_log(format!("{}: {error}", path.display()));
+        Self::load_from(&path).unwrap_or_else(|error| {
+            crate::capture::scrawl_log(format!("{error:#}"));
             Self::default()
         })
+    }
+
+    /// A missing file is an empty dictionary; a broken one is an error, so nothing overwrites
+    /// it with an empty one.
+    pub fn load_from(path: &Path) -> Result<Self> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .with_context(|| format!("{} isn't a valid dictionary", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error).with_context(|| format!("Could not read {}", path.display())),
+        }
+    }
+
+    /// Writes a temp file and renames it over `path`, so a crash never leaves half a file. A
+    /// symlinked dictionary (dotfiles) is written through to its target, with its permissions.
+    pub fn save_to(&self, path: &Path) -> Result<()> {
+        let path = link_target(path);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let temp = path.with_extension("json.tmp");
+        let mut json = serde_json::to_vec_pretty(self)?;
+        json.push(b'\n');
+        // Owner-only like config.json, since entries can be private names, from the moment the
+        // temp file exists. An existing dictionary keeps the mode its owner gave it.
+        let _ = std::fs::remove_file(&temp);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        std::io::Write::write_all(&mut options.open(&temp)?, &json)?;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&temp, meta.permissions())?;
+        }
+        std::fs::rename(&temp, &path).with_context(|| format!("Could not save {}", path.display()))
+    }
+
+    /// Adds a word or phrase unless it's empty or already there (ignoring case and spacing).
+    pub fn add_word(&mut self, word: &str) -> bool {
+        let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
+        if words_of(&word).is_empty() || self.words.iter().any(|w| same(w, &word)) {
+            return false;
+        }
+        self.words.push(word);
+        true
+    }
+
+    pub fn remove_word(&mut self, word: &str) {
+        self.words.retain(|w| w != word);
+    }
+
+    /// Writes `write` wherever `heard` is heard, replacing an entry for the same heard words.
+    pub fn add_replacement(&mut self, heard: &str, write: &str) -> bool {
+        let (heard, write) = (heard.trim(), write.trim());
+        if words_of(heard).is_empty() || write.is_empty() {
+            return false;
+        }
+        self.replacements.retain(|h, _| !same(h, heard));
+        self.replacements.insert(heard.to_owned(), write.to_owned());
+        true
+    }
+
+    pub fn remove_replacement(&mut self, heard: &str) {
+        self.replacements.remove(heard);
     }
 
     pub fn apply(&self, text: &str) -> String {
@@ -81,6 +151,23 @@ fn words_of(phrase: &str) -> Vec<String> {
 
 fn squash(phrase: &str) -> String {
     words_of(phrase).concat()
+}
+
+/// Where a dictionary that may be a symlink really lives, even when its target doesn't exist
+/// yet (a dotfiles link made before the file).
+fn link_target(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    match std::fs::read_link(path) {
+        Ok(target) if target.is_absolute() => target,
+        Ok(target) => path.parent().map_or(target.clone(), |dir| dir.join(&target)),
+        Err(_) => path.to_owned(),
+    }
+}
+
+fn same(a: &str, b: &str) -> bool {
+    words_of(a) == words_of(b)
 }
 
 /// Replaces each run of word tokens matching `from` (separated only by spaces) with `to`.
@@ -151,6 +238,7 @@ mod tests {
                 .iter()
                 .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
                 .collect(),
+            other: serde_json::Map::new(),
         }
     }
 
@@ -193,6 +281,71 @@ mod tests {
         let d = dict(&["Scrawl"], &[("foo", "bar")]);
         let text = "Hello,  world! It's fine — really.\nNew line";
         assert_eq!(d.apply(text), text);
+    }
+
+    #[test]
+    fn words_and_replacements_are_added_once_and_removed() {
+        let mut d = Dictionary::default();
+        assert!(d.add_word("  Varde   Labs "));
+        assert!(!d.add_word("varde labs"));
+        assert!(!d.add_word(" , "));
+        assert_eq!(d.words, ["Varde Labs"]);
+        d.remove_word("Varde Labs");
+        assert!(d.words.is_empty());
+
+        assert!(d.add_replacement("corvis", "Corvus"));
+        assert!(d.add_replacement("Corvis", "Corvus!"));
+        assert!(!d.add_replacement("heard", " "));
+        assert_eq!(d.replacements.len(), 1);
+        assert_eq!(d.apply("corvis"), "Corvus!");
+        d.remove_replacement("Corvis");
+        assert!(d.replacements.is_empty());
+    }
+
+    #[test]
+    fn saving_keeps_unknown_keys_and_a_broken_file_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("scrawl-dictionary-test-{}", std::process::id()));
+        let path = dir.join("dictionary.json");
+        assert_eq!(Dictionary::load_from(&path).unwrap(), Dictionary::default());
+        Dictionary::default().save_to(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+
+        std::fs::write(&path, r#"{"words": ["Corvus"], "learned": {"corvis": 1}}"#).unwrap();
+        let mut d = Dictionary::load_from(&path).unwrap();
+        d.add_word("Vega");
+        d.save_to(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["words"], serde_json::json!(["Corvus", "Vega"]));
+        assert_eq!(saved["learned"], serde_json::json!({"corvis": 1}));
+
+        #[cfg(unix)]
+        {
+            let real = dir.join("dotfiles.json");
+            std::fs::rename(&path, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &path).unwrap();
+            let mut d = Dictionary::load_from(&path).unwrap();
+            d.add_word("North");
+            d.save_to(&path).unwrap();
+            assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+            assert_eq!(Dictionary::load_from(&real).unwrap().words, ["Corvus", "Vega", "North"]);
+            std::fs::remove_file(&path).unwrap();
+
+            // A link made before its target: saving creates the target and keeps the link.
+            let later = dir.join("later.json");
+            std::os::unix::fs::symlink(&later, &path).unwrap();
+            Dictionary::default().save_to(&path).unwrap();
+            assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+            assert!(later.exists());
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(Dictionary::load_from(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

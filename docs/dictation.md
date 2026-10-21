@@ -2,7 +2,7 @@
 
 Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime), `src/dictionary.rs` or the dictation pill.
 
-Dictation is the screenless sibling of a capture: a modifier-only chord records the microphone, the configured transcriber turns it into text, and Scrawl pastes the text into the app in front. It is off by default (`"dictation": true` turns it on, or Settings › General › Dictation).
+Dictation is the screenless sibling of a capture: a modifier-only chord records the microphone, the configured transcriber turns it into text, and Scrawl pastes the text into the app in front. It is off by default (`"dictation": true` turns it on, or Settings › Dictation).
 
 ## The chord (`dictation::Chord`)
 
@@ -37,3 +37,7 @@ Dictation owns its own `NativePill`, placed at the bottom centre of the display 
 - `words` fix casing and spacing (`varde labs`, `vardelabs` → `Varde Labs`) and near misses of words of 7 letters or more (one edit, two from 10 letters, same first letter). Shorter words have real neighbours (`corpus` and `Corvus`), so they need a replacement.
 
 Parakeet takes no vocabulary prompt, so the dictionary corrects after transcription.
+
+## Settings › Dictation
+
+The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Restore the clipboard after pasting**, **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).

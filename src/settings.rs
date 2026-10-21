@@ -548,6 +548,27 @@ pub fn set_login_item(on: bool) -> anyhow::Result<()> {
     crate::win::login::set(on)
 }
 
+/// Opens the dictionary in the default text editor, made first if there's none yet.
+fn edit_dictionary(path: &Path) {
+    if !path.exists()
+        && let Err(error) = crate::dictionary::Dictionary::default().save_to(path)
+    {
+        crate::capture::scrawl_log(format!("Dictionary: {error:#}"));
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let opened = match std::process::Command::new("open").arg("-t").arg(path).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(anyhow::anyhow!("open -t exited with {status}")),
+        Err(error) => Err(error.into()),
+    };
+    #[cfg(not(target_os = "macos"))]
+    let opened = crate::handoff::open_path(path);
+    if let Err(error) = opened {
+        crate::capture::scrawl_log(format!("Opening {}: {error:#}", path.display()));
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn open_login_items_settings() {
     crate::win::login::open_startup_settings();
@@ -560,6 +581,7 @@ fn open_login_items_settings() {
 pub enum Pane {
     General,
     Recording,
+    Dictation,
     Storage,
     Permissions,
     Agents,
@@ -583,9 +605,7 @@ pub struct View {
     pub video_export: bool,
     pub tap_chooses: bool,
     pub crop_window_captures: bool,
-    pub dictation: bool,
-    pub dictation_shortcut: String,
-    pub dictation_restore_clipboard: bool,
+    pub dictation: DictationView,
     pub retention: RetentionView,
     /// How much the captures folder takes, once measured.
     pub captures_size: Option<String>,
@@ -594,6 +614,34 @@ pub struct View {
     pub command_line: CommandLineView,
     pub skill_command: &'static str,
 }
+
+/// The Dictation pane.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationView {
+    /// macOS only: elsewhere the pane says so.
+    pub available: bool,
+    pub on: bool,
+    pub shortcut: String,
+    pub shortcuts: &'static [&'static str],
+    pub restore_clipboard: bool,
+    pub remove_fillers: bool,
+    pub words: Vec<String>,
+    pub replacements: Vec<ReplacementView>,
+    /// Why the dictionary can't be shown or changed (a broken file, left as it is).
+    pub error: Option<String>,
+    /// Why the last edit wasn't saved; the next edit tries again.
+    pub save_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReplacementView {
+    pub heard: String,
+    pub write: String,
+}
+
+/// The chords the Dictation pane offers, the default first.
+pub const DICTATION_SHORTCUTS: &[&str] = &["⌃⌥", "⌃⌘", "⌥⌘", "⌃⇧"];
 
 /// The "Command-line tool" row.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -827,6 +875,53 @@ pub struct PermissionView {
     pub relaunch: bool,
 }
 
+fn dictation_view(
+    config: &crate::handoff::Config,
+    config_path: &Path,
+    save_error: Option<&str>,
+) -> DictationView {
+    let shortcut = config
+        .dictation_shortcut
+        .clone()
+        .filter(|chord| crate::dictation::parse_shortcut(chord).is_some())
+        .unwrap_or_else(|| crate::dictation::DEFAULT_SHORTCUT.to_owned());
+    let path = crate::dictionary::path_beside(config_path);
+    let (dictionary, error) = match crate::dictionary::Dictionary::load_from(&path) {
+        Ok(dictionary) => (dictionary, None),
+        Err(error) => (
+            crate::dictionary::Dictionary::default(),
+            Some(format!(
+                "{}. Fix it with Edit as Text…; Scrawl won't change it until then.",
+                home_relative(&error.to_string())
+            )),
+        ),
+    };
+    DictationView {
+        available: cfg!(target_os = "macos"),
+        on: config.dictation.unwrap_or(false),
+        shortcut,
+        shortcuts: DICTATION_SHORTCUTS,
+        restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
+        remove_fillers: config.remove_fillers.unwrap_or(true),
+        words: dictionary.words,
+        replacements: dictionary
+            .replacements
+            .into_iter()
+            .map(|(heard, write)| ReplacementView { heard, write })
+            .collect(),
+        error,
+        save_error: save_error.map(str::to_owned),
+    }
+}
+
+/// `/Users/kai/…` as `~/…`, to fit a caption.
+fn home_relative(text: &str) -> String {
+    match dirs::home_dir().and_then(|home| home.to_str().map(str::to_owned)) {
+        Some(home) => text.replace(&home, "~"),
+        None => text.to_owned(),
+    }
+}
+
 fn preset_id(preset: crate::retention::Preset) -> &'static str {
     match preset {
         crate::retention::Preset::Week => "week",
@@ -889,7 +984,7 @@ fn shortcut_view(
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
     /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures`,
-    /// `dictation`, `dictationRestoreClipboard` (bool), `dictationShortcut` (a chord), `microphone`
+    /// `dictation`, `dictationRestoreClipboard`, `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
     Set {
@@ -924,6 +1019,22 @@ pub enum Action {
     /// Link `scrawl` into a folder on PATH, or remove that link.
     InstallCli,
     UninstallCli,
+    /// The Dictation pane's dictionary editor.
+    AddWord {
+        word: String,
+    },
+    RemoveWord {
+        word: String,
+    },
+    AddReplacement {
+        heard: String,
+        write: String,
+    },
+    RemoveReplacement {
+        heard: String,
+    },
+    /// "Edit as Text…": the dictionary file in a text editor.
+    EditDictionary,
     Close,
 }
 
@@ -942,6 +1053,8 @@ pub enum Effect {
     Measure,
     Relaunch,
     Tour,
+    /// Open this dictionary file in a text editor.
+    EditDictionary(PathBuf),
     Close,
 }
 
@@ -970,6 +1083,8 @@ pub struct Panel {
     captures_size: Option<u64>,
     /// The connected microphones, once listed (`mic::Watch` keeps them fresh).
     inputs: Option<crate::mic::Inputs>,
+    /// Why the last dictionary edit wasn't saved, until one is.
+    dictionary_error: Option<String>,
 }
 
 impl Panel {
@@ -1047,11 +1162,49 @@ impl Panel {
                 self.note_cli("uninstall", result);
                 Effect::None
             }
+            Action::AddWord { word } => self.change_dictionary(host, |d| {
+                d.add_word(&word);
+            }),
+            Action::RemoveWord { word } => self.change_dictionary(host, |d| d.remove_word(&word)),
+            Action::AddReplacement { heard, write } => self.change_dictionary(host, |d| {
+                d.add_replacement(&heard, &write);
+            }),
+            Action::RemoveReplacement { heard } => {
+                self.change_dictionary(host, |d| d.remove_replacement(&heard))
+            }
+            Action::EditDictionary => {
+                Effect::EditDictionary(crate::dictionary::path_beside(&host.config_path()))
+            }
             Action::Close => {
                 self.stop_recording(host);
                 Effect::Close
             }
         }
+    }
+
+    /// Loads, changes and saves the dictionary. A file that doesn't read is left alone, and the
+    /// pane shows why (`dictation_view`).
+    fn change_dictionary(
+        &mut self,
+        host: &dyn Host,
+        change: impl FnOnce(&mut crate::dictionary::Dictionary),
+    ) -> Effect {
+        let path = crate::dictionary::path_beside(&host.config_path());
+        // A file that doesn't read is the view's `error`, not a failed save.
+        let mut dictionary = match crate::dictionary::Dictionary::load_from(&path) {
+            Ok(dictionary) => dictionary,
+            Err(error) => {
+                crate::capture::scrawl_log(format!("Dictionary: {error:#}"));
+                self.dictionary_error = None;
+                return Effect::None;
+            }
+        };
+        change(&mut dictionary);
+        self.dictionary_error = dictionary.save_to(&path).err().map(|error| {
+            crate::capture::scrawl_log(format!("Dictionary: {error:#}"));
+            format!("Couldn't save the dictionary: {}.", home_relative(&format!("{error:#}")))
+        });
+        Effect::None
     }
 
     fn note_cli(&mut self, verb: &str, result: anyhow::Result<()>) {
@@ -1109,7 +1262,7 @@ impl Panel {
             }
             (
                 "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures" | "dictation"
-                | "dictationRestoreClipboard",
+                | "dictationRestoreClipboard" | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => write(key, (*on).into()),
             ("dictationShortcut", serde_json::Value::String(chord))
@@ -1267,13 +1420,7 @@ impl Panel {
             video_export: config.video_export.unwrap_or(false),
             tap_chooses: config.tap_chooses.unwrap_or(false),
             crop_window_captures: config.crop_window_captures.unwrap_or(true),
-            dictation: config.dictation.unwrap_or(false),
-            dictation_shortcut: config
-                .dictation_shortcut
-                .clone()
-                .filter(|chord| crate::dictation::parse_shortcut(chord).is_some())
-                .unwrap_or_else(|| crate::dictation::DEFAULT_SHORTCUT.to_owned()),
-            dictation_restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
+            dictation: dictation_view(&config, &host.config_path(), self.dictionary_error.as_deref()),
             retention: RetentionView {
                 preset: policy.preset().map(preset_id),
                 options: crate::retention::Preset::ALL
@@ -1556,6 +1703,10 @@ impl Session {
                 check_for_updates();
                 Effect::None
             }
+            Effect::EditDictionary(path) => {
+                edit_dictionary(&path);
+                Effect::None
+            }
             Effect::Measure => {
                 crate::retention::nudge();
                 let events = std::sync::Arc::clone(&self.events);
@@ -1759,6 +1910,89 @@ mod tests {
                 also: Vec::new(),
             },
         }
+    }
+
+    #[test]
+    fn the_dictation_pane_edits_the_dictionary_beside_the_config() {
+        let dir = TempDir::new("dictionary");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        let act = |panel: &mut Panel, host: &mut Fake, json: &str| {
+            panel.on(serde_json::from_str(json).unwrap(), host)
+        };
+        act(&mut panel, &mut host, r#"{"action":"add-word","word":" Varde  Labs "}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-word","word":"Corvus"}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-replacement","heard":"corvis","write":"Corvus"}"#);
+        act(&mut panel, &mut host, r#"{"action":"remove-word","word":"Corvus"}"#);
+        let view = panel.view(&host).dictation;
+        assert_eq!(view.words, ["Varde Labs"]);
+        assert_eq!(
+            view.replacements,
+            [ReplacementView { heard: "corvis".into(), write: "Corvus".into() }]
+        );
+        assert_eq!(view.error, None);
+        act(&mut panel, &mut host, r#"{"action":"remove-replacement","heard":"corvis"}"#);
+        assert!(panel.view(&host).dictation.replacements.is_empty());
+        assert_eq!(
+            act(&mut panel, &mut host, r#"{"action":"edit-dictionary"}"#),
+            Effect::EditDictionary(dir.0.join("dictionary.json"))
+        );
+    }
+
+    #[test]
+    fn a_broken_dictionary_is_shown_and_never_overwritten() {
+        let dir = TempDir::new("dictionary-broken");
+        let mut host = fake(&dir);
+        let path = dir.0.join("dictionary.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let mut panel = Panel::default();
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+        let view = panel.view(&host).dictation;
+        assert!(view.words.is_empty());
+        assert!(view.error.is_some_and(|e| e.contains("isn't a valid dictionary")));
+        // Fixed outside Scrawl: no stale message is left behind.
+        assert_eq!(view.save_error, None);
+        std::fs::write(&path, r#"{"words": ["Vega"]}"#).unwrap();
+        let view = panel.view(&host).dictation;
+        assert_eq!((view.error, view.save_error), (None, None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dictionary_that_cant_be_saved_says_so_in_the_pane() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("dictionary-readonly");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        let view = panel.view(&host).dictation;
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(view.save_error.is_some_and(|e| e.starts_with("Couldn't save the dictionary")));
+        // Only a broken file locks the editor; a failed save can be retried.
+        assert_eq!(view.error, None);
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        assert_eq!(panel.view(&host).dictation.save_error, None);
+        assert_eq!(panel.view(&host).dictation.words, ["Corvus"]);
+    }
+
+    #[test]
+    fn dictation_switches_are_saved_and_a_bad_chord_is_refused() {
+        let dir = TempDir::new("dictation-keys");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        let set = |panel: &mut Panel, host: &mut Fake, key: &str, value: serde_json::Value| {
+            panel.on(Action::Set { key: key.into(), value }, host)
+        };
+        set(&mut panel, &mut host, "dictation", true.into());
+        set(&mut panel, &mut host, "removeFillers", false.into());
+        set(&mut panel, &mut host, "dictationShortcut", "⌥⌘".into());
+        set(&mut panel, &mut host, "dictationShortcut", "⌥".into());
+        let view = panel.view(&host).dictation;
+        assert!(view.on);
+        assert!(!view.remove_fillers);
+        assert_eq!(view.shortcut, "⌥⌘");
     }
 
     #[test]

@@ -26,7 +26,7 @@ Rows for draggable lists (`Permission::draggable`: Screen Recording, Accessibili
 
 ## Settings (`src/settings.rs`, `helper/Settings.swift`)
 
-The onboarding pattern again. `scrawl-helper settings` draws the `View` it's sent (General, Recording, Storage, Permissions, Agents, About; ⌘, or the menu's **Settings…**, and **Open Settings** on onboarding's last screen) and reports actions as JSON lines; `Panel` decides and writes `~/.config/scrawl/config.json` through `handoff::set_config_value_in` (other keys and `0600` kept).
+The onboarding pattern again. `scrawl-helper settings` draws the `View` it's sent (General, Recording, Dictation, Storage, Permissions, Agents, About; ⌘, or the menu's **Settings…**, and **Open Settings** on onboarding's last screen) and reports actions as JSON lines; `Panel` decides and writes `~/.config/scrawl/config.json` through `handoff::set_config_value_in` (other keys and `0600` kept).
 
 Both shortcuts (`ShortcutKind::Record` ⌥⇧S, `Paste` ⌥⇧V) live under `"shortcuts"` (Carbon `keyCode`/`modifiers`/`label`; absent is the default; 0.3.x's file under Application Support is moved across once). Clicking a keycap row sends `record-shortcut`: Rust pauses every Scrawl hotkey (`capture::pause_shortcuts`: Carbon unregistered, `emit_*` muted) so the current combo reaches the recorder, then `settings::validate` turns down combos without ⌘/⌥/⌃ (function keys excepted), ⌘ + one key, macOS's own (a static list plus the helper's enabled `CopySymbolicHotKeys`) and the other shortcut; `capture::set_shortcuts` registers both and puts the old ones back if `RegisterEventHotKey` refuses. Only a default answers to its aliases (⌃/⌘ added, ⌃⌥⌘, the ANSI key); a custom combo matches exactly in Carbon and the key event tap.
 
