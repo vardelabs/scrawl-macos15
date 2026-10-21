@@ -167,7 +167,10 @@ fn rasterize_text(
     ctx.set_should_smooth_fonts(false);
     ctx.set_rgb_fill_color(1.0, 1.0, 1.0, 1.0);
     ctx.set_text_drawing_mode(CGTextDrawingMode::CGTextFill);
-    ctx.set_text_position(pad_px, pad_px + descent);
+    // Capitals centred in the sprite, so text centred in a chip lines up with icons and other
+    // labels; centring the line box (ascent + descent) leaves it half a point low.
+    let baseline = ((h_px as f64 - font.cap_height()) * 0.5).round();
+    ctx.set_text_position(pad_px, baseline);
     line.draw(&ctx);
     ctx.flush();
 
