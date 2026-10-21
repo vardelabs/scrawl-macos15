@@ -1072,11 +1072,11 @@ pub fn frontmost_app_info() -> Option<(i32, String, Option<String>)> {
     None
 }
 
-/// The ScreenCaptureKit sampler: the recording stream writes `recording.mp4` while candidate
-/// screenshots are taken every `buffer.interval()` (or at once when urgent).
 /// Pausing tears the stream down (`crate::pause`).
 pub const PAUSE_SUPPORTED: bool = true;
 
+/// The ScreenCaptureKit sampler: the recording stream writes `recording.mp4` while candidate
+/// screenshots are taken every `buffer.interval()` (or at once when urgent).
 pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
     let Sampler {
         target: sampler_target,
@@ -1148,7 +1148,10 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                     scrawl_log("The captured window closed while paused");
                     (None, None, None, None, None)
                 } else {
-                    setup_sck_capture(&sampler_target, next, &cur_excluded)
+                    // The prompts left out before the pause stay out.
+                    let mut excluded = cur_excluded.clone();
+                    excluded.extend(&prompts.ids);
+                    setup_sck_capture(&sampler_target, next, &excluded)
                 };
                 // The microphone and the input taps come back now, so active time resumes now
                 // too: the new segment shows the screen a few tens of ms late, never more, where
