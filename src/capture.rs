@@ -125,7 +125,7 @@ pub enum LiveOverlayEvent {
     CaptureShortcut,
     PasteLatestShortcut,
     UndoStroke,
-    /// ⌥⇧P during a screen capture (`set_pause_hotkey_enabled`).
+    /// The pause hotkey during a screen capture (`set_pause_hotkey`).
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     TogglePause,
     /// macOS's Esc hotkey; Windows polls Esc while the switcher is held.
@@ -257,6 +257,13 @@ pub fn modifier_symbols(carbon_modifiers: u32) -> String {
 }
 
 /// A shortcut as this platform writes it: `⌥⇧S` on macOS, `Alt+Shift+S` on Windows.
+/// Pause sits beside record, one hand, no reach: A with the record shortcut's own modifiers
+/// (⌥⇧A for the default ⌥⇧S). `None` when that would be the record shortcut itself or a bare key.
+pub fn pause_combo(record: &ShortcutConfig, a_code: u32) -> Option<(u32, u32)> {
+    let mods = record.carbon_modifiers;
+    (mods != 0 && record.key_code != a_code).then_some((a_code, mods))
+}
+
 pub fn shortcut_label(carbon_modifiers: u32, key: &str) -> String {
     let held = |bit: u32| carbon_modifiers & bit != 0;
     if cfg!(target_os = "windows") {
@@ -1598,6 +1605,38 @@ pub fn write_bundle_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pause_is_a_beside_the_record_key_with_its_modifiers() {
+        let a = 0;
+        let record = ShortcutConfig::default_record();
+        assert_eq!(
+            pause_combo(&record, a),
+            Some((a, CARBON_OPTION_KEY | CARBON_SHIFT_KEY))
+        );
+        let ctrl_shift_s = ShortcutConfig {
+            carbon_modifiers: CARBON_CONTROL_KEY | CARBON_SHIFT_KEY,
+            ..record.clone()
+        };
+        assert_eq!(
+            pause_combo(&ctrl_shift_s, a),
+            Some((a, CARBON_CONTROL_KEY | CARBON_SHIFT_KEY))
+        );
+        let records_on_a = ShortcutConfig {
+            key_code: a,
+            ..record.clone()
+        };
+        assert_eq!(
+            pause_combo(&records_on_a, a),
+            None,
+            "never the record shortcut"
+        );
+        let bare_key = ShortcutConfig {
+            carbon_modifiers: 0,
+            ..record
+        };
+        assert_eq!(pause_combo(&bare_key, a), None);
+    }
 
     #[test]
     fn screen_stop_joins_worker_before_collecting_its_final_media() {

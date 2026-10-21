@@ -16,7 +16,7 @@ The sampler keeps only small candidates (480 px long edge, in a `CandidateBuffer
 
 ## Pausing (`src/pause.rs`)
 
-`⌥⇧P` (a Carbon hotkey registered only while a capture runs, `set_pause_hotkey_enabled`) or the capsule's **Pause** chip pauses a Screen, Window or Area capture; the capsule shows **Paused** with the clock stopped and **Resume** in Pause's place. iPhone captures don't pause (the phone records on its own clock), nor do captures on Windows (Media Foundation writes one movie straight through, `PAUSE_SUPPORTED`).
+A with the record shortcut's modifiers (`⌥⇧A` for the default `⌥⇧S`; `pause_combo`, a Carbon hotkey registered only while a capture runs, `set_pause_hotkey`) or the capsule's **Pause** chip pauses a Screen, Window or Area capture; the capsule shows **Paused** with the clock stopped and **Resume** in Pause's place. iPhone captures don't pause (the phone records on its own clock), nor do captures on Windows (Media Foundation writes one movie straight through, `PAUSE_SUPPORTED`).
 
 Everything in the bundle runs on the capture's *active* time (`PauseClock`), which stands still while paused: event and stroke times (`SharedCaptureTelemetry::elapsed_ms`), candidate frames, the window log, the microphone (the callback drops what it hears while paused, so `audio.wav` and the live transcription hold the active audio back to back and word times need no shifting) and the movie. While paused the input taps record nothing (`SharedCaptureTelemetry::capturing`), and a press, drag or ⇧-mark in progress is dropped.
 

@@ -27,7 +27,7 @@ use crate::capture::{
     LiveOverlayEvent, ScreenCaptureSession, SharedCaptureTelemetry, current_mouse_screen,
     discover_target, install_global_hotkeys, list_selectable_windows,
     record_external_frontmost_app, region_target, scrawl_log, selectable_window_at,
-    set_escape_hotkey_enabled, set_pause_hotkey_enabled, shortcut_from_key_and_mods,
+    set_escape_hotkey_enabled, set_pause_hotkey, shortcut_from_key_and_mods,
     start_global_input_tap, update_global_shortcut,
 };
 use crate::helper::PhoneDevice;
@@ -966,7 +966,7 @@ impl ScrawlCoordinator {
         )
     }
 
-    /// Pauses or resumes the screen capture (the pill's Pause and Resume, ⌥⇧P). iPhone captures
+    /// Pauses or resumes the screen capture (the pill's Pause and Resume, `pause_combo`). iPhone captures
     /// record on the phone's own clock and don't pause.
     pub fn toggle_pause(&mut self, cx: &mut Context<Self>) {
         let Some(CaptureSource::Screen { session, .. }) =
@@ -1504,7 +1504,7 @@ impl ScrawlCoordinator {
     /// its target and overlay.
     fn discard_recording(&mut self) -> Option<(TargetInfo, Option<LaserOverlay>)> {
         set_escape_hotkey_enabled(false);
-        set_pause_hotkey_enabled(false);
+        set_pause_hotkey(None);
         let rec = self.active_recording.take()?;
         let _ = self.telemetry.finish_session();
         match rec.source {
@@ -2758,7 +2758,7 @@ impl ScrawlCoordinator {
             Arc::clone(&clock),
         );
         start_metric("sck_start_ms", stage);
-        set_pause_hotkey_enabled(true);
+        set_pause_hotkey(Some(&self.telemetry.shortcuts().0));
         let window_log = (target.mode == CaptureMode::Display).then(|| {
             crate::windows::WindowLogger::start_pausable(
                 target.frame,
@@ -2955,7 +2955,7 @@ impl ScrawlCoordinator {
         self.playback.take();
         scrawl_log("finish_recording invoked");
         set_escape_hotkey_enabled(false);
-        set_pause_hotkey_enabled(false);
+        set_pause_hotkey(None);
         let Some(rec) = self.active_recording.take() else {
             return;
         };

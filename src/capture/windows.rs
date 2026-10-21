@@ -1078,7 +1078,7 @@ fn run_key_poller(telemetry: Arc<SharedCaptureTelemetry>) {
 /// Media Foundation writes one movie straight through, so a capture here can't pause.
 pub const PAUSE_SUPPORTED: bool = false;
 
-pub fn set_pause_hotkey_enabled(_enabled: bool) {}
+pub fn set_pause_hotkey(_record: Option<&ShortcutConfig>) {}
 
 pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
     let offset = Arc::clone(&sampler.video_offset_ms);
