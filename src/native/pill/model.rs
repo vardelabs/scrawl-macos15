@@ -4,8 +4,8 @@
 //! - Springs are parameterized by `spring(duration, bounce)` with `ω = 2π / duration` and
 //!   `ζ = 1 − bounce`, integrated at fixed 480 Hz sub-steps so retargets preserve velocity (`C1`).
 //! - Only the outline's width (`L`, `R`) bounces (`0.50 / 0.28` open, `0.45 / 0.18` close,
-//!   `0.35 / 0.45` tap squish); the top edge `TOP` is anchored so it never bounces upward into the
-//!   top of the screen, and content / opacity / shared travel use `bounce = 0`.
+//!   `0.35 / 0.45` tap squish); the top edge `TOP` is anchored so it never bounces past the panel's
+//!   edge (with `anchor_bottom` the frame then shifts so the bottom edge holds still), and content / opacity / shared travel use `bounce = 0`.
 //! - Room gating (`CLEAR = 2 pt` + `EDGE_BAND = 3 pt` smoothstep), `0.10 s` look-ahead exit cap
 //!   sampled at 240 Hz, `0.10 s` collapse wait, `0.50` growth gate, `0.30 s` content-in fade from
 //!   `8 pt` blur and `0.82` scale with blur on its own critically damped clock at `0.55×` lead,
@@ -22,8 +22,12 @@ pub const PANEL_W: f32 = 640.0;
 pub const PANEL_H: f32 = 84.0;
 pub const PANEL_Y: f32 = 34.0;
 pub const CX: f32 = PANEL_W * 0.5;
-/// Top edge of the resting 40 pt capsule inside the 84 pt panel (vertical centre y = 42, screen y = 76).
+/// Top edge of the resting 40 pt capsule inside the 84 pt panel (vertical centre y = 42).
+/// With `anchor_bottom` the frame shifts so the drawn bottom rests at `ANCHOR_B` instead.
 pub const TOP: f32 = 22.0;
+/// With `PillModel::anchor_bottom`, the capsule's resting bottom edge: it grows upward from here,
+/// as a pill at the bottom of the screen should.
+pub const ANCHOR_B: f32 = TOP + ISLAND_H;
 pub const ISLAND_H: f32 = 40.0;
 pub const ISLAND_RADIUS: f32 = ISLAND_H * 0.5;
 pub const ISLAND_INSET: f32 = 4.0;
@@ -32,7 +36,13 @@ pub const IDLE_W: f32 = 96.0;
 pub const IDLE_H: f32 = 24.0;
 /// The always-on dictation bar (`Pres::DictationIdle`).
 pub const DICTATION_IDLE_W: f32 = 44.0;
-pub const DICTATION_IDLE_H: f32 = 10.0;
+pub const DICTATION_IDLE_H: f32 = 7.0;
+/// The shortest the drawn shell gets, so the dictation bar is drawn at its own height.
+const MIN_SHELL_H: f32 = DICTATION_IDLE_H;
+/// A notice's text starts right after its check's chip-wide slot, and ends this far from the
+/// element's edge, so the space after the text matches the space before the check (13.5 pt from
+/// the capsule's edge on both sides).
+pub const NOTICE_TRAIL: f32 = (CHIP_H - 13.0) * 0.5;
 
 pub const CHIP_H: f32 = ISLAND_H - 2.0 * ISLAND_INSET; // 32.0
 pub const CHIP_RADIUS: f32 = CHIP_H * 0.5; // 16.0
@@ -464,11 +474,13 @@ pub enum Pres {
     },
     /// Dictation is on and idle: a small bar that stays on screen, as Wispr Flow's does.
     DictationIdle,
-    /// One line from dictation: a hint while the idle bar is hovered, or a notice (with a check)
-    /// such as "Copied to the clipboard".
+    /// One line from dictation: a notice (with a check) such as "Copied to the clipboard".
     Message {
         label: String,
-        notice: bool,
+    },
+    /// The idle bar hovered: "Dictate ⌃⌥" and Record.
+    Hint {
+        dictate: String,
     },
 }
 
@@ -509,10 +521,8 @@ impl Pres {
             (Self::Completed { label: a }, Self::Completed { label: b }) => a == b,
             (Self::Dictating { latched: a }, Self::Dictating { latched: b }) => a == b,
             (Self::DictationIdle, Self::DictationIdle) => true,
-            (
-                Self::Message { label: a, notice: na },
-                Self::Message { label: b, notice: nb },
-            ) => a == b && na == nb,
+            (Self::Message { label: a }, Self::Message { label: b }) => a == b,
+            (Self::Hint { dictate: a }, Self::Hint { dictate: b }) => a == b,
             _ => false,
         }
     }
@@ -638,10 +648,20 @@ pub fn layout_of(
         Pres::DictationIdle => {
             return (Layout::centered(DICTATION_IDLE_W, DICTATION_IDLE_H), Vec::new());
         }
-        Pres::Message { notice, .. } => {
-            let lead = if *notice { CHIP_H + 4.0 } else { CHIP_PX };
-            let w = lead + completed_label_w + CHIP_PX;
+        Pres::Message { .. } => {
+            let w = CHIP_H + completed_label_w + NOTICE_TRAIL;
             raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
+        }
+        Pres::Hint { .. } => {
+            let w = 2.0 * CHIP_PX + completed_label_w;
+            raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
+            raw.push((
+                ElemId::Record,
+                Metrics::chip_width(m.record),
+                CHIP_CORE_ROUND,
+                0.0,
+                true,
+            ));
         }
         Pres::Selecting {
             mode,
@@ -851,9 +871,27 @@ pub struct FrameState {
     pub shape: Silhouette,
     pub ghost: Option<Silhouette>,
     pub is_completed: bool,
+    /// The always-on dictation bar, drawn see-through with a light rim, as Wispr Flow's is.
+    pub is_idle: bool,
     pub content_blur: f32,
     pub content_alpha: f32,
     pub elems: Vec<FrameElem>,
+}
+
+impl FrameState {
+    /// Moves the frame down by `dy`, and a Reduce Motion ghost by its own `ghost_dy`: the ghost
+    /// is the previous shape, so its bottom rests at the anchor by its own height.
+    fn shift_down(&mut self, dy: f32, ghost_dy: f32) {
+        self.shape.t += dy;
+        self.shape.b += dy;
+        if let Some(ghost) = self.ghost.as_mut() {
+            ghost.t += ghost_dy;
+            ghost.b += ghost_dy;
+        }
+        for elem in &mut self.elems {
+            elem.rect[1] += dy;
+        }
+    }
 }
 
 pub struct PillModel {
@@ -880,6 +918,8 @@ pub struct PillModel {
     pub pressed: Option<ElemId>,
     pub clock: String,
     pub completed_label_w: f32,
+    /// Keep the bottom edge still and grow upward (the pill sits at the bottom of the screen).
+    pub anchor_bottom: bool,
     pub metrics: Metrics,
 }
 
@@ -910,6 +950,7 @@ impl PillModel {
             pressed: None,
             clock: "0:00".to_owned(),
             completed_label_w: 46.0,
+            anchor_bottom: false,
             metrics,
         }
     }
@@ -1163,6 +1204,7 @@ impl PillModel {
             return false;
         }
         let (lay, _) = layout_of(&self.pres, &self.clock, self.completed_label_w, &self.metrics);
+        let y = y - self.anchor_dy(TOP + (lay.b - TOP).max(MIN_SHELL_H));
         let slop = 6.0;
         x >= lay.l - slop && x <= lay.r + slop && y >= lay.t - slop && y <= lay.b + slop
     }
@@ -1173,6 +1215,7 @@ impl PillModel {
             return None;
         }
         let (_, items) = layout_of(&self.pres, &self.clock, self.completed_label_w, &self.metrics);
+        let y = y - self.anchor_dy(self.silhouette().b);
         for item in &items {
             if !item.id.is_interactive() || !item.enabled {
                 continue;
@@ -1217,7 +1260,7 @@ impl PillModel {
             scale.clamp(ENTRY_EXIT_SCALE * 0.9, 1.05)
         };
         let base_w = (r - l).max(IDLE_W * 0.5);
-        let base_h = (b - TOP).max(IDLE_H * 0.5);
+        let base_h = (b - TOP).max(MIN_SHELL_H);
         let mid = CX + ((l + r) * 0.5 - CX) * k_shell;
         let w = base_w * k_shell;
         let h = base_h * k_shell;
@@ -1604,15 +1647,25 @@ impl PillModel {
             });
         }
 
-        FrameState {
+        let mut frame = FrameState {
             t: self.t,
             shape,
             ghost,
             is_completed: matches!(self.geo_pres, Pres::Completed { .. }),
+            is_idle: matches!(self.geo_pres, Pres::DictationIdle),
             content_blur: max_blur,
             content_alpha: max_alpha,
             elems,
-        }
+        };
+        let ghost_dy = frame.ghost.as_ref().map_or(0.0, |g| self.anchor_dy(g.b));
+        frame.shift_down(self.anchor_dy(frame.shape.b), ghost_dy);
+        frame
+    }
+
+    /// How far a frame drawn hanging from `TOP` moves down so its drawn bottom edge `b` rests at
+    /// `ANCHOR_B`; zero unless `anchor_bottom`.
+    fn anchor_dy(&self, b: f32) -> f32 {
+        if self.anchor_bottom { ANCHOR_B - b } else { 0.0 }
     }
 
     /// True once every spring has settled and no delayed geometry transition is pending.
@@ -1723,6 +1776,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_reduce_motion_ghost_rests_on_the_bottom_anchor_by_its_own_height() {
+        let mut m = PillModel::new(Metrics::default());
+        m.anchor_bottom = true;
+        m.reduced = true;
+        m.set_pres(Pres::DictationIdle);
+        for _ in 0..120 {
+            m.advance(FRAME_DT);
+        }
+        m.set_pres(Pres::Dictating { latched: true });
+        m.advance(FRAME_DT);
+        let ghost = m.frame().ghost.expect("a dissolving ghost");
+        assert!(ghost.height() < ISLAND_H * 0.5);
+        assert!((ghost.b - ANCHOR_B).abs() < 0.5, "ghost bottom {}", ghost.b);
+    }
+
+    #[test]
+    fn a_bottom_anchored_pill_grows_upward_from_one_edge() {
+        let mut m = PillModel::new(Metrics::default());
+        m.anchor_bottom = true;
+        m.set_pres(Pres::DictationIdle);
+        for _ in 0..120 {
+            m.advance(FRAME_DT);
+        }
+        let idle = m.frame();
+        assert!(idle.is_idle);
+        assert!((idle.shape.b - ANCHOR_B).abs() < 0.5, "idle bottom {}", idle.shape.b);
+        assert!(idle.shape.height() < ISLAND_H * 0.5);
+
+        m.set_pres(Pres::Dictating { latched: true });
+        for _ in 0..120 {
+            m.advance(FRAME_DT);
+        }
+        let open = m.frame();
+        assert!(!open.is_idle);
+        assert!((open.shape.b - ANCHOR_B).abs() < 0.5, "open bottom {}", open.shape.b);
+        assert!(open.shape.t < idle.shape.t, "the open pill grows upward");
+        // Hits land where the shifted elements are drawn.
+        let confirm = open.elems.iter().find(|e| e.id == ElemId::Confirm).unwrap();
+        let [x, y, w, h] = confirm.rect;
+        assert_eq!(m.hit_element(x + w / 2.0, y + h / 2.0), Some(ElemId::Confirm));
+        assert!(m.hit_island(x + w / 2.0, y + h / 2.0));
     }
 
     #[test]

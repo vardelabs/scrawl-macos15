@@ -8,7 +8,7 @@ use crate::audio::{AudioRecorder, RecordedAudio};
 use crate::capture::{
     FLAG_ALTERNATE, FLAG_COMMAND, FLAG_CONTROL, FLAG_SHIFT, SharedCaptureTelemetry, scrawl_log,
 };
-use crate::native::pill::{NativePill, PillAction, PillSnapshot, PillStyle, model::Pres};
+use crate::native::pill::{PillAction, model::Pres};
 
 /// Less audio than this is a slip of the chord, not speech.
 const MIN_AUDIO_MS: u64 = 300;
@@ -117,16 +117,15 @@ fn presentation(state: &PillState) -> Pres {
     if let Some(text) = state.notice {
         return Pres::Message {
             label: text.to_owned(),
-            notice: true,
         };
     }
-    if !state.enabled || !state.pill {
+    // With dictation off the bar stays away, so turning dictation on is what adds it to the screen.
+    if !state.pill || !state.enabled {
         return Pres::Hidden;
     }
     if state.hovered {
-        return Pres::Message {
-            label: format!("Click or hold {} to dictate", state.chord),
-            notice: false,
+        return Pres::Hint {
+            dictate: format!("Dictate {}", state.chord),
         };
     }
     Pres::DictationIdle
@@ -160,15 +159,18 @@ pub struct Dictation {
     recorder: Option<AudioRecorder>,
     started: Option<Instant>,
     playback: Option<crate::playback::Guard>,
-    pill: Option<NativePill>,
-    shown: Option<PillSnapshot>,
     /// Transcribing and pasting on a worker; the next dictation waits for it.
     working: Option<flume::Receiver<Outcome>>,
     notice: Option<Notice>,
     /// When the last notice went, for `CLICK_GRACE`.
     notice_gone: Option<Instant>,
-    /// When opening the pill last failed; it is tried again at the settings cadence, not per tick.
-    pill_failed: Option<Instant>,
+}
+
+/// What the shared pill reports to dictation while dictation is what it shows.
+#[derive(Default)]
+pub struct PillInput {
+    pub hovered: bool,
+    pub clicks: Vec<PillAction>,
 }
 
 impl Default for Dictation {
@@ -181,12 +183,9 @@ impl Default for Dictation {
             recorder: None,
             started: None,
             playback: None,
-            pill: None,
-            shown: None,
             working: None,
             notice: None,
             notice_gone: None,
-            pill_failed: None,
         }
     }
 }
@@ -207,41 +206,51 @@ impl Dictation {
         }
     }
 
-    /// `capture_busy`: a capture is recording, selecting or processing, so the chord is ignored
-    /// and the idle bar hides (it would be in the recording).
-    pub fn tick(&mut self, telemetry: &SharedCaptureTelemetry, capture_busy: bool) {
+    /// Advances dictation and returns what the shared pill should show while no capture is on
+    /// it. `capture_busy`: a capture is recording, selecting or processing, so the chord is
+    /// ignored.
+    pub fn tick(
+        &mut self,
+        telemetry: &SharedCaptureTelemetry,
+        capture_busy: bool,
+        pill: PillInput,
+    ) -> Pres {
         if !self.chord.is_active() && self.settings_read.elapsed() >= SETTINGS_EVERY {
             self.settings = Settings::load();
             self.settings_read = Instant::now();
-            self.follow_pointer();
-            self.keep_out_of_captures(telemetry);
         }
         self.take_outcome();
         if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
             self.dismiss_notice();
         }
-        // Clicks are taken every tick, so one made while dictation was off can't start it later.
-        let clicks = self.pill.as_ref().map(NativePill::drain_actions).unwrap_or_default();
+        // Clicks arrive every tick, so one made while dictation was off can't start it later.
+        let clicks = pill.clicks;
         if self.settings.enabled {
             self.listen(telemetry, capture_busy, clicks);
         } else if clicks.iter().any(|c| matches!(c, PillAction::MessageClicked)) {
             // Off, the pill can still show the last dictation's notice; a click dismisses it.
             self.dismiss_notice();
         }
-        let pres = presentation(&PillState {
+        presentation(&PillState {
             working: self.working.is_some(),
             dictating: self.started.map(|_| self.chord.is_latched()),
             capture_busy,
             notice: self.notice.as_ref().map(|n| n.text),
             enabled: self.settings.enabled,
             pill: self.settings.pill,
-            hovered: self.pill.as_ref().is_some_and(NativePill::pointer_on_pill),
+            hovered: pill.hovered,
             chord: &self.settings.label,
-        });
-        if pres != Pres::Hidden {
-            self.ensure_pill(telemetry);
-        }
-        self.show(pres);
+        })
+    }
+
+    /// Listening or transcribing, so the pill should show it now.
+    pub fn is_live(&self) -> bool {
+        self.started.is_some() || self.working.is_some()
+    }
+
+    /// The listening clock (`M:SS`) for the pill.
+    pub fn clock(&self) -> String {
+        crate::model::format_clock(self.started.map_or(0, |at| at.elapsed().as_millis() as u64))
     }
 
     fn dismiss_notice(&mut self) {
@@ -355,10 +364,9 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.as_mut() {
                     recorder.prestart_transcriber();
                 }
-                self.playback = self.playback.take().or_else(crate::playback::Guard::start);
+                self.playback = self.playback.take().or_else(crate::playback::Guard::start_quick);
                 self.started = Some(Instant::now());
                 self.notice = None;
-                self.follow_pointer();
             }
             Action::Finish => self.finish(),
             // Dropping the recorder stops the microphone without encoding what it heard. The drop
@@ -405,63 +413,6 @@ impl Dictation {
         if let Err(error) = spawned {
             scrawl_log(format!("Dictation: could not start transcribing: {error}"));
             self.working = None;
-        }
-    }
-
-    /// Opens the pill the first time it has something to show, and keeps it out of captures.
-    fn ensure_pill(&mut self, telemetry: &SharedCaptureTelemetry) {
-        if self.pill.is_some() || self.pill_failed.is_some_and(|at| at.elapsed() < SETTINGS_EVERY) {
-            return;
-        }
-        match NativePill::open() {
-            Ok(pill) => {
-                self.pill = Some(pill);
-                self.keep_out_of_captures(telemetry);
-                self.follow_pointer();
-            }
-            Err(error) => {
-                scrawl_log(format!("Dictation pill: {error}"));
-                self.pill_failed = Some(Instant::now());
-            }
-        }
-    }
-
-    /// Each recording starts with a fresh exclusion list (`reset_for_session`), so the pill's
-    /// window is put back on it rather than added once.
-    fn keep_out_of_captures(&self, telemetry: &SharedCaptureTelemetry) {
-        let Some(id) = self.pill.as_ref().map(NativePill::window_number) else {
-            return;
-        };
-        let mut excluded = telemetry
-            .excluded_window_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !excluded.contains(&id) {
-            excluded.push(id);
-        }
-    }
-
-    /// Keeps the pill on the display under the pointer, as Wispr's follows the active screen.
-    fn follow_pointer(&self) {
-        if let (Some(pill), Some([x, y])) = (&self.pill, crate::capture::current_mouse_screen()) {
-            pill.place_at_bottom([f64::from(x), f64::from(y)]);
-        }
-    }
-
-    fn show(&mut self, pres: Pres) {
-        let Some(pill) = &self.pill else {
-            return;
-        };
-        let elapsed_ms = self.started.map_or(0, |at| at.elapsed().as_millis() as u64);
-        let snapshot = PillSnapshot {
-            pres,
-            clock: crate::model::format_clock(elapsed_ms),
-            reduced_motion: false,
-            style: PillStyle::current(),
-        };
-        if self.shown.as_ref() != Some(&snapshot) {
-            pill.sync(snapshot.clone());
-            self.shown = Some(snapshot);
         }
     }
 }
@@ -525,13 +476,12 @@ mod tests {
     #[test]
     fn the_pill_shows_the_most_pressing_state() {
         assert_eq!(presentation(&idle()), Pres::DictationIdle);
-        let hint = Pres::Message {
-            label: "Click or hold ⌃⌥ to dictate".into(),
-            notice: false,
+        let hint = Pres::Hint {
+            dictate: "Dictate ⌃⌥".into(),
         };
         assert_eq!(presentation(&PillState { hovered: true, ..idle() }), hint);
         let copied = PillState { notice: Some("Copied to the clipboard"), hovered: true, ..idle() };
-        assert!(matches!(presentation(&copied), Pres::Message { notice: true, .. }));
+        assert!(matches!(presentation(&copied), Pres::Message { .. }));
         let listening = PillState { dictating: Some(true), notice: Some("x"), ..idle() };
         assert_eq!(presentation(&listening), Pres::Dictating { latched: true });
         let both = PillState { working: true, dictating: Some(false), ..idle() };
@@ -543,10 +493,10 @@ mod tests {
         let capture = PillState { capture_busy: true, notice: Some("x"), ..idle() };
         assert_eq!(presentation(&capture), Pres::Hidden);
         assert_eq!(presentation(&PillState { pill: false, ..idle() }), Pres::Hidden);
-        assert_eq!(presentation(&PillState { enabled: false, ..idle() }), Pres::Hidden);
+        assert_eq!(presentation(&PillState { enabled: false, hovered: true, ..idle() }), Pres::Hidden);
         // A notice still shows with the idle pill off: it reports a dictation that just ran.
-        let notice = PillState { pill: false, notice: Some("x"), ..idle() };
-        assert!(matches!(presentation(&notice), Pres::Message { notice: true, .. }));
+        let notice = PillState { pill: false, enabled: false, notice: Some("x"), ..idle() };
+        assert!(matches!(presentation(&notice), Pres::Message { .. }));
     }
 
     #[test]

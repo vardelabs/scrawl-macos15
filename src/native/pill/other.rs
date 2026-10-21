@@ -20,9 +20,6 @@ impl NativePill {
         0
     }
 
-    pub fn place_on(&self, _point: [f64; 2]) {}
-
-    #[allow(dead_code)]
     pub fn place_at_bottom(&self, _point: [f64; 2]) {}
 
     pub fn sync(&self, _snapshot: PillSnapshot) {}
@@ -38,4 +35,8 @@ impl NativePill {
     pub fn pointer_on_pill(&self) -> bool {
         false
     }
+}
+
+pub fn bottom_origin(_point: [f64; 2]) -> Option<[f32; 2]> {
+    None
 }

@@ -6,8 +6,8 @@
 #
 # Writes <out-dir>/runs/<scene>/trace/<scene>.jsonl (one motion-lint test per scene),
 # <out-dir>/<scene>.mov and motion-lint's candidates.json.
-# Scenes default to all of them. Each takes a few seconds; the capsule shows under the menu bar
-# on the main display over a plain backdrop. Nothing is captured, recorded or sent by Scrawl.
+# Scenes default to all of them. Each takes a few seconds; the capsule shows at the bottom centre
+# of the main display over a plain backdrop. Nothing is captured, recorded or sent by Scrawl.
 set -euo pipefail
 
 bin=$1

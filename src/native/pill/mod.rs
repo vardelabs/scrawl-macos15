@@ -1,7 +1,7 @@
 //! Native AppKit `NSPanel` + `CAMetalLayer` + Metal renderer for the Scrawl recording pill.
 //!
-//! Replaces the GPUI `HudPillWindow` with a single fixed-size `NSPanel` (`640 × 84 pt` at `y = 34`
-//! below the menu bar) that never resizes or moves during morphs. Supports two backdrop looks via
+//! Replaces the GPUI `HudPillWindow` with a single fixed-size `NSPanel` (`640 × 84 pt` at the bottom centre
+//! of the active screen, `place_at_bottom`) that never resizes or moves during morphs. Supports two backdrop looks via
 //! `pillStyle: "black" | "glass"`:
 //! - `"black"`: Analytic SDF rounded-rect silhouette + shadow + specular border in Metal.
 //! - `"glass"`: AppKit's `NSGlassEffectView` (inside `NSGlassEffectContainerView`) driven on the
@@ -323,7 +323,8 @@ impl NativePill {
 
         let pipelines = MetalPipelines::new(scale)?;
         let metrics = atlas::measure_metrics();
-        let model = PillModel::new(metrics);
+        let mut model = PillModel::new(metrics);
+        model.anchor_bottom = true;
         let (action_tx, action_rx) = flume::unbounded();
 
         let window = NSPanel::initWithContentRect_styleMask_backing_defer(
@@ -444,29 +445,11 @@ impl NativePill {
         self.window_num
     }
 
-    /// Moves the capsule to the screen holding `point` (global points, top-left origin), below
-    /// that screen's menu bar and notch. A no-op when it's already there.
-    pub fn place_on(&self, point: [f64; 2]) {
-        let screens = crate::screens::current();
-        if let Some(origin) = panel_origin(&screens, Some(point)) {
+    /// Moves the capsule to the bottom centre of the screen holding `point` (`bottom_edge`).
+    pub fn place_at_bottom(&self, point: [f64; 2]) {
+        if let Some(origin) = bottom_origin(point) {
             self.move_to(origin);
         }
-    }
-
-    /// Moves the capsule to the bottom centre of the screen holding `point`, above the Dock, where
-    /// dictation shows it (clear of the capture capsule at the top).
-    pub fn place_at_bottom(&self, point: [f64; 2]) {
-        let screens = crate::screens::current();
-        let Some(screen) = crate::screens::index_at(&screens, point)
-            .or(if screens.is_empty() { None } else { Some(0) })
-            .map(|i| &screens[i])
-        else {
-            return;
-        };
-        let capsule_bottom = f64::from(model::TOP + model::ISLAND_H);
-        let x = screen.frame[0] + ((screen.frame[2] - f64::from(PANEL_W)) / 2.0).round();
-        let y = screen.visible[1] + screen.visible[3] - capsule_bottom - BOTTOM_GAP;
-        self.move_to([x as f32, y as f32]);
     }
 
     fn move_to(&self, origin: [f32; 2]) {
@@ -510,16 +493,21 @@ impl NativePill {
                 st.model.set_clock(&snapshot.clock);
                 st.dirty = true;
             }
-            if let Pres::Completed { ref label } | Pres::Message { ref label, .. } = snapshot.pres {
+            let label = match &snapshot.pres {
+                Pres::Completed { label } | Pres::Message { label } | Pres::Hint { dictate: label } => Some(label),
+                _ => None,
+            };
+            if let Some(label) = label {
                 let sp = st.pipelines.atlas.update_completed(label);
                 st.model.set_completed_label(label.clone(), sp.size_pt[0]);
             }
             if st.model.pres != snapshot.pres {
                 let was_hidden = st.model.is_fully_hidden();
+                let level = window_level(snapshot.under_dock);
                 st.model.set_pres(snapshot.pres);
                 st.dirty = true;
-                if was_hidden {
-                    st.window.setLevel(NSStatusWindowLevel + 5);
+                if was_hidden || st.window.level() != level {
+                    st.window.setLevel(level);
                     st.window.orderFrontRegardless();
                 }
             }
@@ -567,8 +555,49 @@ impl Drop for NativePill {
     }
 }
 
-/// Space between the dictation capsule and the Dock or the screen's bottom edge.
-const BOTTOM_GAP: f64 = 16.0;
+/// Space between the capsule's bottom edge and the screen's.
+const BOTTOM_GAP: f64 = 6.0;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGWindowLevelForKey(key: i32) -> i32;
+}
+
+/// `kCGDockWindowLevelKey`.
+const DOCK_LEVEL_KEY: i32 = 7;
+
+/// Capture states sit above Scrawl's overlays (picker, ink); dictation's sit just under the
+/// Dock, so a Dock that pops up covers the pill instead of the pill covering the Dock.
+fn window_level(under_dock: bool) -> isize {
+    if under_dock {
+        (unsafe { CGWindowLevelForKey(DOCK_LEVEL_KEY) } - 1) as isize
+    } else {
+        NSStatusWindowLevel + 5
+    }
+}
+
+/// A Dock that stays shown at the bottom takes more than this off the visible frame; a hidden
+/// one leaves a few points for its trigger strip.
+const SHOWN_DOCK_MIN: f64 = 12.0;
+
+/// The capsule's bottom edge in global points: above a Dock that stays shown at the bottom, else
+/// near the screen's own bottom edge, where a hidden Dock slides over it as over Wispr's pill.
+fn bottom_edge(screen: &crate::screens::Screen) -> f64 {
+    let frame_bottom = screen.frame[1] + screen.frame[3];
+    let visible_bottom = screen.visible[1] + screen.visible[3];
+    let dock = if frame_bottom - visible_bottom > SHOWN_DOCK_MIN { frame_bottom - visible_bottom } else { 0.0 };
+    frame_bottom - dock - BOTTOM_GAP
+}
+
+/// The panel's top-left (global points) at the bottom centre of the screen holding `point`, else
+/// the primary one.
+pub fn bottom_origin(point: [f64; 2]) -> Option<[f32; 2]> {
+    let screens = crate::screens::current();
+    let screen = &screens[crate::screens::index_at(&screens, point).or(if screens.is_empty() { None } else { Some(0) })?];
+    let x = screen.frame[0] + ((screen.frame[2] - f64::from(PANEL_W)) / 2.0).round();
+    let y = bottom_edge(screen) - f64::from(model::ANCHOR_B);
+    Some([x as f32, y as f32])
+}
 
 /// The panel's top-left (global points) on the screen holding `point`, else the primary one.
 fn panel_origin(screens: &[crate::screens::Screen], point: Option<[f64; 2]>) -> Option<[f32; 2]> {
@@ -822,6 +851,7 @@ impl PillRuntimeState {
                     PillAction::SwitchRecording(SelectionMode::Iphone)
                 }
             }
+            ElemId::Record if matches!(self.model.pres, Pres::Hint { .. }) => PillAction::RecordScreen,
             ElemId::Record => PillAction::RecordSelected,
             ElemId::Undo => PillAction::Undo,
             ElemId::Cancel => PillAction::Cancel,
@@ -940,19 +970,21 @@ impl PillRuntimeState {
             let hw = 30.0_f32;
             let hh = 18.0_f32;
             let hx = hov_elem.rect[0] + (hov_elem.rect[2] - hw) * 0.5;
-            let hy = (frame.shape.b + 4.0).min(PANEL_H - hh - 1.0);
+            // Above the capsule: below it is the screen's bottom edge.
+            let hy = (frame.shape.t - hh - 4.0).max(1.0);
             hint_rect = [hx, hy, hw, hh];
             hint_uv = esc_sp.uv;
         }
 
+        let idle = if frame.is_idle { 1.0 } else { 0.0 };
         let (has_ghost, ghost_rect, ghost_meta) = if let Some(ref g) = frame.ghost {
             (
                 1_u32,
                 [g.l, g.t, g.r, g.b],
-                [g.radius, g.alpha, 0.0, 0.0],
+                [g.radius, g.alpha, 0.0, idle],
             )
         } else {
-            (0_u32, [0.0; 4], [0.0; 4])
+            (0_u32, [0.0; 4], [0.0, 0.0, 0.0, idle])
         };
 
         let tile_uniforms = TileUniforms {
@@ -1336,7 +1368,7 @@ impl PillRuntimeState {
                 );
             }
             ElemId::Message => {
-                let notice = matches!(self.model.pres, Pres::Message { notice: true, .. });
+                let notice = matches!(self.model.pres, Pres::Message { .. });
                 if elem.hover > 0.01 {
                     push_shape(out, [ox, oy, bw, bh], bh * 0.5, [1.0, 1.0, 1.0, 0.06 * elem.hover]);
                 }
@@ -1350,7 +1382,7 @@ impl PillRuntimeState {
                         ic.uv,
                         [0.412, 0.847, 0.624, 1.0],
                     );
-                    text_x = ox + CHIP_H + 4.0;
+                    text_x = ox + CHIP_H;
                 }
                 push_sprite(
                     out,

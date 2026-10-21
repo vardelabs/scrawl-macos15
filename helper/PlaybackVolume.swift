@@ -97,6 +97,7 @@ final class PlaybackRamp {
   var from: [Float]
   var target: [Float]
   var started: Double
+  var duration: Double = 1
   var restoring = false
   var finished = false
   var settled = false
@@ -116,7 +117,7 @@ final class PlaybackRamp {
     return zip(current, accepted).allSatisfy { abs($0 - $1) < 0.002 }
   }
 
-  func retarget(_ factor: Float?, now: Double) {
+  func retarget(_ factor: Float?, now: Double, duration: Double = 1) {
     // During a ramp Bluetooth may still report an earlier channel write. Only
     // infer manual changes after the target has settled, never mid-transition.
     guard !finished, !settled || owned() else { finished = true; return }
@@ -125,12 +126,13 @@ final class PlaybackRamp {
     restoring = factor == nil
     settled = false
     started = now
+    self.duration = duration
   }
 
   func tick(now: Double) {
     if settled { return }
     guard !finished else { return }
-    let t = Float(min(1, max(0, now - started)))
+    let t = Float(min(1, max(0, (now - started) / duration)))
     let eased = t * t * (3 - 2 * t)
     let values = zip(from, target).map { $0 + ($1 - $0) * eased }
     if !output.write(values) {
@@ -149,7 +151,7 @@ final class PlaybackRamp {
       // Keep the final command in flight until every channel acknowledges it.
       // An immediate read can contain one old and one new Bluetooth value.
       let acknowledged = zip(actual, target).allSatisfy { abs($0 - $1) < 0.002 }
-      if acknowledged || now - started >= 1.5 {
+      if acknowledged || now - started >= duration + 0.5 {
         settled = true
         if restoring { finished = true }
       }
@@ -170,14 +172,14 @@ func runPlaybackVolume(arguments: [String]) {
   var disconnected = false
   var pending = ""
   func now() -> Double { ProcessInfo.processInfo.systemUptime }
-  func start(_ percent: Float) {
+  func start(_ percent: Float, seconds: Double = 1) {
     if ramp == nil || ramp!.finished {
       if cachedOutput?.device != CorePlaybackOutput.defaultDevice() {
         cachedOutput = CorePlaybackOutput.current()
       }
       ramp = cachedOutput.flatMap { PlaybackRamp(output: $0, now: now()) }
     }
-    ramp?.retarget(percent / 100, now: now())
+    ramp?.retarget(percent / 100, now: now(), duration: seconds)
   }
   if let raw = arguments.first, let percent = Float(raw), (0...100).contains(percent) { start(percent) }
   if arguments.first == "--server" { emit(["event": "ready"]) }
@@ -199,7 +201,7 @@ func runPlaybackVolume(arguments: [String]) {
             let line = String(pending[..<newline])
             pending.removeSubrange(...newline)
             if line == "stop" { ramp?.retarget(nil, now: now()) }
-            else if line.hasPrefix("start "), let percent = Float(line.dropFirst(6)), (0...100).contains(percent) { start(percent) }
+            else if let (percent, seconds) = parseStart(line) { start(percent, seconds: seconds) }
           }
         }
       }
@@ -210,6 +212,17 @@ func runPlaybackVolume(arguments: [String]) {
     if ramp?.finished == true { ramp = nil }
     if disconnected && ramp == nil { break }
   }
+}
+
+// "start PERCENT [SECONDS]": dictation asks for a short ramp so playback is quiet before the
+// first word; a capture keeps the default one-second fade.
+func parseStart(_ line: String) -> (Float, Double)? {
+  let parts = line.split(separator: " ")
+  guard parts.first == "start", (2...3).contains(parts.count),
+        let percent = Float(parts[1]), (0...100).contains(percent) else { return nil }
+  guard parts.count == 3 else { return (percent, 1) }
+  guard let seconds = Double(parts[2]), (0.01...5).contains(seconds) else { return nil }
+  return (percent, seconds)
 }
 
 // Deterministic tests use synthetic controls, never speaker playback or a mic.
@@ -242,6 +255,15 @@ func testPlaybackRamp() {
     ramp.tick(now: 3)
     precondition(close(output.values, original) && ramp.finished)
   }
+  let quick = Fake([0.6])
+  let fast = PlaybackRamp(output: quick, now: 0)!
+  fast.retarget(0, now: 0, duration: 0.1)
+  fast.tick(now: 0.05)
+  precondition(close(quick.values, [0.3]))
+  fast.tick(now: 0.1)
+  precondition(close(quick.values, [0]) && fast.settled)
+  precondition(parseStart("start 0 0.1")! == (0, 0.1) && parseStart("start 20")! == (20, 1))
+  precondition(parseStart("start 0 0") == nil && parseStart("start 101") == nil && parseStart("start") == nil)
   let output = Fake([0.3, 0.8])
   let ramp = PlaybackRamp(output: output, now: 0)!
   ramp.retarget(0.2, now: 0)

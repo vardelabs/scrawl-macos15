@@ -1,4 +1,4 @@
-//! A warm helper handles one-second ramps without blocking recording or the UI.
+//! A warm helper handles volume ramps (one second, or a quick one for dictation) without blocking recording or the UI.
 //! Pipe EOF also restores volume when the parent exits unexpectedly.
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
@@ -44,11 +44,26 @@ pub fn warm_up() {
     }
 }
 
+/// Dictation's ramp: playback is quiet before the first word, not a second later.
+const QUICK_RAMP_S: f32 = 0.12;
+
 impl Guard {
     pub fn start() -> Option<Self> {
+        Self::start_with(None)
+    }
+
+    pub fn start_quick() -> Option<Self> {
+        Self::start_with(Some(QUICK_RAMP_S))
+    }
+
+    fn start_with(seconds: Option<f32>) -> Option<Self> {
         let config = crate::handoff::load_config_from(&crate::handoff::default_config_path());
         let percent = level(Some(crate::handoff::playback_mode_in(&config)), config.playback_level)?;
-        match command(Some(&format!("start {percent}"))) {
+        let line = match seconds {
+            Some(seconds) => format!("start {percent} {seconds}"),
+            None => format!("start {percent}"),
+        };
+        match command(Some(&line)) {
             Ok(()) => Some(Self),
             Err(error) => {
                 crate::capture::scrawl_log(format!("Playback volume: {error:#}"));
