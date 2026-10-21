@@ -7,8 +7,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # SCRAWL_APP_DIR builds the signed bundle somewhere else (staging for remote installs, see
 # install-app-remote.sh); SCRAWL_NO_LAUNCH=1 skips the ~/bin link and the restart.
 # SCRAWL_PROFILE=release builds optimised binaries, as package-prebuilt.sh does. SCRAWL_NO_SPARKLE=1
-# leaves Sparkle out, which disables Check for Updates. SCRAWL_BUILD_COMMIT stamps the built commit
-# into Info.plist as ScrawlForkCommit.
+# leaves Sparkle out. SCRAWL_BUILD_COMMIT stamps the built commit into Info.plist as
+# ScrawlForkCommit; a clean checkout stamps its HEAD by default.
 PROFILE="${SCRAWL_PROFILE:-debug}"
 case "${PROFILE}" in
   debug | release) ;;
@@ -50,6 +50,11 @@ if [[ -n "${SPARKLE_DIR}" && -d "${SPARKLE_DIR}/Sparkle.framework" ]]; then
   /usr/bin/ditto "${SPARKLE_DIR}/Sparkle.framework" "${FRAMEWORKS_DIR}/Sparkle.framework"
 fi
 
+# Check for Updates compares this commit with the newest release, so an unstamped build would be
+# offered an older release as if it were new.
+if [[ -z "${SCRAWL_BUILD_COMMIT:-}" ]] && git -C "${REPO_DIR}" diff --quiet HEAD 2>/dev/null; then
+  SCRAWL_BUILD_COMMIT="$(git -C "${REPO_DIR}" rev-parse HEAD)"
+fi
 BUILD_COMMIT_ENTRY=""
 if [[ -n "${SCRAWL_BUILD_COMMIT:-}" ]]; then
   BUILD_COMMIT_ENTRY="  <key>ScrawlForkCommit</key>

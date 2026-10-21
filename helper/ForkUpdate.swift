@@ -100,6 +100,8 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
   }
 
   @Published var phase = Phase.checking
+  /// GitHub's compare status of this build against the offered release, when it has one.
+  @Published var relation: String?
   let repo: String
   let current = Bundle.main.object(forInfoDictionaryKey: "ScrawlForkCommit") as? String
   private var download: URLSessionDownloadTask?
@@ -136,6 +138,7 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
         }
       }
       emit(["event": "checked", "tag": release.tag, "compare": compare ?? "unknown"])
+      relation = compare
       phase = ForkVersion.newer(compareStatus: compare) ? .available(release) : .upToDate
     } catch {
       fail(error)
@@ -185,6 +188,7 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
       let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: .main)
       download = session.downloadTask(with: url)
       download?.resume()
+      session.finishTasksAndInvalidate()
     }
   }
 
@@ -290,9 +294,11 @@ struct ForkUpdateView: View {
     case .checking: "Checking for updates…"
     case .upToDate: "Scrawl is up to date."
     case .available(let release):
-      updater.current == nil
-        ? "\(release.name) is available. This build has no release stamp, so it may already be the same."
-        : "\(release.name) is available."
+      switch updater.relation {
+      case "ahead": "\(release.name) is available."
+      case "diverged": "\(release.name) is available. It isn't built on this version, so it may lack changes this build has."
+      default: "\(release.name) is available. This build can't be matched to a release, so it may be older than this build."
+      }
     case .downloading(let fraction): "Downloading… \(Int(fraction * 100))%"
     case .verifying: "Checking the download…"
     case .installing: "Installing…"
