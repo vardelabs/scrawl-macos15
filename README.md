@@ -51,10 +51,11 @@ The installer:
 - copies `Scrawl.app` to `~/Applications`
 - re-signs the app with a "Scrawl Local Signing" identity that it makes in your login keychain,
   so an update keeps the app's permissions
-- installs `uv`, `ffmpeg` and `parakeet-mlx`
-- downloads the Parakeet model (about 1.2 GB)
-- sets the three Parakeet keys in `~/.config/scrawl/config.json`, after it backs the file up to
-  `config.json.bak`
+- installs `uv`, `ffmpeg`, `parakeet-mlx` and `mlx-lm`
+- downloads the Parakeet model (about 1.2 GB) and the dictation formatter's model (about 1.8 GB),
+  which lays long dictations out in paragraphs and lists
+- sets the three Parakeet keys and `formatCommand` in `~/.config/scrawl/config.json`, after it
+  backs the file up to `config.json.bak`
 
 To update, run the installer from a newer release. The release isn't notarized. The installer
 clears the download quarantine, so macOS doesn't block the first launch.

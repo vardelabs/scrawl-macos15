@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs a prebuilt Scrawl fork release (the zip that package-prebuilt.sh makes, where this file
-# is install.sh beside Scrawl.app), with Parakeet transcription, on an Apple silicon Mac running
-# macOS 15 or later. Needs Homebrew, not Xcode.
+# is install.sh beside Scrawl.app), with Parakeet transcription and the dictation formatter, on an
+# Apple silicon Mac running macOS 15 or later. Needs Homebrew, not Xcode.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,6 +9,7 @@ APP_DIR="${HOME}/Applications/Scrawl.app"
 SHARE_DIR="${HOME}/.local/share/scrawl"
 CONFIG="${HOME}/.config/scrawl/config.json"
 PARAKEET_PY="${HOME}/.local/share/uv/tools/parakeet-mlx/bin/python"
+FORMAT_PY="${HOME}/.local/share/uv/tools/mlx-lm/bin/python"
 
 [[ "$(uname -m)" == "arm64" ]] || { echo "Scrawl needs an Apple silicon Mac." >&2; exit 1; }
 major="$(sw_vers -productVersion | cut -d. -f1)"
@@ -44,12 +45,20 @@ trap 'rm -rf "${WORK}"' EXIT
 ffmpeg -loglevel error -f lavfi -i anullsrc=r=16000:cl=mono -t 1 "${WORK}/silence.wav"
 "${PARAKEET_PY}" "${SHARE_DIR}/scrawl-parakeet.py" "${WORK}/silence.wav" >/dev/null
 
-echo "Pointing Scrawl at Parakeet in ${CONFIG}"
+echo "Installing the dictation formatter (mlx-lm)"
+uv tool list 2>/dev/null | grep -q '^mlx-lm ' || uv tool install mlx-lm
+cp -f "${HERE}/scrawl-format.py" "${SHARE_DIR}/scrawl-format.py"
+
+# Its first run downloads the model too (about 1.8 GB); with nothing on stdin it loads and exits.
+echo "Downloading the formatter model (about 1.8 GB) and checking it runs"
+SCRAWL_PRESTART=1 "${FORMAT_PY}" "${SHARE_DIR}/scrawl-format.py" </dev/null >/dev/null
+
+echo "Pointing Scrawl at Parakeet and the formatter in ${CONFIG}"
 mkdir -p "$(dirname "${CONFIG}")"
 [[ -f "${CONFIG}" ]] && cp -f "${CONFIG}" "${CONFIG}.bak"
-"${PARAKEET_PY}" - "${CONFIG}" "${PARAKEET_PY}" "${SHARE_DIR}/scrawl-parakeet.py" <<'PY'
+"${PARAKEET_PY}" - "${CONFIG}" "${PARAKEET_PY}" "${SHARE_DIR}/scrawl-parakeet.py" "${FORMAT_PY}" "${SHARE_DIR}/scrawl-format.py" <<'PY'
 import json, os, sys
-path, python, script = sys.argv[1:4]
+path, python, script, format_python, format_script = sys.argv[1:6]
 config = {}
 if os.path.exists(path):
     with open(path) as f:
@@ -58,6 +67,7 @@ config.update({
     "transcriber": "command",
     "transcribeCommand": [python, script, "{audio}"],
     "transcribePrestart": True,
+    "formatCommand": [format_python, format_script],
 })
 with open(path, "w") as f:
     json.dump(config, f, indent=2)
