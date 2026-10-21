@@ -1026,7 +1026,7 @@ struct SettingsView: View {
           SettingsSwitch(on: d.codeFormatting) { model.set("dictationCodeFormatting", $0) }
         }
       }
-      SettingsCaption(text: "Filenames and names on screen are written as they appear there (“product design dot md” becomes PRODUCT-DESIGN.md), and code goes in backticks except in Mail, Messages, Notes, Pages, Word and Outlook. Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
+      SettingsCaption(text: "Filenames on screen are written as they appear there (“product design dot md” becomes PRODUCT-DESIGN.md), and filenames and snake_case go in backticks except in Mail, Messages, Notes, Pages, Word and Outlook. Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
