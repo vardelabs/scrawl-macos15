@@ -45,8 +45,8 @@ fn sentence_ends(text: &str) -> Vec<usize> {
 }
 
 /// The sentences (numbered from 1) after which the speaker paused for `PARAGRAPH_PAUSE_MS`,
-/// read from the transcriber's word timings. Sentence numbers survive the later passes (the
-/// dictionary, filenames), which change words but not where sentences end.
+/// read from the transcriber's word timings. The later passes (the dictionary, filenames) rarely
+/// move a sentence end; when one does, a break lands a sentence off, which changes layout only.
 pub fn pause_hints(words: &[WordTiming]) -> Vec<usize> {
     let mut sentence = 0;
     let mut hints = Vec::new();
@@ -87,8 +87,9 @@ pub fn break_at_pauses(text: &str, pauses: &[usize]) -> String {
 
 /// Whether `formatted` has the words of `dictated`, in order: compared without the punctuation
 /// layout may change around a word (`,` `.` `:` `;`, double quotes, brackets) or the list markers
-/// ("1.", "-", "•") that start a line. Only a word's first letter may change case, as a sentence
-/// or list item starts; code in backticks must match exactly. Markdown the model adds (`**`, `_`,
+/// ("1.", "-", "•") that start a line. A word's first letter may change case only where a
+/// sentence, line or list item starts on either side, so a name or "I" keeps its capital
+/// elsewhere; code in backticks must match exactly. Markdown the model adds (`**`, `_`,
 /// backticks, a fence) counts as a change. Characters inside a word (`1.5`, `$50`, `We're`,
 /// `C++`), apostrophes, and a word's `?` or `!` must match. A dictated "and" or "or" may be
 /// missing only right before a list's last item.
@@ -98,46 +99,55 @@ pub fn same_words(dictated: &str, formatted: &str) -> bool {
     }
     let spoken = tokens(dictated);
     let mut laid_out = tokens(formatted).into_iter().peekable();
-    for (word, _) in &spoken {
-        if laid_out.peek().is_some_and(|(next, _)| same_word(word, next)) {
+    for said in &spoken {
+        if laid_out.peek().is_some_and(|next| same_word(said, next)) {
             laid_out.next();
-        } else if !(matches!(word.to_lowercase().as_str(), "and" | "or") && laid_out.peek().is_some_and(|(_, last_item)| *last_item)) {
+        } else if !(matches!(said.word.to_lowercase().as_str(), "and" | "or") && laid_out.peek().is_some_and(|next| next.last_item)) {
             return false;
         }
     }
     laid_out.next().is_none()
 }
 
-/// Equal, or equal but for the case of a first letter that isn't code.
-fn same_word(a: &str, b: &str) -> bool {
-    if a == b {
+struct Token {
+    /// The word, trimmed of layout punctuation.
+    word: String,
+    /// It starts a list's last item (an item line not followed by another).
+    last_item: bool,
+    /// It starts a line or follows a sentence end or a colon, where a capital may come or go.
+    starts: bool,
+}
+
+/// Equal, or equal but for the case of a first letter that isn't code, where either starts.
+fn same_word(said: &Token, laid_out: &Token) -> bool {
+    if said.word == laid_out.word {
         return true;
     }
-    let (mut a, mut b) = (a.chars(), b.chars());
+    let (mut a, mut b) = (said.word.chars(), laid_out.word.chars());
     match (a.next(), b.next()) {
-        (Some(x), Some(y)) if x != '`' => x.to_lowercase().eq(y.to_lowercase()) && a.eq(b),
+        (Some(x), Some(y)) if x != '`' && (said.starts || laid_out.starts) => x.to_lowercase().eq(y.to_lowercase()) && a.eq(b),
         _ => false,
     }
 }
 
-/// Each word, trimmed of layout punctuation, and whether it starts a list's last item (an item
-/// line not followed by another).
-fn tokens(text: &str) -> Vec<(String, bool)> {
+fn tokens(text: &str) -> Vec<Token> {
     let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
     let is_item = |line: &str| strip_list_marker(line).len() < line.trim_start().len();
     let mut out = Vec::new();
     for (n, line) in lines.iter().enumerate() {
         let content = strip_list_marker(line);
-        let mut item = is_item(line) && !lines.get(n + 1).is_some_and(|next| is_item(next));
-        for word in content.split_whitespace() {
-            let word = word
+        let mut last_item = is_item(line) && !lines.get(n + 1).is_some_and(|next| is_item(next));
+        let mut starts = true;
+        for raw in content.split_whitespace() {
+            let word = raw
                 .trim_start_matches(|c: char| "\"([“".contains(c))
                 .trim_end_matches(|c: char| ",.;:\")]”…".contains(c))
                 .to_string();
             if !word.is_empty() {
-                out.push((word, item));
-                item = false;
+                out.push(Token { word, last_item, starts });
+                last_item = false;
             }
+            starts = raw.trim_end_matches(CLOSERS).ends_with(['.', '!', '?', ':']);
         }
     }
     out
@@ -186,6 +196,8 @@ mod tests {
         assert!(same_words(LONG, formatted));
         let bullets = "Bring:\n- tents\n* stoves\n• `trail-map.pdf`";
         assert!(same_words("Bring tents, stoves, `trail-map.pdf`.", bullets));
+        assert!(same_words("Buy milk, eggs and bread.", "Buy:\n- Milk\n- Eggs\n- Bread"), "an item may start with a capital");
+        assert!(same_words("Here is the plan. First we pack.", "Here is the plan: first we pack."), "a sentence start may lose it");
         let list = "We need a few things:\n\n1. The venue needs a deposit.\n2. Catering wants a headcount.\n3. Someone has to book the bus.";
         assert!(same_words("We need a few things. The venue needs a deposit, catering wants a headcount, and someone has to book the bus.", list));
     }
@@ -215,6 +227,8 @@ mod tests {
             ("Open `Cargo.toml` now.", "Open `cargo.toml` now."),
             ("Ship it to the US team.", "Ship it to the us team."),
             ("Walk the dogs' leads.", "Walk the dogs leads."),
+            ("Ask Klose today.", "Ask klose today."),
+            ("Then I said no.", "Then i said no."),
             ("The venue needs a deposit.", "The **venue** needs a deposit."),
             ("The venue needs a deposit.", "```\nThe venue needs a deposit.\n```"),
         ] {
