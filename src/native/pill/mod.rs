@@ -445,18 +445,7 @@ impl NativePill {
         self.window_num
     }
 
-    /// Moves the capsule to the screen holding `point` (global points, top-left origin), below
-    /// that screen's menu bar and notch. A no-op when it's already there.
-    pub fn place_on(&self, point: [f64; 2]) {
-        let screens = crate::screens::current();
-        if let Some(origin) = panel_origin(&screens, Some(point)) {
-            self.move_to(origin);
-        }
-    }
-
-    /// Moves the capsule to the bottom centre of the screen holding `point`, a few points above
-    /// its bottom edge whatever the Dock does, as Wispr Flow's pill sits: a hidden Dock slides
-    /// over it rather than pushing it up.
+    /// Moves the capsule to the bottom centre of the screen holding `point` (`bottom_edge`).
     pub fn place_at_bottom(&self, point: [f64; 2]) {
         let screens = crate::screens::current();
         let Some(screen) = crate::screens::index_at(&screens, point)
@@ -466,7 +455,7 @@ impl NativePill {
             return;
         };
         let x = screen.frame[0] + ((screen.frame[2] - f64::from(PANEL_W)) / 2.0).round();
-        let y = screen.frame[1] + screen.frame[3] - f64::from(model::ANCHOR_B) - BOTTOM_GAP;
+        let y = bottom_edge(screen) - f64::from(model::ANCHOR_B);
         self.move_to([x as f32, y as f32]);
     }
 
@@ -522,7 +511,7 @@ impl NativePill {
             }
             if st.model.pres != snapshot.pres {
                 let was_hidden = st.model.is_fully_hidden();
-                let level = window_level(&snapshot.pres);
+                let level = window_level(snapshot.under_dock);
                 st.model.set_pres(snapshot.pres);
                 st.dirty = true;
                 if was_hidden || st.window.level() != level {
@@ -587,13 +576,25 @@ const DOCK_LEVEL_KEY: i32 = 7;
 
 /// Capture states sit above Scrawl's overlays (picker, ink); dictation's sit just under the
 /// Dock, so a Dock that pops up covers the pill instead of the pill covering the Dock.
-fn window_level(pres: &Pres) -> isize {
-    match pres {
-        Pres::DictationIdle | Pres::Message { .. } | Pres::Hint { .. } | Pres::Dictating { .. } => {
-            (unsafe { CGWindowLevelForKey(DOCK_LEVEL_KEY) } - 1) as isize
-        }
-        _ => NSStatusWindowLevel + 5,
+fn window_level(under_dock: bool) -> isize {
+    if under_dock {
+        (unsafe { CGWindowLevelForKey(DOCK_LEVEL_KEY) } - 1) as isize
+    } else {
+        NSStatusWindowLevel + 5
     }
+}
+
+/// A Dock that stays shown at the bottom takes more than this off the visible frame; a hidden
+/// one leaves a few points for its trigger strip.
+const SHOWN_DOCK_MIN: f64 = 12.0;
+
+/// The capsule's bottom edge in global points: above a Dock that stays shown at the bottom, else
+/// near the screen's own bottom edge, where a hidden Dock slides over it as over Wispr's pill.
+fn bottom_edge(screen: &crate::screens::Screen) -> f64 {
+    let frame_bottom = screen.frame[1] + screen.frame[3];
+    let visible_bottom = screen.visible[1] + screen.visible[3];
+    let dock = if frame_bottom - visible_bottom > SHOWN_DOCK_MIN { frame_bottom - visible_bottom } else { 0.0 };
+    frame_bottom - dock - BOTTOM_GAP
 }
 
 /// The panel's top-left (global points) on the screen holding `point`, else the primary one.
@@ -967,7 +968,8 @@ impl PillRuntimeState {
             let hw = 30.0_f32;
             let hh = 18.0_f32;
             let hx = hov_elem.rect[0] + (hov_elem.rect[2] - hw) * 0.5;
-            let hy = (frame.shape.b + 4.0).min(PANEL_H - hh - 1.0);
+            // Above the capsule: below it is the screen's bottom edge.
+            let hy = (frame.shape.t - hh - 4.0).max(1.0);
             hint_rect = [hx, hy, hw, hh];
             hint_uv = esc_sp.uv;
         }

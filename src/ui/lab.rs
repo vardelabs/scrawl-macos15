@@ -142,6 +142,7 @@ fn show_dictation(pill: &crate::native::pill::NativePill, pres: crate::native::p
         clock: "0:03".to_owned(),
         reduced_motion: false,
         style: crate::native::pill::PillStyle::current(),
+        under_dock: true,
     });
 }
 

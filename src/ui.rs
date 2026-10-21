@@ -1880,7 +1880,7 @@ impl ScrawlCoordinator {
         }
         self.display_rect = overlay.screen().map(|v| v as f32);
         if let Some(ref pill) = self.native_pill {
-            pill.place_on(centre);
+            pill.place_at_bottom(centre);
         }
     }
 
@@ -2010,6 +2010,7 @@ impl ScrawlCoordinator {
             clock,
             reduced_motion: self.reduced_motion,
             style: PillStyle::current(),
+            under_dock: false,
         }
     }
 
@@ -2084,6 +2085,7 @@ impl ScrawlCoordinator {
             clock: self.dictation.clock(),
             reduced_motion: self.reduced_motion,
             style: PillStyle::current(),
+            under_dock: true,
         };
         if self.dictation_shown.as_ref() != Some(&snapshot) {
             pill.sync(snapshot.clone());
@@ -2114,7 +2116,8 @@ impl ScrawlCoordinator {
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
             // Dictation's states never show while a capture owns the capsule.
             PillAction::MessageClicked => {}
-            PillAction::RecordScreen => self.record_or_finish(cx),
+            PillAction::RecordScreen if !self.is_recording() => self.record_from_pill(cx),
+            PillAction::RecordScreen => {}
         }
     }
 
@@ -2672,7 +2675,7 @@ impl ScrawlCoordinator {
         let f = target.frame;
         let target_rect = [f.x, f.y, f.width, f.height];
         if let Some(ref pill) = self.native_pill {
-            pill.place_on([f.x + f.width / 2.0, f.y + f.height / 2.0]);
+            pill.place_at_bottom([f.x + f.width / 2.0, f.y + f.height / 2.0]);
         }
         let metal_overlay = self.picker_metal_overlay.take().map(|mut overlay| {
             overlay.move_to(target_rect);
