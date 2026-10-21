@@ -145,7 +145,7 @@ To replay it from scratch:
 
 ```sh
 tccutil reset All dev.kitlangton.scrawl
-jq 'del(.onboarding)' ~/.config/scrawl/config.json > /tmp/c.json && mv /tmp/c.json ~/.config/scrawl/config.json
+C=~/.config/scrawl/config.json; T=$(mktemp "$C.XXXXXX") && jq 'del(.onboarding)' "$C" > "$T" && chmod 600 "$T" && mv "$T" "$C"
 # then quit and reopen Scrawl
 ```
 
