@@ -198,7 +198,7 @@ fn replace_phrase(
 
 /// A near miss of a dictionary word: same first letter, one edit away (two from 10 letters),
 /// and only for words of 7 letters or more. Shorter words have real neighbours one edit away
-/// ("corpus" and "Corvus", "sprawl" and "Scrawl"); those need a replacement. The word with an
+/// ("ferries" and "Ferris", "sprawl" and "Scrawl"); those need a replacement. The word with an
 /// ending added ("parakeets") is that word, not a miss of it.
 fn near(heard: &str, word: &str) -> bool {
     let len = word.chars().count();
@@ -244,10 +244,10 @@ mod tests {
 
     #[test]
     fn replacements_match_whole_words_ignoring_case() {
-        let d = dict(&[], &[("corvis", "Corvus"), ("var de labs", "Varde Labs")]);
+        let d = dict(&[], &[("feris", "Ferris"), ("var de labs", "Varde Labs")]);
         assert_eq!(
-            d.apply("Ask Corvis about var de labs, not corvisx."),
-            "Ask Corvus about Varde Labs, not corvisx."
+            d.apply("Ask Feris about var de labs, not ferisx."),
+            "Ask Ferris about Varde Labs, not ferisx."
         );
     }
 
@@ -268,11 +268,11 @@ mod tests {
 
     #[test]
     fn near_misses_of_long_words_are_fixed_but_short_words_are_left() {
-        let d = dict(&["Parakeet", "Scrawl", "Corvus", "Vega", "Kubernetes"], &[]);
+        let d = dict(&["Parakeet", "Scrawl", "Ferris", "Nova", "Kubernetes"], &[]);
         assert_eq!(d.apply("parakeat"), "Parakeet");
         assert_eq!(d.apply("kubernetis"), "Kubernetes");
         // Real words next to short dictionary words, and a different first letter, stay.
-        assert_eq!(d.apply("corpus sprawl vegan barakeet"), "corpus sprawl vegan barakeet");
+        assert_eq!(d.apply("ferries sprawl novas barakeet"), "ferries sprawl novas barakeet");
         assert_eq!(d.apply("two parakeets, scrawled"), "two parakeets, scrawled");
     }
 
@@ -293,12 +293,12 @@ mod tests {
         d.remove_word("Varde Labs");
         assert!(d.words.is_empty());
 
-        assert!(d.add_replacement("corvis", "Corvus"));
-        assert!(d.add_replacement("Corvis", "Corvus!"));
+        assert!(d.add_replacement("feris", "Ferris"));
+        assert!(d.add_replacement("Feris", "Ferris!"));
         assert!(!d.add_replacement("heard", " "));
         assert_eq!(d.replacements.len(), 1);
-        assert_eq!(d.apply("corvis"), "Corvus!");
-        d.remove_replacement("Corvis");
+        assert_eq!(d.apply("feris"), "Ferris!");
+        d.remove_replacement("Feris");
         assert!(d.replacements.is_empty());
     }
 
@@ -314,13 +314,13 @@ mod tests {
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
 
-        std::fs::write(&path, r#"{"words": ["Corvus"], "learned": {"corvis": 1}}"#).unwrap();
+        std::fs::write(&path, r#"{"words": ["Ferris"], "learned": {"feris": 1}}"#).unwrap();
         let mut d = Dictionary::load_from(&path).unwrap();
-        d.add_word("Vega");
+        d.add_word("Nova");
         d.save_to(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["words"], serde_json::json!(["Corvus", "Vega"]));
-        assert_eq!(saved["learned"], serde_json::json!({"corvis": 1}));
+        assert_eq!(saved["words"], serde_json::json!(["Ferris", "Nova"]));
+        assert_eq!(saved["learned"], serde_json::json!({"feris": 1}));
 
         #[cfg(unix)]
         {
@@ -328,10 +328,10 @@ mod tests {
             std::fs::rename(&path, &real).unwrap();
             std::os::unix::fs::symlink(&real, &path).unwrap();
             let mut d = Dictionary::load_from(&path).unwrap();
-            d.add_word("North");
+            d.add_word("Atlas");
             d.save_to(&path).unwrap();
             assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
-            assert_eq!(Dictionary::load_from(&real).unwrap().words, ["Corvus", "Vega", "North"]);
+            assert_eq!(Dictionary::load_from(&real).unwrap().words, ["Ferris", "Nova", "Atlas"]);
             std::fs::remove_file(&path).unwrap();
 
             // A link made before its target: saving creates the target and keeps the link.
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn a_missing_or_partial_file_reads_as_defaults() {
-        let d: Dictionary = serde_json::from_str(r#"{"words": ["Corvus"]}"#).unwrap();
-        assert_eq!(d, dict(&["Corvus"], &[]));
+        let d: Dictionary = serde_json::from_str(r#"{"words": ["Ferris"]}"#).unwrap();
+        assert_eq!(d, dict(&["Ferris"], &[]));
     }
 }

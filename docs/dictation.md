@@ -35,19 +35,19 @@ Dictation's states, its Processing included, sit one window level under the Dock
 
 ```json
 {
-  "words": ["Corvus", "Varde Labs", "Parakeet"],
-  "replacements": { "corvis": "Corvus", "var de labs": "Varde Labs" }
+  "words": ["Ferris", "Varde Labs", "Parakeet"],
+  "replacements": { "feris": "Ferris", "var de labs": "Varde Labs" }
 }
 ```
 
 - `replacements` match whole words, ignoring case, longest first.
-- `words` fix casing and spacing (`varde labs`, `vardelabs` → `Varde Labs`) and near misses of words of 7 letters or more (one edit, two from 10 letters, same first letter). Shorter words have real neighbours (`corpus` and `Corvus`), so they need a replacement.
+- `words` fix casing and spacing (`varde labs`, `vardelabs` → `Varde Labs`) and near misses of words of 7 letters or more (one edit, two from 10 letters, same first letter). Shorter words have real neighbours (`ferries` and `Ferris`), so they need a replacement.
 
 Parakeet takes no vocabulary prompt, so the dictionary corrects after transcription.
 
 ## Filenames and code (`src/dictation/context.rs`)
 
-With **Format code and filenames** (`dictationCodeFormatting`, default on), the text goes through three pure steps after the dictionary, so a rule for "design dot md" still sees what was said. Prose is the common case, so every rule needs a spoken "dot" or a written `.` or `_`. Names (deSilva), brand names (iPhone, Node), camelCase, and phrasal verbs that match an identifier on screen ("sign in" beside `signIn`) all stay as spoken.
+With **Format code and filenames** (`dictationCodeFormatting`, default on), the text goes through three pure steps after the dictionary, so a rule for "design dot md" still sees what was said. Prose is the common case, so every rule needs a spoken "dot" or a written `.` or `_`. Names (diFranco), brand names (iPhone, Node), camelCase, and phrasal verbs that match an identifier on screen ("sign in" beside `signIn`) all stay as spoken.
 
 1. `spoken_extensions`: a lower-case spoken "dot" before a known extension joins the word before it, so "design dot MD" becomes "design.md". The name "Dot", "the", "a" or "an" before the "dot", and extensions that are everyday words or letters (`AMBIGUOUS`: go, c, h, sh, env, lock) are left as spoken.
 2. `apply` with screen filenames: when the chord is released, `ax::window_text` walks the focused window's Accessibility tree breadth first, on a thread of its own alongside transcription. It stops at `SCREEN_ELEMENTS` elements or `SCREEN_BUDGET`, and never reads a secure text field. The paste waits for it at most `SCREEN_WAIT` after the chord; an app slow to answer Accessibility gets its text without filenames. `terms` keeps the filenames it finds. A spoken run of up to `MAX_SPAN_WORDS` words that ends in a spoken "dot" and an extension, and equals a screen filename on letters and digits (a possessive "'s" or "s'" dropped from the words before the extension), is written as that filename. So "the product's design dot MD" with `PRODUCT-DESIGN.md` on screen becomes `PRODUCT-DESIGN.md`, while "note text" beside `note.txt` stays.

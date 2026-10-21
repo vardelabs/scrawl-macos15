@@ -1929,17 +1929,17 @@ mod tests {
             panel.on(serde_json::from_str(json).unwrap(), host)
         };
         act(&mut panel, &mut host, r#"{"action":"add-word","word":" Varde  Labs "}"#);
-        act(&mut panel, &mut host, r#"{"action":"add-word","word":"Corvus"}"#);
-        act(&mut panel, &mut host, r#"{"action":"add-replacement","heard":"corvis","write":"Corvus"}"#);
-        act(&mut panel, &mut host, r#"{"action":"remove-word","word":"Corvus"}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-word","word":"Ferris"}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-replacement","heard":"feris","write":"Ferris"}"#);
+        act(&mut panel, &mut host, r#"{"action":"remove-word","word":"Ferris"}"#);
         let view = panel.view(&host).dictation;
         assert_eq!(view.words, ["Varde Labs"]);
         assert_eq!(
             view.replacements,
-            [ReplacementView { heard: "corvis".into(), write: "Corvus".into() }]
+            [ReplacementView { heard: "feris".into(), write: "Ferris".into() }]
         );
         assert_eq!(view.error, None);
-        act(&mut panel, &mut host, r#"{"action":"remove-replacement","heard":"corvis"}"#);
+        act(&mut panel, &mut host, r#"{"action":"remove-replacement","heard":"feris"}"#);
         assert!(panel.view(&host).dictation.replacements.is_empty());
         assert_eq!(
             act(&mut panel, &mut host, r#"{"action":"edit-dictionary"}"#),
@@ -1954,14 +1954,14 @@ mod tests {
         let path = dir.0.join("dictionary.json");
         std::fs::write(&path, "{ not json").unwrap();
         let mut panel = Panel::default();
-        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Ferris"}"#).unwrap(), &mut host);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
         let view = panel.view(&host).dictation;
         assert!(view.words.is_empty());
         assert!(view.error.is_some_and(|e| e.contains("isn't a valid dictionary")));
         // Fixed outside Scrawl: no stale message is left behind.
         assert_eq!(view.save_error, None);
-        std::fs::write(&path, r#"{"words": ["Vega"]}"#).unwrap();
+        std::fs::write(&path, r#"{"words": ["Nova"]}"#).unwrap();
         let view = panel.view(&host).dictation;
         assert_eq!((view.error, view.save_error), (None, None));
     }
@@ -1974,15 +1974,15 @@ mod tests {
         let mut host = fake(&dir);
         let mut panel = Panel::default();
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
-        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Ferris"}"#).unwrap(), &mut host);
         let view = panel.view(&host).dictation;
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(view.save_error.is_some_and(|e| e.starts_with("Couldn't save the dictionary")));
         // Only a broken file locks the editor; a failed save can be retried.
         assert_eq!(view.error, None);
-        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Ferris"}"#).unwrap(), &mut host);
         assert_eq!(panel.view(&host).dictation.save_error, None);
-        assert_eq!(panel.view(&host).dictation.words, ["Corvus"]);
+        assert_eq!(panel.view(&host).dictation.words, ["Ferris"]);
     }
 
     #[test]
