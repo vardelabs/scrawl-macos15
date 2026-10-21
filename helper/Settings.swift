@@ -1041,7 +1041,7 @@ struct SettingsView: View {
           SettingsSwitch(on: d.learn) { model.set("dictationLearn", $0) }
         }
       }
-      SettingsCaption(text: "Filenames on screen are written as they appear there (“product design dot md” becomes PRODUCT-DESIGN.md), and filenames and snake_case go in backticks except in Mail, Messages, Notes, Pages, Word and Outlook. A long dictation is laid out in paragraphs and lists by a local model, once formatCommand is set up (see scripts/scrawl-format.py); its words are never changed. A name you type over pasted text (“close” to “Klose”) is added to Words, marked ✨, and the pill says so. Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
+      SettingsCaption(text: "Names you fix after a paste join Words ✨. Paragraphs and lists need formatCommand set up. Microphone and transcription settings are in Recording.")
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
