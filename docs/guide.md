@@ -823,7 +823,9 @@ live in `~/.config/scrawl/dictionary.json` (**Edit as Text…** opens it). Filen
 files ("design dot MD" → `design.md`), a filename you say that matches one on screen is written as
 it is there, and filenames and `snake_case` go in backticks outside Mail, Messages, Notes, Pages,
 Word and Outlook (`"dictationCodeFormatting": false` turns this off, and Scrawl then reads nothing
-from the screen). When you type a name over text Scrawl just pasted ("close" → "Klose"), Scrawl adds
+from the screen). A long dictation comes out in paragraphs and lists, laid out by a local model
+once `"formatCommand"` points at `scripts/scrawl-format.py` (see the script for setup); its words
+are never changed. When you type a name over text Scrawl just pasted ("close" → "Klose"), Scrawl adds
 it to Words, marked ✨, and the pill says so (`"dictationLearn": false` turns this off):
 
 ```json

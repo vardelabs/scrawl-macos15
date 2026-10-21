@@ -29,6 +29,13 @@ const PROSE_APPS: &[&str] = &[
     "com.microsoft.Word",
     "com.microsoft.Outlook",
 ];
+/// A dictation this long starts the formatter; `format::MIN_WORDS` words take longer to say.
+const FORMAT_PRESTART_AFTER: Duration = Duration::from_secs(5);
+/// How long the paste waits for the formatter once the text is ready: its model has been loading
+/// since the dictation showed, and layout takes longer the more there is.
+const FORMAT_WAIT_BASE: Duration = Duration::from_secs(3);
+const FORMAT_WAIT_PER_WORD: Duration = Duration::from_millis(40);
+const FORMAT_WAIT_MAX: Duration = Duration::from_secs(15);
 /// After a paste, the field is watched this long for the user's corrections, or until focus
 /// leaves it.
 const LEARN_FOR: Duration = Duration::from_secs(60);
@@ -49,6 +56,8 @@ struct Settings {
     pill: bool,
     /// Match filenames on screen and put code in backticks (`dictationCodeFormatting`).
     code: bool,
+    /// The formatter for paragraphs and lists (`dictationFormatting`, `formatCommand`).
+    format: Option<Vec<String>>,
     /// Learn words from the user's edits to pasted text (`dictationLearn`).
     learn: bool,
 }
@@ -77,6 +86,7 @@ impl Settings {
             restore_clipboard: config.restore_clipboard,
             pill: config.pill,
             code: config.code,
+            format: config.format,
             learn: config.learn,
         }
     }
@@ -184,6 +194,10 @@ pub struct Dictation {
     settings: Settings,
     settings_read: Instant,
     recorder: Option<AudioRecorder>,
+    /// The formatter, loading its model while the user talks; dropped (killed) if unused.
+    formatter: Option<super::formatter::Formatter>,
+    /// Whether this dictation already started (or failed to start) its formatter.
+    formatter_started: bool,
     started: Option<Instant>,
     playback: Option<crate::playback::Guard>,
     /// Transcribing and pasting on a worker; the next dictation waits for it.
@@ -212,6 +226,8 @@ impl Default for Dictation {
             settings: Settings::load(),
             settings_read: Instant::now(),
             recorder: None,
+            formatter: None,
+            formatter_started: false,
             started: None,
             playback: None,
             working: None,
@@ -253,6 +269,7 @@ impl Dictation {
             self.settings_read = Instant::now();
         }
         self.take_outcome();
+        self.start_formatter_once_long();
         self.take_learned();
         if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
             self.dismiss_notice();
@@ -356,6 +373,22 @@ impl Dictation {
         }
     }
 
+    /// Starts the formatter once a dictation has run `FORMAT_PRESTART_AFTER`: a shorter one is too
+    /// short to lay out, so it never loads the model, and a long one still overlaps the load with
+    /// talking.
+    fn start_formatter_once_long(&mut self) {
+        let long = self.started.is_some_and(|at| at.elapsed() >= FORMAT_PRESTART_AFTER);
+        if !long || self.formatter_started {
+            return;
+        }
+        self.formatter_started = true;
+        self.formatter = self.settings.format.as_deref().and_then(|command| {
+            super::formatter::Formatter::prestart(command)
+                .inspect_err(|error| scrawl_log(format!("Dictation: {error:#}")))
+                .ok()
+        });
+    }
+
     fn take_outcome(&mut self) {
         let Some(rx) = &self.working else {
             return;
@@ -429,6 +462,8 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.as_mut() {
                     recorder.prestart_transcriber();
                 }
+                self.formatter = None;
+                self.formatter_started = false;
                 self.playback = self.playback.take().or_else(crate::playback::Guard::start_quick);
                 self.started = Some(Instant::now());
                 self.notice = None;
@@ -440,6 +475,7 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.take() {
                     std::thread::spawn(move || drop(recorder));
                 }
+                self.formatter = None;
                 self.stop_listening();
             }
         }
@@ -458,6 +494,7 @@ impl Dictation {
             return;
         };
         let restore = self.settings.restore_clipboard;
+        let formatter = self.formatter.take();
         let learn = self.settings.learn.then(|| self.learned_tx.clone());
         let backticks = self.settings.code && !prose_app();
         // The screen is read alongside transcription, while the target window still has focus,
@@ -479,7 +516,7 @@ impl Dictation {
             .spawn(move || {
                 let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore, screen, backticks, learn)
+                        transcribe_and_paste(&audio, restore, screen, backticks, formatter, learn)
                     }
                     Ok(_) => Outcome::Quiet,
                     Err(error) => {
@@ -507,6 +544,7 @@ fn transcribe_and_paste(
     restore_clipboard: bool,
     screen: Option<(flume::Receiver<Vec<String>>, Instant)>,
     backticks: bool,
+    formatter: Option<super::formatter::Formatter>,
     learn: Option<flume::Sender<Vec<super::learn::Respelling>>>,
 ) -> Outcome {
     let started = Instant::now();
@@ -528,6 +566,9 @@ fn transcribe_and_paste(
         }
         None => text,
     };
+    // Estimated timings spread words across the speech, so their gaps are not pauses.
+    let timed: &[crate::model::WordTiming] = if transcript.estimated { &[] } else { &transcript.words };
+    let text = lay_out(text, timed, formatter);
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,
@@ -671,6 +712,32 @@ fn one_slip(a: &str, b: &str) -> bool {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let differ: Vec<usize> = (0..a.len().min(b.len())).filter(|&i| a[i] != b[i]).collect();
     a.len() == b.len() && differ.len() == 2 && differ[1] == differ[0] + 1 && a[differ[0]] == b[differ[1]] && a[differ[1]] == b[differ[0]]
+}
+
+/// The text in paragraphs and lists from the formatter, when it is long enough to need them and
+/// the formatter kept every word (`format::same_words`); otherwise the text as it was. Only the
+/// outcome is logged, never the text.
+fn lay_out(text: String, words: &[crate::model::WordTiming], formatter: Option<super::formatter::Formatter>) -> String {
+    use super::format;
+    let Some(formatter) = formatter.filter(|_| format::worth_formatting(&text)) else { return text };
+    let count = text.split_whitespace().count() as u32;
+    let wait = (FORMAT_WAIT_BASE + FORMAT_WAIT_PER_WORD * count).min(FORMAT_WAIT_MAX);
+    let started = Instant::now();
+    let pauses = format::pause_hints(words);
+    match formatter.format(&text, &pauses, wait).map(|laid_out| format::break_at_pauses(&laid_out, &pauses)) {
+        Some(laid_out) if format::same_words(&text, &laid_out) => {
+            scrawl_log(format!("Dictation: laid out in {} ms", started.elapsed().as_millis()));
+            laid_out
+        }
+        Some(_) => {
+            scrawl_log("Dictation: the formatter changed words; pasting the text as dictated");
+            text
+        }
+        None => {
+            scrawl_log(format!("Dictation: no layout after {} ms; pasting the text as dictated", started.elapsed().as_millis()));
+            text
+        }
+    }
 }
 
 /// Pastes where a text field has focus and then puts the clipboard back; with nowhere to paste,
