@@ -4,6 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # SCRAWL_APP_DIR builds the signed bundle somewhere else (staging for remote installs, see
 # install-app-remote.sh); SCRAWL_NO_LAUNCH=1 skips the ~/bin link and the restart.
+# SCRAWL_PROFILE=release builds optimised binaries, as package-prebuilt.sh does. SCRAWL_NO_SPARKLE=1
+# leaves Sparkle out, which disables Check for Updates.
+PROFILE="${SCRAWL_PROFILE:-debug}"
 APP_DIR="${SCRAWL_APP_DIR:-${HOME}/Applications/Scrawl.app}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -14,14 +17,21 @@ SPARKLE_PUBLIC_KEY="mIek27lttJe8cIBqVZFhh6reRKjpTx1h9ZY9OKWPtuM="
 
 cd "${REPO_DIR}"
 chmod +x "${REPO_DIR}/scripts/setup-sparkle.sh" "${REPO_DIR}/scripts/release-app.sh" 2>/dev/null || true
-SPARKLE_DIR="$("${REPO_DIR}/scripts/setup-sparkle.sh" 2>/dev/null || true)"
-taskpolicy -c utility cargo build -j 3
+SPARKLE_DIR=""
+if [[ "${SCRAWL_NO_SPARKLE:-0}" != "1" ]]; then
+  SPARKLE_DIR="$("${REPO_DIR}/scripts/setup-sparkle.sh" 2>/dev/null || true)"
+fi
+if [[ "${PROFILE}" == "release" ]]; then
+  taskpolicy -c utility cargo build --release -j 3
+else
+  taskpolicy -c utility cargo build -j 3
+fi
 
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}" "${FRAMEWORKS_DIR}" "${HOME}/bin"
 
 rm -f "${MACOS_DIR}/scrawl" "${MACOS_DIR}/scrawl-helper"
-cp -f "${REPO_DIR}/target/debug/scrawl" "${MACOS_DIR}/scrawl"
-cp -f "${REPO_DIR}/target/debug/scrawl-helper" "${MACOS_DIR}/scrawl-helper"
+cp -f "${REPO_DIR}/target/${PROFILE}/scrawl" "${MACOS_DIR}/scrawl"
+cp -f "${REPO_DIR}/target/${PROFILE}/scrawl-helper" "${MACOS_DIR}/scrawl-helper"
 chmod +x "${MACOS_DIR}/scrawl" "${MACOS_DIR}/scrawl-helper"
 
 if [[ -f "${REPO_DIR}/assets/Scrawl.icns" ]]; then

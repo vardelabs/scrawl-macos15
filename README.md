@@ -33,9 +33,34 @@ so install the fork as below.
 | --- | --- | --- |
 | ![Recording settings](docs/images/fork/settings-recording.png) | ![Dictation settings](docs/images/fork/settings-dictation.png) | ![General settings](docs/images/fork/settings-general.png) |
 
-## Build and install
+## Install a prebuilt release
 
-There are no prebuilt releases of the fork. You need an Apple silicon Mac, Rust, and Xcode with
+You need an Apple silicon Mac on macOS 15 or later and [Homebrew](https://brew.sh). You don't need Xcode.
+Download the `Scrawl-Fork-*.zip` from the
+[latest release](https://github.com/vardelabs/scrawl-macos15/releases/latest), unzip it, and run:
+
+```bash
+bash ~/Downloads/Scrawl-Fork-*/install.sh
+```
+
+The installer:
+
+- copies `Scrawl.app` to `~/Applications`
+- re-signs the app with a "Scrawl Local Signing" identity that it makes in your login keychain,
+  so an update keeps the app's permissions
+- installs `uv`, `ffmpeg` and `parakeet-mlx`
+- downloads the Parakeet model (about 1.2 GB)
+- sets the three Parakeet keys in `~/.config/scrawl/config.json`, after it backs the file up to
+  `config.json.bak`
+
+To update, run the installer from a newer release. The release isn't notarized. The installer
+clears the download quarantine, so macOS doesn't block the first launch.
+
+`scripts/package-prebuilt.sh` builds the release zip.
+
+## Build from source
+
+You need an Apple silicon Mac, Rust, and Xcode with
 the macOS 15 SDK or newer: the build leaves out the macOS 26-only code when the SDK lacks it. The
 fork is tested with Xcode 26.3, which needs its Metal toolchain downloaded once:
 
