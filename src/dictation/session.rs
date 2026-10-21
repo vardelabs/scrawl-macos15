@@ -36,6 +36,12 @@ const FORMAT_PRESTART_AFTER: Duration = Duration::from_secs(5);
 const FORMAT_WAIT_BASE: Duration = Duration::from_secs(3);
 const FORMAT_WAIT_PER_WORD: Duration = Duration::from_millis(40);
 const FORMAT_WAIT_MAX: Duration = Duration::from_secs(15);
+/// After a paste, the field is watched this long for the user's corrections, or until focus
+/// leaves it.
+const LEARN_FOR: Duration = Duration::from_secs(60);
+const LEARN_EVERY: Duration = Duration::from_secs(1);
+/// The paste lands this long after `⌘V`, so the field is read after it.
+const PASTE_SETTLE: Duration = Duration::from_millis(300);
 /// How long a notice ("Copied to the clipboard") stays in the pill.
 const NOTICE_FOR: Duration = Duration::from_millis(2_500);
 /// A click this soon after a notice goes was aimed at the notice, not the hint that replaced it.
@@ -52,6 +58,8 @@ struct Settings {
     code: bool,
     /// The formatter for paragraphs and lists (`dictationFormatting`, `formatCommand`).
     format: Option<Vec<String>>,
+    /// Learn words from the user's edits to pasted text (`dictationLearn`).
+    learn: bool,
 }
 
 impl Settings {
@@ -79,6 +87,7 @@ impl Settings {
             pill: config.pill,
             code: config.code,
             format: config.format,
+            learn: config.learn,
         }
     }
 
@@ -114,7 +123,7 @@ impl Outcome {
 }
 
 struct Notice {
-    text: &'static str,
+    text: String,
     until: Instant,
 }
 
@@ -124,7 +133,7 @@ struct PillState<'a> {
     /// Listening, and whether latched.
     dictating: Option<bool>,
     capture_busy: bool,
-    notice: Option<&'static str>,
+    notice: Option<&'a str>,
     enabled: bool,
     pill: bool,
     hovered: bool,
@@ -196,6 +205,9 @@ pub struct Dictation {
     notice: Option<Notice>,
     /// When the last notice went, for `CLICK_GRACE`.
     notice_gone: Option<Instant>,
+    /// Respellings from the edit watcher, checked and saved on this thread (`take_learned`).
+    learned_tx: flume::Sender<Vec<super::learn::Respelling>>,
+    learned_rx: flume::Receiver<Vec<super::learn::Respelling>>,
 }
 
 /// What the shared pill reports to dictation while dictation is what it shows.
@@ -207,6 +219,7 @@ pub struct PillInput {
 
 impl Default for Dictation {
     fn default() -> Self {
+        let (learned_tx, learned_rx) = flume::unbounded();
         Self {
             chord: Chord::default(),
             clock: Instant::now(),
@@ -220,6 +233,8 @@ impl Default for Dictation {
             working: None,
             notice: None,
             notice_gone: None,
+            learned_tx,
+            learned_rx,
         }
     }
 }
@@ -255,6 +270,7 @@ impl Dictation {
         }
         self.take_outcome();
         self.start_formatter_once_long();
+        self.take_learned();
         if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
             self.dismiss_notice();
         }
@@ -270,7 +286,7 @@ impl Dictation {
             working: self.working.is_some(),
             dictating: self.started.map(|_| self.chord.is_latched()),
             capture_busy,
-            notice: self.notice.as_ref().map(|n| n.text),
+            notice: self.notice.as_ref().map(|n| n.text.as_str()),
             enabled: self.settings.enabled,
             pill: self.settings.pill,
             hovered: pill.hovered,
@@ -384,9 +400,40 @@ impl Dictation {
         };
         self.working = None;
         self.notice = text.map(|text| Notice {
-            text,
+            text: text.to_owned(),
             until: Instant::now() + NOTICE_FOR,
         });
+    }
+
+    /// Keeps the respellings the spell checker doesn't know, adds them to the dictionary, and
+    /// says so in the pill.
+    fn take_learned(&mut self) {
+        let words: Vec<String> = self
+            .learned_rx
+            .try_iter()
+            .flatten()
+            .filter(|(was, now)| self.settings.learn && spell_checker_unknown(now) && !spell_checker_typo(was, now))
+            .map(|(_, now)| now)
+            .take(super::learn::MAX_LEARNED)
+            .collect();
+        if words.is_empty() {
+            return;
+        }
+        let path = crate::dictionary::default_path();
+        let _editing = crate::dictionary::edit_lock();
+        // A dictionary that doesn't parse is left alone, as Settings leaves it.
+        let Ok(mut dictionary) = crate::dictionary::Dictionary::load_from(&path) else { return };
+        let added: Vec<String> = words.into_iter().filter(|w| dictionary.learn_word(w)).collect();
+        if added.is_empty() {
+            return;
+        }
+        match dictionary.save_to(&path) {
+            Ok(()) => scrawl_log(format!("Dictation: learned {} word(s) from an edit", added.len())),
+            Err(error) => return scrawl_log(format!("Dictation: could not save learned words: {error:#}")),
+        }
+        if let Some(text) = learned_notice(&added) {
+            self.notice = Some(Notice { text, until: Instant::now() + NOTICE_FOR });
+        }
     }
 
     fn apply(&mut self, action: Action, capture_busy: bool, key_tap_live: bool) {
@@ -448,6 +495,7 @@ impl Dictation {
         };
         let restore = self.settings.restore_clipboard;
         let formatter = self.formatter.take();
+        let learn = self.settings.learn.then(|| self.learned_tx.clone());
         let backticks = self.settings.code && !prose_app();
         // The screen is read alongside transcription, while the target window still has focus,
         // and only with code formatting on.
@@ -468,7 +516,7 @@ impl Dictation {
             .spawn(move || {
                 let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore, screen, backticks, formatter)
+                        transcribe_and_paste(&audio, restore, screen, backticks, formatter, learn)
                     }
                     Ok(_) => Outcome::Quiet,
                     Err(error) => {
@@ -497,6 +545,7 @@ fn transcribe_and_paste(
     screen: Option<(flume::Receiver<Vec<String>>, Instant)>,
     backticks: bool,
     formatter: Option<super::formatter::Formatter>,
+    learn: Option<flume::Sender<Vec<super::learn::Respelling>>>,
 ) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
@@ -529,7 +578,138 @@ fn transcribe_and_paste(
     if !text.chars().any(char::is_alphanumeric) {
         return Outcome::NoSpeech;
     }
-    deliver(&text, restore_clipboard)
+    let outcome = deliver(&text, restore_clipboard);
+    if let (Outcome::Pasted, Some(learned)) = (&outcome, learn) {
+        watch_edits(text, learned);
+    }
+    outcome
+}
+
+/// "Added Klose to the dictionary", or "Added Klose and Nova to the dictionary".
+fn learned_notice(words: &[String]) -> Option<String> {
+    let (last, rest) = words.split_last()?;
+    let names = if rest.is_empty() { last.clone() } else { format!("{} and {last}", rest.join(", ")) };
+    Some(format!("Added {names} to the dictionary"))
+}
+
+/// A field longer than this (a whole document) is not watched.
+const MAX_FIELD_CHARS: usize = 200_000;
+
+/// Watches the field the text was pasted into and sends the words the user respelled (`learn`)
+/// once focus leaves the field, after `LEARN_FOR`, or when the field empties (a chat message
+/// sent); the UI thread checks them against the spell checker (`take_learned`).
+fn watch_edits(pasted: String, candidates: flume::Sender<Vec<super::learn::Respelling>>) {
+    let spawned = std::thread::Builder::new().name("scrawl-dictation-learn".into()).spawn(move || {
+        std::thread::sleep(PASTE_SETTLE);
+        let read = |field: &crate::ax::FocusedText| field.value(MAX_FIELD_CHARS);
+        let Some(field) = crate::ax::FocusedText::current() else { return };
+        let Some(paste) = read(&field).and_then(|value| super::learn::locate(&value, &pasted)) else { return };
+        let mut settle = super::learn::Settle::default();
+        let started = Instant::now();
+        while started.elapsed() < LEARN_FOR && field.still_focused() {
+            std::thread::sleep(LEARN_EVERY);
+            let value = read(&field);
+            if !settle.read(value.as_deref().and_then(|value| super::learn::edited_span(&paste, value))) {
+                break;
+            }
+        }
+        // Focus moved or time ran out: the last edit gets one more read, a full interval later so
+        // it can't agree with a read a moment before. A window closed at the send reads as gone.
+        std::thread::sleep(LEARN_EVERY);
+        settle.read(read(&field).as_deref().and_then(|value| super::learn::edited_span(&paste, value)));
+        let Some(edited) = settle.settled() else { return };
+        let words = super::learn::learned(&paste.text, &edited);
+        if !words.is_empty() {
+            let _ = candidates.send(words);
+        }
+    });
+    if let Err(error) = spawned {
+        scrawl_log(format!("Dictation: could not watch for edits: {error}"));
+    }
+}
+
+/// The languages a word is checked in: English, which the transcribers write, and the spell
+/// checker's own, so a word only one of them knows isn't taken for a name.
+const SPELL_LANGUAGES: [Option<&str>; 2] = [Some("en"), None];
+
+/// What the spell checker says of `word` in `language` (`None`: its own): whether it knows the
+/// word, and its correction. The language is always explicit, since automatic identification calls
+/// "teh" correct. Main thread only, as AppKit's spell checker asks.
+fn spelling(word: &str, language: Option<&str>) -> (bool, Option<String>) {
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{Encode, Encoding, msg_send};
+    #[repr(C)]
+    struct Range {
+        location: usize,
+        length: usize,
+    }
+    unsafe impl Encode for Range {
+        const ENCODING: Encoding = Encoding::Struct("_NSRange", &[usize::ENCODING, usize::ENCODING]);
+    }
+    const NOT_FOUND: usize = isize::MAX as usize;
+    let Some(class) = AnyClass::get(c"NSSpellChecker") else { return (true, None) };
+    unsafe {
+        let checker: *mut AnyObject = msg_send![class, sharedSpellChecker];
+        if checker.is_null() {
+            return (true, None);
+        }
+        let named = language.map(objc2_foundation::NSString::from_str);
+        let language: *mut AnyObject = match &named {
+            Some(name) => objc2::rc::Retained::as_ptr(name).cast_mut().cast(),
+            None => msg_send![checker, language],
+        };
+        let text = objc2_foundation::NSString::from_str(word);
+        let null = std::ptr::null_mut::<isize>();
+        let miss: Range = msg_send![
+            checker,
+            checkSpellingOfString: &*text,
+            startingAt: 0isize,
+            language: language,
+            wrap: false,
+            inSpellDocumentWithTag: 0isize,
+            wordCount: null
+        ];
+        let whole = Range { location: 0, length: text.length() };
+        let fixed: *mut objc2_foundation::NSString = msg_send![
+            checker,
+            correctionForWordRange: whole,
+            inString: &*text,
+            language: language,
+            inSpellDocumentWithTag: 0isize
+        ];
+        (miss.location == NOT_FOUND, fixed.as_ref().map(|fixed| fixed.to_string()))
+    }
+}
+
+/// Whether a word of `term` is unknown in every `SPELL_LANGUAGES`: what makes a respelling a
+/// name or term (Klose, Pipedrive) and not ordinary editing.
+fn spell_checker_unknown(term: &str) -> bool {
+    term.split_whitespace().any(|word| SPELL_LANGUAGES.iter().all(|&language| !spelling(word, language).0))
+}
+
+/// Whether the spell checker corrects a word of `now` to one a single edit or swapped pair of
+/// letters away ("calender", "recieved"): a typo, not a name. A correction back to what was pasted
+/// is a typo too, unless the user changed its first letter (Klose for "close", `chose_name_over`).
+fn spell_checker_typo(was: &str, now: &str) -> bool {
+    let was = was.to_lowercase();
+    now.split_whitespace().any(|word| {
+        SPELL_LANGUAGES.iter().any(|&language| {
+            spelling(word, language).1.is_some_and(|fixed| {
+                let fixed = fixed.to_lowercase();
+                (fixed != was || !super::learn::chose_name_over(&was, word)) && one_slip(&word.to_lowercase(), &fixed)
+            })
+        })
+    })
+}
+
+/// One edit, or two neighbouring letters swapped.
+fn one_slip(a: &str, b: &str) -> bool {
+    if crate::dictionary::edit_distance(a, b) <= 1 {
+        return true;
+    }
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let differ: Vec<usize> = (0..a.len().min(b.len())).filter(|&i| a[i] != b[i]).collect();
+    a.len() == b.len() && differ.len() == 2 && differ[1] == differ[0] + 1 && a[differ[0]] == b[differ[1]] && a[differ[1]] == b[differ[0]]
 }
 
 /// The text in paragraphs and lists from the formatter, when it is long enough to need them and
@@ -625,5 +805,13 @@ mod tests {
         assert_eq!(Outcome::NoSpeech.notice(), Some("Didn't catch that"));
         assert_eq!(Outcome::Pasted.notice(), None);
         assert_eq!(Outcome::Quiet.notice(), None);
+        assert!(one_slip("calender", "calendar") && one_slip("recieved", "received"));
+        assert!(!one_slip("klose", "klaus"));
+        assert_eq!(learned_notice(&[]), None);
+        assert_eq!(learned_notice(&["Klose".into()]).as_deref(), Some("Added Klose to the dictionary"));
+        assert_eq!(
+            learned_notice(&["Klose".into(), "Nova".into(), "Pell".into()]).as_deref(),
+            Some("Added Klose, Nova and Pell to the dictionary")
+        );
     }
 }

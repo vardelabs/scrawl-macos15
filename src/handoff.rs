@@ -548,6 +548,9 @@ pub struct Config {
     /// The local formatter model's argv, first entry an absolute path (`scripts/scrawl-format.py`).
     #[serde(default)]
     pub format_command: Option<Vec<String>>,
+    /// Adds names and terms the user types over pasted dictation to the dictionary (default on).
+    #[serde(default)]
+    pub dictation_learn: Option<bool>,
 }
 
 /// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
@@ -805,6 +808,7 @@ pub struct DictationConfig {
     pub code: bool,
     /// The formatter to run, when formatting is on and `formatCommand` is usable.
     pub format: Option<Vec<String>>,
+    pub learn: bool,
 }
 
 /// `formatCommand` when it can run: an argv whose first entry is an absolute path, as the app
@@ -824,6 +828,7 @@ pub fn dictation() -> DictationConfig {
         pill: config.dictation_pill.unwrap_or(true),
         code: config.dictation_code_formatting.unwrap_or(true),
         format,
+        learn: config.dictation_learn.unwrap_or(true),
     }
 }
 

@@ -824,10 +824,11 @@ it is there, and filenames and `snake_case` go in backticks outside Mail, Messag
 Word and Outlook (`"dictationCodeFormatting": false` turns this off, and Scrawl then reads nothing
 from the screen). A long dictation comes out in paragraphs and lists, laid out by a local model
 once `"formatCommand"` points at `scripts/scrawl-format.py` (see the script for setup); its words
-are never changed:
+are never changed. When you type a name over text Scrawl just pasted ("close" → "Klose"), Scrawl adds
+it to Words, marked ✨, and the pill says so (`"dictationLearn": false` turns this off):
 
 ```json
-{ "words": ["Corvus", "Varde Labs"], "replacements": { "corvis": "Corvus" } }
+{ "words": ["Ferris", "Varde Labs"], "replacements": { "feris": "Ferris" } }
 ```
 
 Details are in `docs/dictation.md`.

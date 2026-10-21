@@ -7,6 +7,7 @@ pub mod chord;
 pub mod context;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod format;
+pub mod learn;
 
 #[cfg(target_os = "macos")]
 mod formatter;

@@ -19,8 +19,8 @@ so install the fork as below.
   `scripts/scrawl-parakeet.py`. With `"transcribePrestart": true` it starts the model as the
   recording begins, so a transcript is ready about a second after you stop.
 - **Dictation.** Hold `⌃⌥` and talk, and the text is pasted where you type; double tap for
-  hands-free. A dictionary of words and replacements, filler words ("um", "uh") removed, and
-  spoken filenames written as `` `README.md` ``.
+  hands-free. A dictionary of words and replacements, filler words ("um", "uh") removed,
+  spoken filenames written as `` `README.md` ``, and names learned when you correct a paste.
 - **One keyframe per drawing.** Each mark you talk through gets its own screenshot and its own words.
 - **Zoom on window captures.** Keyframes of a large window crop to what you worked on, as
   full-screen captures already did.

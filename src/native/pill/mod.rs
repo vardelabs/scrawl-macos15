@@ -370,7 +370,7 @@ impl NativePill {
         window.setHidesOnDeactivate(false);
         window.setCanHide(false);
         window.setIgnoresMouseEvents(true);
-        window.setLevel(NSStatusWindowLevel + 5);
+        window.setLevel(WINDOW_LEVEL);
         window.setCollectionBehavior(
             NSWindowCollectionBehavior::CanJoinAllSpaces
                 | NSWindowCollectionBehavior::CanJoinAllApplications
@@ -503,11 +503,9 @@ impl NativePill {
             }
             if st.model.pres != snapshot.pres {
                 let was_hidden = st.model.is_fully_hidden();
-                let level = window_level(snapshot.under_dock);
                 st.model.set_pres(snapshot.pres);
                 st.dirty = true;
-                if was_hidden || st.window.level() != level {
-                    st.window.setLevel(level);
+                if was_hidden {
                     st.window.orderFrontRegardless();
                 }
             }
@@ -558,30 +556,17 @@ impl Drop for NativePill {
 /// Space between the capsule's bottom edge and the screen's.
 const BOTTOM_GAP: f64 = 6.0;
 
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGWindowLevelForKey(key: i32) -> i32;
-}
-
-/// `kCGDockWindowLevelKey`.
-const DOCK_LEVEL_KEY: i32 = 7;
-
-/// Capture states sit above Scrawl's overlays (picker, ink); dictation's sit just under the
-/// Dock, so a Dock that pops up covers the pill instead of the pill covering the Dock.
-fn window_level(under_dock: bool) -> isize {
-    if under_dock {
-        (unsafe { CGWindowLevelForKey(DOCK_LEVEL_KEY) } - 1) as isize
-    } else {
-        NSStatusWindowLevel + 5
-    }
-}
+/// Every state sits above the Dock (and the menu bar), so a Dock that pops up never covers the
+/// capsule, and above Scrawl's own overlays (picker, ink); still far below screen savers and
+/// system alerts.
+const WINDOW_LEVEL: isize = NSStatusWindowLevel + 5;
 
 /// A Dock that stays shown at the bottom takes more than this off the visible frame; a hidden
 /// one leaves a few points for its trigger strip.
 const SHOWN_DOCK_MIN: f64 = 12.0;
 
 /// The capsule's bottom edge in global points: above a Dock that stays shown at the bottom, else
-/// near the screen's own bottom edge, where a hidden Dock slides over it as over Wispr's pill.
+/// near the screen's own bottom edge, in front of a hidden Dock when it pops up.
 fn bottom_edge(screen: &crate::screens::Screen) -> f64 {
     let frame_bottom = screen.frame[1] + screen.frame[3];
     let visible_bottom = screen.visible[1] + screen.visible[3];

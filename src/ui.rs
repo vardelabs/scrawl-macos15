@@ -2019,7 +2019,6 @@ impl ScrawlCoordinator {
             clock,
             reduced_motion: self.reduced_motion,
             style: PillStyle::current(),
-            under_dock: false,
         }
     }
 
@@ -2086,7 +2085,6 @@ impl ScrawlCoordinator {
             clock: self.dictation.clock(),
             reduced_motion: self.reduced_motion,
             style: PillStyle::current(),
-            under_dock: true,
         };
         if self.dictation_shown.as_ref() != Some(&snapshot) {
             pill.sync(snapshot.clone());
