@@ -40,6 +40,8 @@ pub enum Scene {
     Cancel,
     /// Open the picker, then dismiss it.
     Dismiss,
+    /// Dictation's own pill: idle bar, hover hint, hands-free, processing, a notice, idle again.
+    Dictation,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +66,7 @@ impl Scene {
             Self::Finish => "finish",
             Self::Cancel => "cancel",
             Self::Dismiss => "dismiss",
+            Self::Dictation => "dictation",
         }
     }
 
@@ -106,8 +109,35 @@ impl Scene {
             ],
             Self::Cancel => vec![(0.0, Step::Tap), (1.2, Step::Cancel)],
             Self::Dismiss => vec![(0.0, Step::HoldOpen), (1.2, Step::Dismiss)],
+            Self::Dictation => Vec::new(),
         }
     }
+}
+
+/// The dictation pill's states at animation seconds, shown on a pill of its own.
+fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
+    use crate::native::pill::model::Pres;
+    let message = |label: &str, notice| Pres::Message {
+        label: label.to_owned(),
+        notice,
+    };
+    vec![
+        (0.0, Pres::DictationIdle),
+        (1.2, message("Click or hold ⌃⌥ to dictate", false)),
+        (2.4, Pres::Dictating { latched: true }),
+        (4.0, Pres::Processing),
+        (4.8, message("Copied to the clipboard", true)),
+        (6.6, Pres::DictationIdle),
+    ]
+}
+
+fn show_dictation(pill: &crate::native::pill::NativePill, pres: crate::native::pill::model::Pres) {
+    pill.sync(crate::native::pill::PillSnapshot {
+        pres,
+        clock: "0:03".to_owned(),
+        reduced_motion: false,
+        style: crate::native::pill::PillStyle::current(),
+    });
 }
 
 pub struct Options {
@@ -208,6 +238,10 @@ pub fn run(options: Options) {
 
         let scene = options.scene;
         let repeat = options.repeat;
+        if scene == Scene::Dictation {
+            run_dictation(repeat, cx);
+            return;
+        }
         cx.spawn(async move |cx| {
             let mut run = 0;
             loop {
@@ -235,6 +269,41 @@ pub fn run(options: Options) {
         })
         .detach();
     });
+}
+
+/// The dictation scene drives a pill of its own, as dictation does, not the capture capsule.
+fn run_dictation(repeat: u32, cx: &mut App) {
+    let pill = match crate::native::pill::NativePill::open() {
+        Ok(pill) => pill,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    cx.spawn(async move |cx| {
+        let mut run = 0;
+        loop {
+            cx.background_executor().timer(real(LEAD_IN_S)).await;
+            let mut at = 0.0;
+            for (when, pres) in dictation_steps() {
+                cx.background_executor().timer(real(when - at)).await;
+                at = when;
+                motion::trace_event(format!("lab:{pres:?}"));
+                let _ = cx.update(|_| show_dictation(&pill, pres));
+            }
+            cx.background_executor().timer(real(TAIL_S)).await;
+            run += 1;
+            if repeat != 0 && run >= repeat {
+                break;
+            }
+        }
+        let _ = cx.update(|cx| {
+            motion::trace_close();
+            cx.quit();
+            std::process::exit(0);
+        });
+    })
+    .detach();
 }
 
 struct Backdrop {

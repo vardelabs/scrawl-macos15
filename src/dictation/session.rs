@@ -14,21 +14,26 @@ use crate::native::pill::{NativePill, PillAction, PillSnapshot, PillStyle, model
 const MIN_AUDIO_MS: u64 = 300;
 /// Settings are read from `config.json` this often, not on every tick.
 const SETTINGS_EVERY: Duration = Duration::from_millis(500);
+/// How long a notice ("Copied to the clipboard") stays in the pill.
+const NOTICE_FOR: Duration = Duration::from_millis(2_500);
 
 struct Settings {
     enabled: bool,
     mask: u64,
+    /// The chord as the hint shows it (`⌃⌥`).
+    label: String,
     restore_clipboard: bool,
+    pill: bool,
 }
 
 impl Settings {
     fn load() -> Self {
-        let (enabled, shortcut, restore_clipboard) = crate::handoff::dictation();
-        let mods = shortcut
-            .as_deref()
-            .and_then(super::parse_shortcut)
-            .or_else(|| super::parse_shortcut(super::DEFAULT_SHORTCUT))
-            .expect("the default dictation chord parses");
+        let config = crate::handoff::dictation();
+        let label = config
+            .shortcut
+            .filter(|chord| super::parse_shortcut(chord).is_some())
+            .unwrap_or_else(|| super::DEFAULT_SHORTCUT.to_owned());
+        let mods = super::parse_shortcut(&label).expect("the chord was just checked");
         let mask = [
             (mods.control, FLAG_CONTROL),
             (mods.option, FLAG_ALTERNATE),
@@ -39,9 +44,11 @@ impl Settings {
         .filter(|(on, _)| *on)
         .fold(0, |mask, (_, flag)| mask | flag);
         Self {
-            enabled,
+            enabled: config.enabled,
             mask,
-            restore_clipboard,
+            label,
+            restore_clipboard: config.restore_clipboard,
+            pill: config.pill,
         }
     }
 
@@ -56,6 +63,21 @@ impl Settings {
     }
 }
 
+/// How a finished dictation ended, for the pill's notice.
+enum Outcome {
+    Pasted,
+    /// Nowhere to paste: the text is on the clipboard.
+    Copied,
+    NoSpeech,
+    /// Too short to be speech, or it failed (logged): nothing to say.
+    Quiet,
+}
+
+struct Notice {
+    text: &'static str,
+    until: Instant,
+}
+
 pub struct Dictation {
     chord: Chord,
     clock: Instant,
@@ -67,7 +89,8 @@ pub struct Dictation {
     pill: Option<NativePill>,
     shown: Option<PillSnapshot>,
     /// Transcribing and pasting on a worker; the next dictation waits for it.
-    working: Option<flume::Receiver<()>>,
+    working: Option<flume::Receiver<Outcome>>,
+    notice: Option<Notice>,
 }
 
 impl Default for Dictation {
@@ -83,6 +106,7 @@ impl Default for Dictation {
             pill: None,
             shown: None,
             working: None,
+            notice: None,
         }
     }
 }
@@ -103,19 +127,26 @@ impl Dictation {
         }
     }
 
-    /// `capture_busy`: a capture is recording, selecting or processing, so the chord is ignored.
+    /// `capture_busy`: a capture is recording, selecting or processing, so the chord is ignored
+    /// and the idle bar hides (it would be in the recording).
     pub fn tick(&mut self, telemetry: &SharedCaptureTelemetry, capture_busy: bool) {
         if !self.chord.is_active() && self.settings_read.elapsed() >= SETTINGS_EVERY {
             self.settings = Settings::load();
             self.settings_read = Instant::now();
+            self.follow_pointer();
         }
-        if self.working.as_ref().is_some_and(|rx| !rx.is_empty() || rx.is_disconnected()) {
-            self.working = None;
-            self.show(Pres::Hidden);
+        self.take_outcome();
+        if self.settings.enabled {
+            self.listen(telemetry, capture_busy);
         }
-        if !self.settings.enabled {
-            return;
+        let pres = self.presentation(capture_busy);
+        if pres != Pres::Hidden {
+            self.ensure_pill(telemetry);
         }
+        self.show(pres);
+    }
+
+    fn listen(&mut self, telemetry: &SharedCaptureTelemetry, capture_busy: bool) {
         let key_tap_live = telemetry.key_tap_live() && !crate::capture::secure_input_on();
         let now_ms = self.clock.elapsed().as_millis() as u64;
         let mods = self.settings.mods(crate::capture::modifier_flags());
@@ -141,15 +172,74 @@ impl Dictation {
             let action = match pill_action {
                 PillAction::Cancel => self.chord.cancel(),
                 PillAction::Finish => self.chord.confirm(),
+                PillAction::MessageClicked if self.notice.take().is_none() => {
+                    self.start_hands_free(capture_busy, key_tap_live);
+                    Action::None
+                }
                 _ => Action::None,
             };
             self.apply(action, capture_busy, key_tap_live);
         }
-        if self.started.is_some() && self.chord.is_latched() {
-            self.show(Pres::Dictating { latched: true });
-        } else if self.started.is_some() {
-            self.show(Pres::Dictating { latched: false });
+    }
+
+    /// A click on the idle bar's hint: hands-free dictation, as a double tap starts it.
+    fn start_hands_free(&mut self, capture_busy: bool, key_tap_live: bool) {
+        let now_ms = self.clock.elapsed().as_millis() as u64;
+        if self.working.is_some() || !self.chord.latch(now_ms) {
+            return;
         }
+        self.apply(Action::Start, capture_busy, key_tap_live);
+        if self.chord.is_active() {
+            self.apply(Action::Show { latched: true }, capture_busy, key_tap_live);
+        }
+    }
+
+    fn take_outcome(&mut self) {
+        let Some(rx) = &self.working else {
+            return;
+        };
+        let text = match rx.try_recv() {
+            Err(flume::TryRecvError::Empty) => return,
+            Ok(Outcome::Copied) => Some("Copied to the clipboard"),
+            Ok(Outcome::NoSpeech) => Some("Didn't catch that"),
+            Ok(Outcome::Pasted | Outcome::Quiet) | Err(flume::TryRecvError::Disconnected) => None,
+        };
+        self.working = None;
+        self.notice = text.map(|text| Notice {
+            text,
+            until: Instant::now() + NOTICE_FOR,
+        });
+    }
+
+    /// What the pill shows, most pressing first.
+    fn presentation(&self, capture_busy: bool) -> Pres {
+        if self.working.is_some() {
+            return Pres::Processing;
+        }
+        if self.started.is_some() {
+            return Pres::Dictating {
+                latched: self.chord.is_latched(),
+            };
+        }
+        if capture_busy {
+            return Pres::Hidden;
+        }
+        if let Some(notice) = self.notice.as_ref().filter(|n| n.until > Instant::now()) {
+            return Pres::Message {
+                label: notice.text.to_owned(),
+                notice: true,
+            };
+        }
+        if !self.settings.enabled || !self.settings.pill {
+            return Pres::Hidden;
+        }
+        if self.pill.as_ref().is_some_and(NativePill::pointer_on_pill) {
+            return Pres::Message {
+                label: format!("Click or hold {} to dictate", self.settings.label),
+                notice: false,
+            };
+        }
+        Pres::DictationIdle
     }
 
     fn apply(&mut self, action: Action, capture_busy: bool, key_tap_live: bool) {
@@ -180,7 +270,8 @@ impl Dictation {
                 }
                 self.playback = self.playback.take().or_else(crate::playback::Guard::start);
                 self.started = Some(Instant::now());
-                self.place_pill();
+                self.notice = None;
+                self.follow_pointer();
             }
             Action::Finish => self.finish(),
             // Dropping the recorder stops the microphone without encoding what it heard. The drop
@@ -189,55 +280,68 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.take() {
                     std::thread::spawn(move || drop(recorder));
                 }
-                self.stop_listening(Pres::Hidden);
+                self.stop_listening();
             }
         }
     }
 
-    /// Stops ducking playback and shows `pres` in place of the listening pill.
-    fn stop_listening(&mut self, pres: Pres) {
+    fn stop_listening(&mut self) {
         self.started = None;
         self.playback = None;
-        self.show(pres);
     }
 
     /// Stopping the recorder joins its worker (which may still be opening the device) and encodes
     /// the WAV, so it happens on the worker with the transcription, not on the UI thread.
     fn finish(&mut self) {
+        self.stop_listening();
         let Some(recorder) = self.recorder.take() else {
-            self.stop_listening(Pres::Hidden);
             return;
         };
-        self.stop_listening(Pres::Processing);
         let restore = self.settings.restore_clipboard;
         let (done, working) = flume::bounded(1);
         self.working = Some(working);
         let spawned = std::thread::Builder::new()
             .name("scrawl-dictation".into())
             .spawn(move || {
-                match recorder.stop() {
+                let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore);
+                        transcribe_and_paste(&audio, restore)
                     }
-                    Ok(_) => {}
-                    Err(error) => scrawl_log(format!("Dictation: {error:#}")),
-                }
-                let _ = done.send(());
+                    Ok(_) => Outcome::Quiet,
+                    Err(error) => {
+                        scrawl_log(format!("Dictation: {error:#}"));
+                        Outcome::Quiet
+                    }
+                };
+                let _ = done.send(outcome);
             });
         if let Err(error) = spawned {
             scrawl_log(format!("Dictation: could not start transcribing: {error}"));
             self.working = None;
-            self.show(Pres::Hidden);
         }
     }
 
-    fn place_pill(&mut self) {
-        if self.pill.is_none() {
-            match NativePill::open() {
-                Ok(pill) => self.pill = Some(pill),
-                Err(error) => scrawl_log(format!("Dictation pill: {error}")),
-            }
+    /// Opens the pill the first time it has something to show, and keeps it out of captures.
+    fn ensure_pill(&mut self, telemetry: &SharedCaptureTelemetry) {
+        if self.pill.is_some() {
+            return;
         }
+        match NativePill::open() {
+            Ok(pill) => {
+                telemetry
+                    .excluded_window_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(pill.window_number());
+                self.pill = Some(pill);
+                self.follow_pointer();
+            }
+            Err(error) => scrawl_log(format!("Dictation pill: {error}")),
+        }
+    }
+
+    /// Keeps the pill on the display under the pointer, as Wispr's follows the active screen.
+    fn follow_pointer(&self) {
         if let (Some(pill), Some([x, y])) = (&self.pill, crate::capture::current_mouse_screen()) {
             pill.place_at_bottom([f64::from(x), f64::from(y)]);
         }
@@ -261,12 +365,12 @@ impl Dictation {
     }
 }
 
-fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) {
+fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
     if let Err(error) = std::fs::write(&wav, &audio.wav_bytes) {
         scrawl_log(format!("Dictation: could not write {}: {error}", wav.display()));
-        return;
+        return Outcome::Quiet;
     }
     let transcript = crate::transcribe::transcribe(Some(&wav), Some(audio));
     let _ = std::fs::remove_file(&wav);
@@ -280,9 +384,22 @@ fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) {
     ));
     // Silence can come back as a lone full stop.
     if !text.chars().any(char::is_alphanumeric) {
-        return;
+        return Outcome::NoSpeech;
     }
-    if let Err(error) = crate::handoff::paste_text(&text, restore_clipboard) {
+    deliver(&text, restore_clipboard)
+}
+
+/// Pastes where a text field has focus and then puts the clipboard back; with nowhere to paste,
+/// the text stays on the clipboard to paste by hand. An app that doesn't say gets the paste and
+/// keeps the text on the clipboard too, so nothing is lost.
+fn deliver(text: &str, restore_clipboard: bool) -> Outcome {
+    let delivered = match crate::ax::focused_takes_text() {
+        Some(true) => crate::handoff::paste_text(text, restore_clipboard).map(|()| Outcome::Pasted),
+        Some(false) => crate::handoff::copy_string_to_clipboard(text).map(|()| Outcome::Copied),
+        None => crate::handoff::paste_text(text, false).map(|()| Outcome::Pasted),
+    };
+    delivered.unwrap_or_else(|error| {
         scrawl_log(format!("Dictation: paste failed: {error:#}"));
-    }
+        Outcome::Quiet
+    })
 }

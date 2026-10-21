@@ -30,6 +30,9 @@ pub const ISLAND_INSET: f32 = 4.0;
 pub const ISLAND_OPEN_FROM_W: f32 = 120.0;
 pub const IDLE_W: f32 = 96.0;
 pub const IDLE_H: f32 = 24.0;
+/// The always-on dictation bar (`Pres::DictationIdle`).
+pub const DICTATION_IDLE_W: f32 = 44.0;
+pub const DICTATION_IDLE_H: f32 = 10.0;
 
 pub const CHIP_H: f32 = ISLAND_H - 2.0 * ISLAND_INSET; // 32.0
 pub const CHIP_RADIUS: f32 = CHIP_H * 0.5; // 16.0
@@ -333,10 +336,11 @@ pub enum ElemId {
     Paste = 14,
     Inspect = 15,
     Confirm = 16,
+    Message = 17,
 }
 
 impl ElemId {
-    pub const COUNT: usize = 17;
+    pub const COUNT: usize = 18;
     pub const ALL: [ElemId; Self::COUNT] = [
         Self::Lead,
         Self::DividerLead,
@@ -355,6 +359,7 @@ impl ElemId {
         Self::Paste,
         Self::Inspect,
         Self::Confirm,
+        Self::Message,
     ];
 
     pub const fn trace_key(self) -> &'static str {
@@ -376,6 +381,7 @@ impl ElemId {
             Self::Paste => "paste",
             Self::Inspect => "inspect",
             Self::Confirm => "confirm",
+            Self::Message => "message",
         }
     }
 
@@ -422,6 +428,7 @@ impl ElemId {
             Self::Paste => "Paste",
             Self::Inspect => "Inspect",
             Self::Confirm => "Paste dictation",
+            Self::Message => "Dictation",
         }
     }
 
@@ -454,6 +461,14 @@ pub enum Pres {
     /// Voice-only dictation (`dictation`): the dot and clock, with ✕ and ✓ when latched.
     Dictating {
         latched: bool,
+    },
+    /// Dictation is on and idle: a small bar that stays on screen, as Wispr Flow's does.
+    DictationIdle,
+    /// One line from dictation: a hint while the idle bar is hovered, or a notice (with a check)
+    /// such as "Copied to the clipboard".
+    Message {
+        label: String,
+        notice: bool,
     },
 }
 
@@ -493,6 +508,11 @@ impl Pres {
             }
             (Self::Completed { label: a }, Self::Completed { label: b }) => a == b,
             (Self::Dictating { latched: a }, Self::Dictating { latched: b }) => a == b,
+            (Self::DictationIdle, Self::DictationIdle) => true,
+            (
+                Self::Message { label: a, notice: na },
+                Self::Message { label: b, notice: nb },
+            ) => a == b && na == nb,
             _ => false,
         }
     }
@@ -614,6 +634,14 @@ pub fn layout_of(
     match pres {
         Pres::Hidden => {
             return (Layout::centered(IDLE_W, IDLE_H), Vec::new());
+        }
+        Pres::DictationIdle => {
+            return (Layout::centered(DICTATION_IDLE_W, DICTATION_IDLE_H), Vec::new());
+        }
+        Pres::Message { notice, .. } => {
+            let lead = if *notice { CHIP_H + 4.0 } else { CHIP_PX };
+            let w = lead + completed_label_w + CHIP_PX;
+            raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
         }
         Pres::Selecting {
             mode,

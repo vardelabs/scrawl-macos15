@@ -127,6 +127,7 @@ struct SettingsDictation: Decodable, Equatable {
   var shortcut = "⌃⌥"
   var shortcuts = ["⌃⌥", "⌃⌘", "⌥⌘", "⌃⇧"]
   var restoreClipboard = true
+  var pill = true
   var removeFillers = true
   var words: [String] = []
   var replacements: [SettingsReplacement] = []
@@ -991,7 +992,7 @@ struct SettingsView: View {
   private var dictation: some View {
     let d = state.dictation
     let usage = d.available
-      ? "Hold \(d.shortcut) and talk; let go and the text is pasted where you type. Double tap \(d.shortcut) for hands-free, then press it again or ✓ to paste. Esc cancels."
+      ? "Hold \(d.shortcut) and talk; let go and the text is pasted where you type. Double tap \(d.shortcut), or click the pill, for hands-free, then press it again or ✓ to paste. Esc cancels."
       : "Dictation works on macOS."
     return VStack(spacing: 0) {
       SettingsGroup {
@@ -1004,11 +1005,15 @@ struct SettingsView: View {
             model.set("dictationShortcut", $0)
           }
         }
+        SettingsSeparator()
+        SettingsRow(title: "Always show the pill", enabled: d.available) {
+          SettingsSwitch(on: d.pill, enabled: d.available) { model.set("dictationPill", $0) }
+        }
       }
       SettingsCaption(text: usage)
       SettingsHeader("Pasting")
       SettingsGroup {
-        SettingsRow(title: "Restore the clipboard after pasting") {
+        SettingsRow(title: "Restore the clipboard after a paste") {
           SettingsSwitch(on: d.restoreClipboard) { model.set("dictationRestoreClipboard", $0) }
         }
         SettingsSeparator()
@@ -1016,7 +1021,7 @@ struct SettingsView: View {
           SettingsSwitch(on: d.removeFillers) { model.set("removeFillers", $0) }
         }
       }
-      SettingsCaption(text: "Drops “um” and “uh” from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
+      SettingsCaption(text: "With no text field to paste into, the text stays on the clipboard and the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }

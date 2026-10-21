@@ -2028,6 +2028,8 @@ impl ScrawlCoordinator {
             PillAction::Paste(target) => self.paste_completed_bundle(target, cx),
             PillAction::Inspect => self.inspect_completed_bundle(cx),
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
+            // Only dictation's own pill shows a message.
+            PillAction::MessageClicked => {}
         }
     }
 

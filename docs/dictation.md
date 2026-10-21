@@ -16,11 +16,17 @@ The default chord is `⌃⌥` (`dictationShortcut`, also `⌃⌘`, `⌥⌘` or `
 
 ## The pill
 
-Dictation owns its own `NativePill`, placed at the bottom centre of the display under the pointer, clear of the capture capsule at the top. `Pres::Dictating { latched }` lays out the recording dot and clock, with ✕ and ✓ when latched; transcription shows `Pres::Processing`.
+Dictation owns its own `NativePill`, placed at the bottom centre of the display under the pointer (it follows the pointer between displays), clear of the capture capsule at the top. Like Wispr Flow's, it stays on screen while dictation is on (`dictationPill`, default on):
+
+- `Pres::DictationIdle`: a small bar. Hovered, it becomes `Pres::Message` with the hint "Click or hold ⌃⌥ to dictate"; a click starts hands-free dictation (`Chord::latch`).
+- `Pres::Dictating { latched }`: the dot and clock, with ✕ and ✓ when latched; `Pres::Processing` while it transcribes.
+- A notice, `Pres::Message { notice: true }` with a check, for 2.5 s: "Copied to the clipboard" when there was nowhere to paste, "Didn't catch that" when nothing was heard. Automatic dictionary updates will use the same notice.
+
+The pill hides while a capture records, selects or processes, and its window is excluded from captures. Element tiles are packed by width (`render_frame`), so a message wider than a chip isn't cut off. `scrawl lab pill dictation` plays these states on their own pill.
 
 ## Transcription and paste
 
-`session::transcribe_and_paste` writes the WAV to a temp file and runs `transcribe::transcribe`, the same engines and filler removal as captures (the command transcriber's prestart applies). `dictionary::Dictionary::apply` then fixes words, and `handoff::paste_text` puts the text on the clipboard, posts `⌘V`, and puts the previous clipboard back after `RESTORE_DELAY_MS` (an empty clipboard stays empty) unless something else changed it meanwhile (`dictationRestoreClipboard`, default on). Playback ducks while dictating, as during a capture.
+`session::transcribe_and_paste` writes the WAV to a temp file and runs `transcribe::transcribe`, the same engines and filler removal as captures (the command transcriber's prestart applies). `dictionary::Dictionary::apply` then fixes words, and `session::deliver` asks Accessibility whether the focused element takes text (`ax::focused_takes_text`). If it does, `handoff::paste_text` puts the text on the clipboard, posts `⌘V`, and puts the previous clipboard back after `RESTORE_DELAY_MS` (an empty clipboard stays empty) unless something else changed it meanwhile (`dictationRestoreClipboard`, default on). With no text field focused, nothing is pasted and the text stays on the clipboard, with a notice. An app that doesn't answer gets the paste and keeps the text on the clipboard, so nothing is lost. Playback ducks while dictating, as during a capture.
 
 ## Dictionary (`src/dictionary.rs`)
 
@@ -40,4 +46,4 @@ Parakeet takes no vocabulary prompt, so the dictionary corrects after transcript
 
 ## Settings › Dictation
 
-The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Restore the clipboard after pasting**, **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).
+The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).

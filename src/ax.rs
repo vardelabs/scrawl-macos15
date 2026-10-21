@@ -51,6 +51,23 @@ const LOOKUP_BUDGET: Duration = Duration::from_millis(250);
 /// How long finishing a capture waits for lookups still running.
 const DRAIN_WAIT: Duration = Duration::from_millis(400);
 
+/// Whether the focused element takes typed text: `Some(false)` when nothing is focused or it
+/// isn't a text input, `None` when the app doesn't answer. Blocking; call it off the main thread.
+#[cfg(target_os = "macos")]
+pub fn focused_takes_text() -> Option<bool> {
+    let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+    unsafe { AXUIElementSetMessagingTimeout(system.0, MESSAGE_TIMEOUT_S) };
+    let Some(element) = element_attribute(system.0, "AXFocusedUIElement") else {
+        let app = element_attribute(system.0, "AXFocusedApplication");
+        // An app that answers with no focused element has nowhere to type; one that doesn't
+        // answer at all is unknown.
+        return app.map(|_| false);
+    };
+    let role = string_attribute(element.0, "AXRole").unwrap_or_default();
+    let subrole = string_attribute(element.0, "AXSubrole").unwrap_or_default();
+    Some(is_input(&role, &subrole) || attribute(element.0, "AXSelectedTextRange").is_some())
+}
+
 /// The element under a point.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hit {

@@ -56,6 +56,8 @@ pub enum PillAction {
     Paste(Option<[f32; 2]>),
     Inspect,
     DismissCompleted,
+    /// The dictation pill's hint or notice was clicked.
+    MessageClicked,
 }
 
 /// Coordinator state snapshot synced to `NativePill`.
