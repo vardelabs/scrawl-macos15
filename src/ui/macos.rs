@@ -211,7 +211,7 @@ pub(super) fn start_updates() {
 }
 
 pub(super) fn check_for_updates() {
-    crate::sparkle::check_for_updates();
+    crate::fork_update::check();
 }
 
 pub(super) fn open_overlay(

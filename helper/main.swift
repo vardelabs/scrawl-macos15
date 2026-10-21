@@ -16,6 +16,7 @@
 //   scrawl-helper permission-panel --permission P [--from X,Y,W,H]   drag-to-allow card (PermissionPanel.swift)
 //   scrawl-helper onboarding [--shortcut L] [--render DIR]   the welcome window (Onboarding.swift)
 //   scrawl-helper settings [--pane P] [--render DIR]         the Settings window (Settings.swift)
+//   scrawl-helper fork-update --repo OWNER/NAME [--self-test|--render DIR]  the fork's updater window (ForkUpdate.swift)
 //
 // Every timestamp in the output is integer milliseconds. Scrawl drives the long-running
 // `mirror` command over stdin (`stop`, `cancel`) and reads its events from stdout.
@@ -176,11 +177,13 @@ case "playback-volume":
   runPlaybackVolume(arguments: Array(arguments.dropFirst()))
 case "settings":
   SettingsWindow.run(arguments: arguments)
+case "fork-update":
+  MainActor.assumeIsolated { ForkUpdate.run(arguments: arguments) }
 case "qr":
   guard arguments.count >= 2, let qr = renderQR(arguments[1]) else {
     fail("qr needs a text argument")
   }
   emit(["qr": qr])
 default:
-  fail("usage: scrawl-helper devices|mirror|transcribe|transcribe-stream|speech-model|frames|audio|probe|export|join|shrink|permission-panel|permissions|sck-probe|onboarding|settings|qr …")
+  fail("usage: scrawl-helper devices|mirror|transcribe|transcribe-stream|speech-model|frames|audio|probe|export|join|shrink|permission-panel|permissions|sck-probe|onboarding|settings|fork-update|qr …")
 }

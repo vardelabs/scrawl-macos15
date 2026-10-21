@@ -56,7 +56,11 @@ The installer:
 - sets the three Parakeet keys in `~/.config/scrawl/config.json`, after it backs the file up to
   `config.json.bak`
 
-To update, run the installer from a newer release. The release isn't notarized. The installer
+To update, choose **Check for Updates…** in the menu bar menu or in Settings › About. Scrawl asks
+GitHub for this repository's newest release, shows its notes, and on **Install** downloads the zip,
+checks it against the release's `.sha256`, and runs its installer, which quits and reopens Scrawl.
+The installer's output goes to `~/Library/Logs/Scrawl/fork-update.log`. You can also run the
+installer from a newer release by hand. The release isn't notarized. The installer
 clears the download quarantine, so macOS doesn't block the first launch.
 
 `scripts/package-prebuilt.sh` builds the release zip.

@@ -1558,18 +1558,18 @@ impl Panel {
     }
 }
 
-/// Whether this copy can check for updates: Sparkle in Scrawl.app; on Windows the releases
+/// Whether this copy can check for updates: the fork's updater in Scrawl.app; on Windows the releases
 /// page always opens.
 fn updates_available() -> bool {
     #[cfg(target_os = "macos")]
-    return crate::sparkle::available();
+    return crate::fork_update::available();
     #[cfg(not(target_os = "macos"))]
     true
 }
 
 fn check_for_updates() {
     #[cfg(target_os = "macos")]
-    crate::sparkle::check_for_updates();
+    crate::fork_update::check();
     #[cfg(not(target_os = "macos"))]
     let _ = crate::handoff::open_path(Path::new(RELEASES_URL));
 }

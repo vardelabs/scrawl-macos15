@@ -49,6 +49,9 @@ mod settings_window;
 mod shortcut;
 mod sketch;
 #[cfg(target_os = "macos")]
+mod fork_update;
+// Upstream's updater stays for clean merges; the fork checks for updates through `fork_update`.
+#[allow(dead_code)]
 mod sparkle;
 mod speech_model;
 mod transcribe;
