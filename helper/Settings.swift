@@ -1021,7 +1021,7 @@ struct SettingsView: View {
           SettingsSwitch(on: d.removeFillers) { model.set("removeFillers", $0) }
         }
       }
-      SettingsCaption(text: "With no text field to paste into, the text stays on the clipboard and the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
+      SettingsCaption(text: "Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }

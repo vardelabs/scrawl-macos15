@@ -810,7 +810,8 @@ Scrawl can also type for you, with no screen recorded. Turn on Settings › **Di
   pastes; Esc or ✕ discards.
 
 A small pill stays at the bottom of the screen while dictation is on, as Wispr Flow's does.
-When there's no text field to paste into, the text stays on the clipboard and the pill says so.
+Unless a text field had focus, the text also stays on the clipboard to paste by hand, and with
+nothing focused the pill says so.
 
 `⌃⌥` followed by another key (`⌃⌥←`) stays an ordinary shortcut. `"dictationShortcut"` picks
 another chord (`"⌃⌘"`, `"⌥⌘"`, `"⌃⇧"`), `"dictationPill": false` hides the idle pill, and `"dictationRestoreClipboard": false` keeps

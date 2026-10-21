@@ -132,12 +132,13 @@ fn presentation(state: &PillState) -> Pres {
     Pres::DictationIdle
 }
 
-/// How dictated text reaches the app, from whether the focused element takes text.
+/// How dictated text reaches the app, from whether the focused element takes text. Every route
+/// pastes: an app with its Accessibility tree off can report nothing focused over a real field.
 #[derive(Debug, PartialEq, Eq)]
 enum Route {
     /// A text field: paste, then put the clipboard back.
     Paste,
-    /// Nothing focused: leave the text on the clipboard.
+    /// Nothing focused: paste anyway, keep the text on the clipboard, and say so.
     Copy,
     /// The app didn't say: paste, and keep the text on the clipboard so nothing is lost.
     PasteAndKeep,
@@ -210,6 +211,7 @@ impl Dictation {
             self.settings = Settings::load();
             self.settings_read = Instant::now();
             self.follow_pointer();
+            self.keep_out_of_captures(telemetry);
         }
         self.take_outcome();
         if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
@@ -219,6 +221,9 @@ impl Dictation {
         let clicks = self.pill.as_ref().map(NativePill::drain_actions).unwrap_or_default();
         if self.settings.enabled {
             self.listen(telemetry, capture_busy, clicks);
+        } else if clicks.iter().any(|c| matches!(c, PillAction::MessageClicked)) {
+            // Off, the pill can still show the last dictation's notice; a click dismisses it.
+            self.dismiss_notice();
         }
         let pres = presentation(&PillState {
             working: self.working.is_some(),
@@ -407,15 +412,26 @@ impl Dictation {
         }
         match NativePill::open() {
             Ok(pill) => {
-                telemetry
-                    .excluded_window_ids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(pill.window_number());
                 self.pill = Some(pill);
+                self.keep_out_of_captures(telemetry);
                 self.follow_pointer();
             }
             Err(error) => scrawl_log(format!("Dictation pill: {error}")),
+        }
+    }
+
+    /// Each recording starts with a fresh exclusion list (`reset_for_session`), so the pill's
+    /// window is put back on it rather than added once.
+    fn keep_out_of_captures(&self, telemetry: &SharedCaptureTelemetry) {
+        let Some(id) = self.pill.as_ref().map(NativePill::window_number) else {
+            return;
+        };
+        let mut excluded = telemetry
+            .excluded_window_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !excluded.contains(&id) {
+            excluded.push(id);
         }
     }
 
@@ -474,7 +490,7 @@ fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) -> Outco
 fn deliver(text: &str, restore_clipboard: bool) -> Outcome {
     let delivered = match route(crate::ax::focused_takes_text()) {
         Route::Paste => crate::handoff::paste_text(text, restore_clipboard).map(|()| Outcome::Pasted),
-        Route::Copy => crate::handoff::copy_string_to_clipboard(text).map(|()| Outcome::Copied),
+        Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
         Route::PasteAndKeep => crate::handoff::paste_text(text, false).map(|()| Outcome::Pasted),
     };
     delivered.unwrap_or_else(|error| {
