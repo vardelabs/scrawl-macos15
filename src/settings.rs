@@ -629,8 +629,12 @@ pub struct DictationView {
     pub pill: bool,
     /// Filenames matched from the screen, and code in backticks.
     pub code_formatting: bool,
+    /// Words learned from edits to pasted text.
+    pub learn: bool,
     pub remove_fillers: bool,
     pub words: Vec<String>,
+    /// The `words` learned from edits, marked in the list.
+    pub learned: Vec<String>,
     pub replacements: Vec<ReplacementView>,
     /// Why the dictionary can't be shown or changed (a broken file, left as it is).
     pub error: Option<String>,
@@ -908,8 +912,10 @@ fn dictation_view(
         restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
         pill: config.dictation_pill.unwrap_or(true),
         code_formatting: config.dictation_code_formatting.unwrap_or(true),
+        learn: config.dictation_learn.unwrap_or(true),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
+        learned: dictionary.learned,
         replacements: dictionary
             .replacements
             .into_iter()
@@ -990,7 +996,7 @@ fn shortcut_view(
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
     /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures`,
-    /// `dictation`, `dictationRestoreClipboard`, `dictationPill`, `dictationCodeFormatting`,
+    /// `dictation`, `dictationRestoreClipboard`, `dictationPill`, `dictationCodeFormatting`, `dictationLearn`,
     /// `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
@@ -1197,6 +1203,7 @@ impl Panel {
         change: impl FnOnce(&mut crate::dictionary::Dictionary),
     ) -> Effect {
         let path = crate::dictionary::path_beside(&host.config_path());
+        let _editing = crate::dictionary::edit_lock();
         // A file that doesn't read is the view's `error`, not a failed save.
         let mut dictionary = match crate::dictionary::Dictionary::load_from(&path) {
             Ok(dictionary) => dictionary,
@@ -1269,7 +1276,7 @@ impl Panel {
             }
             (
                 "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures" | "dictation"
-                | "dictationRestoreClipboard" | "dictationPill" | "dictationCodeFormatting"
+                | "dictationRestoreClipboard" | "dictationPill" | "dictationCodeFormatting" | "dictationLearn"
                 | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => write(key, (*on).into()),
@@ -1997,6 +2004,7 @@ mod tests {
         set(&mut panel, &mut host, "removeFillers", false.into());
         set(&mut panel, &mut host, "dictationPill", false.into());
         set(&mut panel, &mut host, "dictationCodeFormatting", false.into());
+        set(&mut panel, &mut host, "dictationLearn", false.into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥⌘".into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥".into());
         let view = panel.view(&host).dictation;
@@ -2004,6 +2012,7 @@ mod tests {
         assert!(!view.remove_fillers);
         assert!(!view.pill);
         assert!(!view.code_formatting);
+        assert!(!view.learn);
         assert_eq!(view.shortcut, "⌥⌘");
     }
 
