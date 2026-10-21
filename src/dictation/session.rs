@@ -38,7 +38,7 @@ struct Settings {
     label: String,
     restore_clipboard: bool,
     pill: bool,
-    /// Put filenames and identifiers in backticks (`dictationCodeFormatting`).
+    /// Match names on screen and put code in backticks (`dictationCodeFormatting`).
     code: bool,
 }
 
@@ -408,19 +408,23 @@ impl Dictation {
             return;
         };
         let restore = self.settings.restore_clipboard;
-        let code = self.settings.code && !prose_app();
+        let backticks = self.settings.code && !prose_app();
+        // The screen is read alongside transcription, while the target window still has focus,
+        // and only with code formatting on.
+        let screen = self.settings.code.then(|| {
+            std::thread::Builder::new().name("scrawl-dictation-screen".into()).spawn(|| {
+                super::context::terms(&crate::ax::window_text(SCREEN_ELEMENTS, SCREEN_BUDGET))
+            })
+        });
+        let screen = screen.and_then(|spawned| spawned.inspect_err(|e| scrawl_log(format!("Dictation: screen read: {e}"))).ok());
         let (done, working) = flume::bounded(1);
         self.working = Some(working);
         let spawned = std::thread::Builder::new()
             .name("scrawl-dictation".into())
             .spawn(move || {
-                // Read while the target window still has focus, before transcribing.
-                let screen = crate::ax::window_text(SCREEN_ELEMENTS, SCREEN_BUDGET);
-                let terms = super::context::terms(&screen);
-                drop(screen);
                 let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore, &terms, code)
+                        transcribe_and_paste(&audio, restore, screen, backticks)
                     }
                     Ok(_) => Outcome::Quiet,
                     Err(error) => {
@@ -446,8 +450,8 @@ fn prose_app() -> bool {
 fn transcribe_and_paste(
     audio: &RecordedAudio,
     restore_clipboard: bool,
-    terms: &[String],
-    code: bool,
+    screen: Option<std::thread::JoinHandle<Vec<String>>>,
+    backticks: bool,
 ) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
@@ -457,9 +461,11 @@ fn transcribe_and_paste(
     }
     let transcript = crate::transcribe::transcribe(Some(&wav), Some(audio));
     let _ = std::fs::remove_file(&wav);
-    let spoken = super::context::spoken_extensions(transcript.text.trim());
-    let text = crate::dictionary::Dictionary::load().apply(&spoken);
-    let text = super::context::apply(&text, terms, code);
+    // The dictionary first, so a user's rule for "design dot md" still sees what was said.
+    let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
+    let text = super::context::spoken_extensions(&text);
+    let terms = screen.and_then(|read| read.join().ok()).unwrap_or_default();
+    let text = super::context::apply(&text, &terms, backticks);
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,

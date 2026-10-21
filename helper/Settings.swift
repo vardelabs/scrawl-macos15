@@ -1022,7 +1022,7 @@ struct SettingsView: View {
           SettingsSwitch(on: d.removeFillers) { model.set("removeFillers", $0) }
         }
         SettingsSeparator()
-        SettingsRow(title: "Put code in backticks") {
+        SettingsRow(title: "Format code and filenames") {
           SettingsSwitch(on: d.codeFormatting) { model.set("dictationCodeFormatting", $0) }
         }
       }

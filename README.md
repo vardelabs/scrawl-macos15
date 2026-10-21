@@ -821,7 +821,7 @@ paste. Words it gets wrong go in the Dictation pane's **Words** and **Replacemen
 live in `~/.config/scrawl/dictionary.json` (**Edit as Text…** opens it). Filenames come out as
 files ("design dot MD" → `design.md`), a name you say that matches one on screen is written as it
 is there, and code goes in backticks outside Mail, Messages, Notes, Pages, Word and Outlook
-(`"dictationCodeFormatting": false` turns the backticks off):
+(`"dictationCodeFormatting": false` turns both off, and Scrawl then reads nothing from the screen):
 
 ```json
 { "words": ["Corvus", "Varde Labs"], "replacements": { "corvis": "Corvus" } }

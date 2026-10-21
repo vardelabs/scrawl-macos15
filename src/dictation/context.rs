@@ -1,16 +1,29 @@
 //! Filenames and identifiers in dictated text, as Wispr Flow writes them: "dot md" becomes
 //! ".md", a spoken phrase that matches a term on screen ("product's design dot MD" with
-//! `PRODUCT-DESIGN.md` in the window) is written as that term, and code-like words go in
-//! backticks. Pure, so it is tested without a Mac; `ax::window_text` gathers the screen text.
+//! `PRODUCT-DESIGN.md` in the window) is written as that term, and code goes in backticks.
+//! Pure, so it is tested without a Mac; `ax::window_text` gathers the screen text.
+//!
+//! Prose is the common case, so every rule errs toward leaving words alone: brand names
+//! (`iPhone`, `YouTube`) and hyphenated words are never code by themselves.
 
 use std::collections::HashMap;
 
-/// File extensions a spoken "dot" joins on.
+/// File extensions that make a word a filename.
 const EXTENSIONS: &[&str] = &[
     "md", "rs", "swift", "json", "toml", "yaml", "yml", "ts", "tsx", "js", "jsx", "py", "sh",
     "txt", "html", "css", "go", "rb", "java", "kt", "c", "h", "cpp", "sql", "csv", "png", "jpg",
     "svg", "pdf", "lock", "env", "plist", "xml", "mov", "mp4", "wav",
 ];
+/// Extensions that are also everyday words or letters ("on the dot go"), so a spoken "dot" never
+/// joins them; a filename with one still matches when it is on screen.
+const SPOKEN_AMBIGUOUS: &[&str] = &["go", "c", "h", "sh", "env", "lock"];
+/// Words a spoken "dot" never joins onto ("the dot", "a dot").
+const NOT_A_STEM: &[&str] = &["the", "a", "an"];
+/// A spoken phrase must carry this many letters and digits to stand for a screen term, so short
+/// phrases ("is a", "set up") stay prose.
+const MIN_SPOKEN_KEY: usize = 6;
+/// Screen text read for terms; a huge document stops here.
+const MAX_SCREEN_CHARS: usize = 200_000;
 
 /// Most screen terms kept; a long document stops adding after this.
 const MAX_TERMS: usize = 400;
@@ -26,8 +39,14 @@ pub fn spoken_extensions(text: &str) -> String {
     while i < words.len() {
         let ext = words.get(i + 1).map(|next| split_trailing(next));
         let joins = words[i].eq_ignore_ascii_case("dot")
-            && out.last().is_some_and(|prev| prev.ends_with(|c: char| c.is_alphanumeric()))
-            && ext.is_some_and(|(core, _)| EXTENSIONS.contains(&core.to_lowercase().as_str()));
+            && out.last().is_some_and(|prev| {
+                prev.ends_with(|c: char| c.is_alphanumeric())
+                    && !NOT_A_STEM.contains(&prev.to_lowercase().as_str())
+            })
+            && ext.is_some_and(|(core, _)| {
+                let core = core.to_lowercase();
+                EXTENSIONS.contains(&core.as_str()) && !SPOKEN_AMBIGUOUS.contains(&core.as_str())
+            });
         match (joins, ext) {
             (true, Some((core, rest))) => {
                 let prev = out.last_mut().expect("checked above");
@@ -55,14 +74,19 @@ fn split_trailing(word: &str) -> (&str, &str) {
 }
 
 /// The filename-like and identifier-like words in screen text: `PRODUCT-DESIGN.md`,
-/// `session.rs`, `snake_case`, `camelCase`, and a path's last part.
+/// `session.rs`, `snake_case`, `camelCase`, `PascalCase`, and a path's last part.
 pub fn terms(texts: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    let mut read = 0;
     for text in texts {
+        read += text.len();
+        if read > MAX_SCREEN_CHARS {
+            break;
+        }
         for raw in text.split(|c: char| !(c.is_alphanumeric() || "._-/".contains(c))) {
             let word = raw.trim_matches(|c: char| !c.is_alphanumeric());
             for candidate in [word, word.rsplit('/').next().unwrap_or(word)] {
-                if code_like(candidate) && !out.iter().any(|t| t == candidate) {
+                if term_like(candidate) && !out.iter().any(|t| t == candidate) {
                     out.push(candidate.to_owned());
                 }
             }
@@ -74,25 +98,47 @@ pub fn terms(texts: &[String]) -> Vec<String> {
     out
 }
 
-/// Code rather than prose: a known extension, an underscore or a hyphen between letters, or a
-/// capital after a lower-case letter. Ordinary hyphenated words ("well-known") are kept only
-/// with a capital or digit in them, so prose stays prose.
+/// Code worth backticks: a filename (`main.rs`), `snake_case`, or `lowerCamel` that starts with
+/// a lower-case run of two or more (so `iPhone`, `eBay` and `macOS` are names, not code).
 fn code_like(word: &str) -> bool {
     let len = word.chars().count();
-    if !(3..=80).contains(&len) || word.contains('/') {
+    if !(3..=80).contains(&len) || word.contains('/') || !word.chars().all(|c| c.is_alphanumeric() || "._-".contains(c)) {
         return false;
     }
     let has_ext = word
         .rsplit_once('.')
-        .is_some_and(|(stem, ext)| !stem.is_empty() && EXTENSIONS.contains(&ext.to_lowercase().as_str()));
-    let camel = word
-        .chars()
-        .zip(word.chars().skip(1))
-        .any(|(a, b)| a.is_lowercase() && b.is_uppercase());
-    let marked_hyphen = word.contains('-')
-        && word.chars().any(|c| c.is_uppercase() || c.is_ascii_digit())
-        && word.chars().any(char::is_alphabetic);
-    has_ext || word.contains('_') || camel || marked_hyphen
+        .is_some_and(|(stem, ext)| stem.chars().any(char::is_alphanumeric) && EXTENSIONS.contains(&ext.to_lowercase().as_str()));
+    let snake = word.contains('_') && {
+        let parts: Vec<&str> = word.split('_').collect();
+        parts.iter().all(|p| p.chars().count() >= 2 && p.chars().all(char::is_alphanumeric))
+            && parts.iter().any(|p| p.chars().count() >= 3)
+    };
+    has_ext || snake || lower_camel(word)
+}
+
+fn lower_camel(word: &str) -> bool {
+    let chars: Vec<char> = word.chars().collect();
+    let lead = chars.iter().take_while(|c| c.is_lowercase()).count();
+    lead >= 2
+        && chars.iter().all(|c| c.is_alphanumeric())
+        && chars.windows(2).skip(lead - 1).any(|w| w[0].is_uppercase() && w[1].is_lowercase())
+}
+
+/// A screen word a spoken phrase may stand for: code, or a name whose casing speech loses
+/// (`PillModel`, `LinkedIn`, `PRODUCT-DESIGN`). Title Case labels ("Sign-In") and numbered words
+/// ("COVID-19") are left out.
+fn term_like(word: &str) -> bool {
+    if code_like(word) {
+        return true;
+    }
+    let chars: Vec<char> = word.chars().collect();
+    let pascal = chars.len() >= 6
+        && chars.iter().all(|c| c.is_alphabetic())
+        && chars[0].is_uppercase()
+        && chars.windows(2).any(|w| w[0].is_lowercase() && w[1].is_uppercase());
+    let caps_hyphen = word.contains('-')
+        && word.split('-').all(|p| p.chars().count() >= 2 && p.chars().all(|c| c.is_uppercase()));
+    pascal || caps_hyphen
 }
 
 /// Writes spoken phrases that match a screen term as that term, and puts code-like words in
@@ -160,23 +206,30 @@ fn longest_match<'a>(
             .iter()
             .map(|&strip| span.split(|c: char| is_joiner(&c.to_string())).map(|w| key(w, strip)).collect())
             .collect();
-        // A span of one plain word is prose unless it is a term exactly.
+        // One spoken word is prose, whatever is on screen ("setup" stays, with `set_up` shown).
+        if end == start || spoken[0].chars().count() < MIN_SPOKEN_KEY {
+            return None;
+        }
         let exact = spoken.iter().find_map(|k| keys.get(k).copied());
-        let near = || (end > start).then(|| spoken.iter().find_map(|k| near_term(k, keys))).flatten();
-        exact.or_else(near).map(|term| (end, term))
+        exact.or_else(|| spoken.iter().find_map(|k| near_term(k, keys))).map(|term| (end, term))
     })
 }
 
-/// A term one letter off a spoken key of 8 letters or more, with the same first letter. An exact
-/// key wins elsewhere, so ties here are only between near terms: the first in sort order wins, not
-/// whichever the map yields first.
+/// A term one letter off a spoken key of 8 letters or more, with the same first letter and the
+/// same digits (a spoken "issue 1235" is not `issue-1234`). An exact key wins elsewhere, so ties
+/// here are only between near terms: the first in sort order wins, not whichever the map yields
+/// first.
 fn near_term<'a>(k: &str, keys: &HashMap<String, &'a str>) -> Option<&'a str> {
     if k.chars().count() < 8 {
         return None;
     }
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let spoken_digits = digits(k);
     keys.iter()
         .filter(|(t, _)| {
-            t.chars().next() == k.chars().next() && crate::dictionary::edit_distance(t, k) <= 1
+            t.chars().next() == k.chars().next()
+                && digits(t) == spoken_digits
+                && crate::dictionary::edit_distance(t, k) <= 1
         })
         .map(|(_, term)| *term)
         .min()
@@ -210,8 +263,8 @@ fn backtick_code(text: &str) -> String {
         let words: Vec<String> = part
             .split(' ')
             .map(|word| {
-                let (core, rest) = split_code_trailing(word);
-                if code_like(core) { format!("`{core}`{rest}") } else { word.to_owned() }
+                let (lead, core, rest) = split_code_punctuation(word);
+                if code_like(core) { format!("{lead}`{core}`{rest}") } else { word.to_owned() }
             })
             .collect();
         out.push_str(&words.join(" "));
@@ -219,10 +272,14 @@ fn backtick_code(text: &str) -> String {
     out
 }
 
-/// "design.md," → ("design.md", ","): a sentence's punctuation stays outside the backticks.
-fn split_code_trailing(word: &str) -> (&str, &str) {
-    let end = word.trim_end_matches(|c: char| ",.;:!?)".contains(c)).len();
-    word.split_at(end)
+/// "(design.md)," → ("(", "design.md", "),"): a sentence's punctuation and quotes stay outside
+/// the backticks.
+fn split_code_punctuation(word: &str) -> (&str, &str, &str) {
+    let core = word.trim_start_matches(|c: char| "(\"'“‘[".contains(c));
+    let lead = &word[..word.len() - core.len()];
+    let end = core.trim_end_matches(|c: char| ",.;:!?)\"'”’]".contains(c)).len();
+    let (core, rest) = core.split_at(end);
+    (lead, core, rest)
 }
 
 #[cfg(test)]
@@ -237,18 +294,26 @@ mod tests {
     fn a_spoken_dot_joins_a_known_extension() {
         assert_eq!(spoken_extensions("open design dot MD."), "open design.md.");
         assert_eq!(spoken_extensions("see main dot rs and lib dot rs"), "see main.rs and lib.rs");
-        // Not an extension, or no word before: left as spoken.
+        // Not an extension, no word before, an article before, or an extension that is a word.
         assert_eq!(spoken_extensions("connect the dot later"), "connect the dot later");
         assert_eq!(spoken_extensions("dot md"), "dot md");
+        assert_eq!(spoken_extensions("open the dot md file"), "open the dot md file");
+        assert_eq!(spoken_extensions("be there on the dot go home"), "be there on the dot go home");
+        assert_eq!(spoken_extensions("polka dot sh and Jay dot go"), "polka dot sh and Jay dot go");
+        assert_eq!(spoken_extensions("three dot five"), "three dot five");
     }
 
     #[test]
     fn screen_text_gives_filenames_and_identifiers_not_prose() {
         let found = terms_of(
             "Read PRODUCT-DESIGN.md and src/dictation/session.rs, then call press_shortcut or \
-             tickDictation. A well-known, high-level plan.",
+             tickDictation on PillModel. A well-known, Real-Time, Sign-In plan for COVID-19, \
+             is_a, set_up.",
         );
-        assert_eq!(found, ["PRODUCT-DESIGN.md", "session.rs", "press_shortcut", "tickDictation"]);
+        assert_eq!(
+            found,
+            ["PRODUCT-DESIGN.md", "session.rs", "press_shortcut", "tickDictation", "PillModel", "set_up"]
+        );
     }
 
     #[test]
@@ -269,6 +334,24 @@ mod tests {
     }
 
     #[test]
+    fn short_phrases_single_words_and_other_numbers_stay_as_spoken() {
+        let terms = terms_of("set_up is_a issue-1234.md frame-07.png PillModel");
+        assert_eq!(apply("sign in and set up, this is a test", &terms, true), "sign in and set up, this is a test");
+        assert_eq!(apply("run setup", &terms, true), "run setup");
+        assert_eq!(apply("fix issue 1235 dot md", &terms, true), "fix issue 1235 dot md");
+        assert_eq!(apply("open frame 08.png", &terms, false), "open frame 08.png");
+        assert_eq!(apply("the pill model", &terms, true), "the PillModel");
+    }
+
+    #[test]
+    fn brand_names_and_hyphenated_prose_get_no_backticks() {
+        let text = "I got a new iPhone and iPad, watched YouTube on macOS, posted on LinkedIn and \
+                    GitHub. Self-driving cars, a 24-hour turnaround, a T-shirt and COVID-19.";
+        assert_eq!(apply(text, &[], true), text);
+        assert_eq!(apply("call useState", &[], true), "call `useState`");
+    }
+
+    #[test]
     fn prose_is_left_alone() {
         let terms = terms_of("session.rs PRODUCT-DESIGN.md");
         let text = "The session went well, and the product design looks right.";
@@ -278,6 +361,7 @@ mod tests {
     #[test]
     fn code_formatting_skips_text_already_in_backticks_and_keeps_punctuation_outside() {
         assert_eq!(apply("edit main.rs, then `lib.rs`.", &[], true), "edit `main.rs`, then `lib.rs`.");
+        assert_eq!(apply("edit (main.rs) and \"lib.rs\", now", &[], true), "edit (`main.rs`) and \"`lib.rs`\", now");
         assert_eq!(apply("edit main.rs", &[], false), "edit main.rs");
     }
 }
