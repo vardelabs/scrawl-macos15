@@ -1151,15 +1151,14 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 done.end_ms = Some(clock.ms());
                 segments.push(done);
             }
-            if clock.clock.resume_requested() {
+            // A stop while a resume is pending ends the capture where the pause began.
+            if clock.clock.resume_requested() && !thread_stopping.load(Ordering::Acquire) {
                 let next = first_path
                     .as_deref()
                     .map(|first| crate::pause::segment_path(first, segments.len()));
                 // A window closed while paused records nothing, as one closed while recording
                 // does, rather than its display (the filter's fallback).
-                let gone = sampler_target
-                    .window_id
-                    .is_some_and(|id| sck_lists_windows(&[id]).is_empty());
+                let gone = sampler_target.window_id.is_some_and(window_closed);
                 let (next_stream, next_output, next_path, next_filter, _) = if gone {
                     scrawl_log("The captured window closed while paused");
                     (None, None, None, None, None)
@@ -1173,7 +1172,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 // too: the new segment shows the screen a few tens of ms late, never more, where
                 // resuming at the movie's own start would shift the audio by that much per pause.
                 let resumed = Instant::now();
-                if clock.clock.finish_resume(resumed) {
+                if !thread_stopping.load(Ordering::Acquire) && clock.clock.finish_resume(resumed) {
                     (stream, recording_output) = (next_stream, next_output);
                     segment = next_path.map(|path| crate::pause::Segment {
                         path,
@@ -1186,7 +1185,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                     scrawl_log(format!("Capture resumed at {} ms", clock.ms()));
                     thread_urgent.store(true, Ordering::Release);
                 } else {
-                    // Paused again while the stream was starting.
+                    // Paused again, or stopped, while the stream was starting.
                     if let Some(next_stream) = next_stream {
                         stop_stream(&next_stream, next_output.as_ref());
                     }
@@ -1481,6 +1480,12 @@ impl SystemPrompts {
     fn showing(&self) -> bool {
         self.ids.iter().any(|id| !self.hidden.contains(id))
     }
+}
+
+/// ScreenCaptureKit answered and doesn't list the window; an error isn't taken for a close.
+fn window_closed(id: u32) -> bool {
+    SCShareableContent::get()
+        .is_ok_and(|content| content.windows().iter().all(|w| w.window_id() != id))
 }
 
 /// Which of `ids` ScreenCaptureKit lists (and so can leave out of a recording).
