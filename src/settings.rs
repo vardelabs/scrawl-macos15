@@ -1186,11 +1186,17 @@ impl Panel {
         change: impl FnOnce(&mut crate::dictionary::Dictionary),
     ) -> Effect {
         let path = crate::dictionary::path_beside(&host.config_path());
-        let saved = crate::dictionary::Dictionary::load_from(&path).and_then(|mut dictionary| {
-            change(&mut dictionary);
-            dictionary.save_to(&path)
-        });
-        self.dictionary_error = saved.err().map(|error| {
+        // A file that doesn't read is the view's `error`, not a failed save.
+        let mut dictionary = match crate::dictionary::Dictionary::load_from(&path) {
+            Ok(dictionary) => dictionary,
+            Err(error) => {
+                crate::capture::scrawl_log(format!("Dictionary: {error:#}"));
+                self.dictionary_error = None;
+                return Effect::None;
+            }
+        };
+        change(&mut dictionary);
+        self.dictionary_error = dictionary.save_to(&path).err().map(|error| {
             crate::capture::scrawl_log(format!("Dictionary: {error:#}"));
             format!("Couldn't save the dictionary: {}.", home_relative(&format!("{error:#}")))
         });
@@ -1909,6 +1915,11 @@ mod tests {
         let view = panel.view(&host).dictation;
         assert!(view.words.is_empty());
         assert!(view.error.is_some_and(|e| e.contains("isn't a valid dictionary")));
+        // Fixed outside Scrawl: no stale message is left behind.
+        assert_eq!(view.save_error, None);
+        std::fs::write(&path, r#"{"words": ["Vega"]}"#).unwrap();
+        let view = panel.view(&host).dictation;
+        assert_eq!((view.error, view.save_error), (None, None));
     }
 
     #[cfg(unix)]

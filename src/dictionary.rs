@@ -50,7 +50,7 @@ impl Dictionary {
     /// Writes a temp file and renames it over `path`, so a crash never leaves half a file. A
     /// symlinked dictionary (dotfiles) is written through to its target, with its permissions.
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let path = link_target(path);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -153,6 +153,19 @@ fn words_of(phrase: &str) -> Vec<String> {
 
 fn squash(phrase: &str) -> String {
     words_of(phrase).concat()
+}
+
+/// Where a dictionary that may be a symlink really lives, even when its target doesn't exist
+/// yet (a dotfiles link made before the file).
+fn link_target(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    match std::fs::read_link(path) {
+        Ok(target) if target.is_absolute() => target,
+        Ok(target) => path.parent().map_or(target.clone(), |dir| dir.join(&target)),
+        Err(_) => path.to_owned(),
+    }
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -321,6 +334,14 @@ mod tests {
             d.save_to(&path).unwrap();
             assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
             assert_eq!(Dictionary::load_from(&real).unwrap().words, ["Corvus", "Vega", "North"]);
+            std::fs::remove_file(&path).unwrap();
+
+            // A link made before its target: saving creates the target and keeps the link.
+            let later = dir.join("later.json");
+            std::os::unix::fs::symlink(&later, &path).unwrap();
+            Dictionary::default().save_to(&path).unwrap();
+            assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+            assert!(later.exists());
             std::fs::remove_file(&path).unwrap();
         }
 
