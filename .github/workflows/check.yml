@@ -18,7 +18,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
-      # The helper uses macOS 26 APIs (SpeechAnalyzer), so it needs the macOS 26 SDK.
+      # build.rs compiles the helper's macOS 26 code (SpeechAnalyzer, glass) only with the macOS 26
+      # SDK; without it CI would pass without building that code.
       - name: Use Xcode 26
         run: |
           xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
