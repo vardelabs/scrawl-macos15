@@ -283,7 +283,7 @@ pub fn run(options: Options) {
     });
 }
 
-/// The dictation scene drives a pill of its own, as dictation does, not the capture capsule.
+/// The dictation scene drives a pill of its own, so its states play without a capture.
 fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
     let pill = match crate::native::pill::NativePill::open() {
         Ok(pill) => {

@@ -36,3 +36,7 @@ impl NativePill {
         false
     }
 }
+
+pub fn bottom_origin(_point: [f64; 2]) -> Option<[f32; 2]> {
+    None
+}

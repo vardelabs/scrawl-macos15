@@ -678,6 +678,9 @@ pub struct ScrawlCoordinator {
     /// When the capsule last followed the active screen while showing dictation; `None` places it
     /// on the next tick (at launch, or when a capture gives the capsule back).
     dictation_placed: Option<Instant>,
+    /// When opening the native pill last failed; dictation asks every tick, so it is retried
+    /// every 500 ms instead.
+    pill_open_failed: Option<Instant>,
     iphone_preview: Option<PhoneSession>,
     island_phase: IslandPhase,
     island_prev_phase: IslandPhase,
@@ -791,6 +794,7 @@ impl ScrawlCoordinator {
             native_pill: None,
             dictation_shown: None,
             dictation_placed: None,
+            pill_open_failed: None,
             iphone_preview: None,
             island_phase: IslandPhase::Hidden,
             island_prev_phase: IslandPhase::Hidden,
@@ -1950,7 +1954,10 @@ impl ScrawlCoordinator {
     }
 
     pub(crate) fn ensure_native_pill(&mut self) {
-        if !crate::handoff::native_pill() || self.native_pill.is_some() {
+        if !crate::handoff::native_pill()
+            || self.native_pill.is_some()
+            || self.pill_open_failed.is_some_and(|at| at.elapsed() < Duration::from_millis(500))
+        {
             return;
         }
         match crate::native::pill::NativePill::open() {
@@ -1966,6 +1973,7 @@ impl ScrawlCoordinator {
                 self.native_pill = Some(pill);
             }
             Err(err) => {
+                self.pill_open_failed = Some(Instant::now());
                 scrawl_log(format!("NativePill::open error: {err}"));
             }
         }
@@ -2066,7 +2074,8 @@ impl ScrawlCoordinator {
         let Some(pill) = &self.native_pill else {
             return;
         };
-        if self.dictation_placed.is_none_or(|at| at.elapsed() >= Duration::from_millis(500)) {
+        // Placing asks the window server for the front window, so a hidden pill skips it.
+        if pres != Pres::Hidden && self.dictation_placed.is_none_or(|at| at.elapsed() >= Duration::from_millis(500)) {
             self.dictation_placed = Some(Instant::now());
             if let Some(point) = crate::screens::active_point() {
                 pill.place_at_bottom(point);

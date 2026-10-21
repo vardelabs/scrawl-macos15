@@ -4,8 +4,8 @@
 //! - Springs are parameterized by `spring(duration, bounce)` with `ω = 2π / duration` and
 //!   `ζ = 1 − bounce`, integrated at fixed 480 Hz sub-steps so retargets preserve velocity (`C1`).
 //! - Only the outline's width (`L`, `R`) bounces (`0.50 / 0.28` open, `0.45 / 0.18` close,
-//!   `0.35 / 0.45` tap squish); the top edge `TOP` is anchored so it never bounces upward into the
-//!   top of the screen, and content / opacity / shared travel use `bounce = 0`.
+//!   `0.35 / 0.45` tap squish); the top edge `TOP` is anchored so it never bounces past the panel's
+//!   edge (with `anchor_bottom` the frame then shifts so the bottom edge holds still), and content / opacity / shared travel use `bounce = 0`.
 //! - Room gating (`CLEAR = 2 pt` + `EDGE_BAND = 3 pt` smoothstep), `0.10 s` look-ahead exit cap
 //!   sampled at 240 Hz, `0.10 s` collapse wait, `0.50` growth gate, `0.30 s` content-in fade from
 //!   `8 pt` blur and `0.82` scale with blur on its own critically damped clock at `0.55×` lead,
