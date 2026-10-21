@@ -1256,7 +1256,13 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
     if let Some(stream) = stream {
         stop_stream(&stream, recording_output.as_ref());
     }
-    segments.extend(segment);
+    // Finished right after a pause, before the loop saw it: the segment still ends at the pause.
+    segments.extend(segment.map(|mut last| {
+        if clock.clock.is_paused() {
+            last.end_ms = Some(clock.ms());
+        }
+        last
+    }));
     segments
 }
 
