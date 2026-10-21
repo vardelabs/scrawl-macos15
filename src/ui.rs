@@ -101,8 +101,8 @@ impl Spring {
 // The capsule's springs and durations live in `motion::Tune` (defaults in `Tune::DEFAULT`, live
 // overrides from `~/.config/scrawl/tune.json` in debug builds; `scrawl tune`).
 //
-// Switch chips on a tap-started recording (`crate::hold::Reveal`). One shape: the recording pill
-// grows into the chip row and folds back. The width leads the morph palette (.42/.16 open,
+// Switch chips on a tap-started recording (`crate::shortcut::Reveal`). One shape: the recording
+// pill grows into the chip row and folds back. The width leads the morph palette (.42/.16 open,
 // .38/.08 close) on a slightly faster spring; the lead (dot + clock) stays pinned to the left
 // edge, and each trailing item fades in as the moving edge uncovers it, on the same frame. The
 // chips ↔ controls swap fades in place with a sine blur pulse (sharp at both ends) and no content
@@ -287,7 +287,7 @@ fn segment_width(window: &Window, mode: SelectionMode) -> f32 {
 }
 
 /// Widths of the items after a Recording capsule's divider: the switch chips while the reveal
-/// is open (`crate::hold::Reveal`), else Undo · Cancel · Finish.
+/// is open (`crate::shortcut::Reveal`), else Cancel · Finish.
 fn recording_trail_widths(window: &Window, chips: bool, iphone: bool) -> Vec<f32> {
     if chips {
         SelectionMode::available(iphone)
@@ -296,7 +296,6 @@ fn recording_trail_widths(window: &Window, chips: bool, iphone: bool) -> Vec<f32
             .collect()
     } else {
         vec![
-            chip_width(window, "Undo", FontWeight::MEDIUM),
             chip_width(window, "Cancel", FontWeight::MEDIUM),
             chip_width(window, "Finish", FontWeight::SEMIBOLD),
         ]
@@ -316,7 +315,7 @@ fn trail_keys(
             .map(|m| format!("chip:{}", m.label()))
             .collect()
     } else {
-        ["undo", "cancel", "finish"].map(String::from).to_vec()
+        ["cancel", "finish"].map(String::from).to_vec()
     };
     names
         .into_iter()
@@ -350,7 +349,7 @@ fn edge_alpha(inner_now: f32, x: f32, w: f32) -> f32 {
 }
 
 /// The switch chips' clock: the animation clock, so they stay open as long in slow motion
-/// (`motion::time_scale`). The held switcher keeps the real clock: it times key presses.
+/// (`motion::time_scale`).
 fn reveal_clock_ms() -> u64 {
     (motion::now() * 1000.0) as u64
 }
@@ -365,25 +364,25 @@ fn uncover_alpha(outer: f32, x: f32, w: f32) -> f32 {
 }
 
 /// Intrinsic outer width of the capsule for a phase, mirroring the layout in `HudPillWindow`.
-/// `hold`: the held switcher, which always lists iPhone and records on release (no Record chip).
 /// `chips`: a Recording capsule showing its switch chips.
 fn island_content_width(
     window: &Window,
     phase: IslandPhase,
     clock: &str,
     iphone: bool,
-    hold: bool,
     chips: bool,
     completed_note: Option<&str>,
+    routes: &[String],
 ) -> f32 {
     let divider = 1.0 + 2.0 * DIVIDER_MX;
     let inner = match phase {
         IslandPhase::Selecting { mode } => {
-            let labels: Vec<f32> = SelectionMode::available(iphone || hold)
+            let labels: Vec<f32> = SelectionMode::available(iphone)
                 .iter()
                 .map(|m| measure_text(window, m.label(), HUD_TEXT, FontWeight::MEDIUM))
                 .collect();
-            let record = (mode.shows_record() && !hold)
+            let record = mode
+                .shows_record()
                 .then(|| chip_width(window, "Record", FontWeight::SEMIBOLD));
             selecting_row_width(&labels, record)
         }
@@ -419,6 +418,10 @@ fn island_content_width(
                 + LEAD_TRAIL
                 + divider
                 + chip_width(window, "Paste", FontWeight::SEMIBOLD)
+                + routes
+                    .iter()
+                    .map(|label| chip_width(window, label, FontWeight::MEDIUM) + CHIP_GAP)
+                    .sum::<f32>()
                 + chip_width(window, "Inspect", FontWeight::MEDIUM)
                 + CHIP_H
                 + 3.0 * CHIP_GAP
@@ -697,8 +700,8 @@ pub struct ScrawlCoordinator {
     island_opacity: f32,
     /// Which width spring the current morph uses.
     island_morph: Morph,
-    /// Switch chips on a tap-started recording (`crate::hold::Reveal`).
-    reveal: crate::hold::Reveal,
+    /// Switch chips on a tap-started recording (`crate::shortcut::Reveal`).
+    reveal: crate::shortcut::Reveal,
     /// When the chips last opened or folded, for the in-place swap of the trailing group.
     reveal_since: f64,
     /// The trailing group fading out after that change: `Some(true)` the chips, `Some(false)` the
@@ -745,6 +748,12 @@ pub struct ScrawlCoordinator {
     /// A smart-routed capture waiting out its undo window before it's sent; ✕ or Paste on the
     /// Completed island cancels it.
     pending_send: Option<PathBuf>,
+    /// A local capture copied while its route is still being worked out; ✕ or Paste clears it,
+    /// keeping the capture on the clipboard whatever the route says.
+    routing: Option<PathBuf>,
+    /// Sessions the Completed island offers one click away (smart routing): when it asks, the
+    /// suggestion then a runner-up; during the undo window, the runner-up to switch to.
+    route_chips: Vec<RouteChip>,
     /// When this Mac last finished a capture, so ⌥⇧V prefers it over older inbox items.
     last_local_capture_ms: u64,
     inbox: crate::inbox::Inbox,
@@ -761,14 +770,11 @@ pub struct ScrawlCoordinator {
     grants: Option<crate::onboarding::Grants>,
     /// Holds the permissions window until the shortcut's modifiers are up.
     gate: crate::onboarding::Gate,
-    /// ⌥⇧S held as a ⌘Tab-style switcher (`crate::hold`).
-    switcher: crate::hold::Switcher,
+    /// ⌥⇧S waiting for its keys to come up (`crate::shortcut`).
+    shortcut: crate::shortcut::Shortcut,
     dictation: crate::dictation::Dictation,
-    /// The modifiers held when the shortcut went down; releasing any of them commits.
+    /// The modifiers held when the shortcut went down; releasing any of them starts the recording.
     hold_mods: u64,
-    /// The open picker is the held switcher, not the menu bar's picker.
-    hold_picker: bool,
-    clock: Instant,
     /// `scrawl lab pill`: recordings are pretend (`CaptureSource::Lab`), the picker takes no
     /// input and opens no overlay, and nothing looks for windows or phones.
     lab: bool,
@@ -809,7 +815,7 @@ impl ScrawlCoordinator {
             island_y_velocity: 0.0,
             island_opacity: 0.0,
             island_morph: Morph::Phase,
-            reveal: crate::hold::Reveal::default(),
+            reveal: crate::shortcut::Reveal::default(),
             reveal_since: motion::now(),
             reveal_outgoing: None,
             reveal_prev_chips: false,
@@ -838,6 +844,8 @@ impl ScrawlCoordinator {
             completed_dir: None,
             completed_note: None,
             pending_send: None,
+            routing: None,
+            route_chips: Vec::new(),
             last_local_capture_ms: 0,
             inbox: crate::inbox::Inbox::load_default(),
             last_mode: SelectionMode::load_last_used(),
@@ -846,11 +854,9 @@ impl ScrawlCoordinator {
             settings: None,
             grants: None,
             gate: crate::onboarding::Gate::default(),
-            switcher: crate::hold::Switcher::default(),
+            shortcut: crate::shortcut::Shortcut::default(),
             dictation: crate::dictation::Dictation::default(),
             hold_mods: 0,
-            hold_picker: false,
-            clock: Instant::now(),
             lab: false,
         }
     }
@@ -911,6 +917,7 @@ impl ScrawlCoordinator {
             return;
         }
         let dir = self.take_paste_target();
+        self.keep_pending_send(&dir);
         if matches!(self.island_phase, IslandPhase::Completed { .. }) {
             self.dismiss_island(cx);
         }
@@ -1206,23 +1213,19 @@ impl ScrawlCoordinator {
         }
     }
 
-    fn activity(&self) -> crate::hold::Activity {
-        use crate::hold::Activity;
+    fn activity(&self) -> crate::shortcut::Activity {
+        use crate::shortcut::Activity;
         if let Some(rec) = &self.active_recording {
             Activity::Recording {
                 elapsed_ms: rec.started.elapsed().as_millis() as u64,
             }
         } else if self.is_processing() {
             Activity::Processing
-        } else if self.is_selecting() && !self.switcher.is_switching() {
+        } else if self.is_selecting() {
             Activity::Picker
         } else {
             Activity::Free
         }
-    }
-
-    fn clock_ms(&self) -> u64 {
-        self.clock.elapsed().as_millis() as u64
     }
 
     fn begin_playback(&mut self) {
@@ -1238,8 +1241,8 @@ impl ScrawlCoordinator {
         if self.gate.is_pending() || self.dictation.is_busy() {
             return;
         }
-        if !self.switcher.is_held() && activity == crate::hold::Activity::Free {
-            // No switcher, picker or overlay before the permissions are on: they sit above
+        if !self.shortcut.is_pending() && activity == crate::shortcut::Activity::Free {
+            // No picker or overlay before the permissions are on: they sit above
             // macOS's permission prompts and take the clicks meant for them.
             let missing = self.missing_to_record();
             if !self.gate.press(missing) {
@@ -1248,75 +1251,45 @@ impl ScrawlCoordinator {
             }
             self.begin_playback();
             self.hold_mods = crate::capture::modifier_flags();
-            // An Esc from before this hold doesn't cancel it.
+            // An Esc from before this press doesn't cancel it.
             self.telemetry.take_escape();
         }
-        if let Some(mode) = self.selection_mode() {
-            self.switcher.follow(mode);
-        }
-        let action = self.switcher.press(self.clock_ms(), activity);
-        self.apply_switcher(action, cx);
+        let action = self.shortcut.press(activity);
+        self.apply_shortcut(action, cx);
     }
 
-    /// Polled from the UI loop while the shortcut is held: watches for ⌥⇧ coming up and Esc,
+    /// Polled from the UI loop while a press is pending: watches for ⌥⇧ coming up and Esc,
     /// whichever app or window has focus.
-    pub fn tick_switcher(&mut self, cx: &mut Context<Self>) {
-        if !self.switcher.is_held() {
-            return;
-        }
-        if self.switcher.is_switching() && !self.is_selecting() {
-            // Closed some other way (✕, a click on a chip).
-            if !self.is_recording() { self.playback.take(); }
-            self.switcher.reset();
+    pub fn tick_shortcut(&mut self, cx: &mut Context<Self>) {
+        if !self.shortcut.is_pending() {
             return;
         }
         let action = if self.telemetry.take_escape() {
-            self.switcher.escape()
+            self.shortcut.escape()
         } else {
             let mods = crate::capture::modifier_flags();
             let held = self.hold_mods != 0 && mods & self.hold_mods == self.hold_mods;
-            self.switcher.tick(self.clock_ms(), held)
+            self.shortcut.tick(held)
         };
-        self.apply_switcher(action, cx);
+        self.apply_shortcut(action, cx);
     }
 
-    fn apply_switcher(&mut self, action: crate::hold::Action, cx: &mut Context<Self>) {
-        use crate::hold::Action;
+    fn apply_shortcut(&mut self, action: crate::shortcut::Action, cx: &mut Context<Self>) {
+        use crate::shortcut::Action;
         if action != Action::None {
-            scrawl_log(format!("switcher -> {action:?}"));
+            scrawl_log(format!("shortcut -> {action:?}"));
         }
         match action {
             Action::None => {}
-            // On a large screen a full-screen capture costs the most, so a tap can pick instead.
-            Action::RecordScreen if crate::handoff::tap_chooses() => self.begin_target_selection(cx),
-            Action::RecordScreen => self.record_screen_now(cx),
-            Action::Open(mode) => {
-                self.open_picker(Some(SelectionMode::Screen), true, cx);
-                if mode != SelectionMode::Screen {
-                    self.show_switcher_mode(mode, cx);
-                }
+            // On a large screen a full-screen capture costs the most, so a press can pick instead.
+            Action::RecordScreen if crate::handoff::tap_chooses() => {
+                self.begin_target_selection(cx)
             }
-            Action::Show(mode) => self.show_switcher_mode(mode, cx),
-            // A tap that ran a little long reads as a short hold on Screen: it still chooses. The
-            // mode on screen decides, as in `commit_switcher`: a chip clicked during the hold
-            // changes it without the switcher knowing.
-            Action::Commit(mode)
-                if crate::handoff::tap_chooses()
-                    && self.selection_mode().unwrap_or(mode) == SelectionMode::Screen =>
-            {
-                // Playback stays down through the picker, as it does for a plain tap.
-                let playback = self.playback.take();
-                self.cancel_recording(cx);
-                self.playback = playback;
-                self.begin_target_selection(cx);
-            }
-            Action::Commit(mode) => self.commit_switcher(mode, cx),
             Action::Cancel => {
+                // Esc can cancel before the picker or a recording exists.
                 self.playback.take();
-                if self.is_selecting() {
-                    self.cancel_recording(cx);
-                }
             }
+            Action::RecordScreen => self.record_screen_now(cx),
             Action::RecordSelected => self.record_selected_mode(cx),
             Action::Finish => self.finish_recording(cx),
         }
@@ -1330,62 +1303,6 @@ impl ScrawlCoordinator {
             self.record_selected_mode(cx);
         } else if !self.is_processing() {
             self.record_screen_now(cx);
-        }
-    }
-
-    fn show_switcher_mode(&mut self, mode: SelectionMode, cx: &mut Context<Self>) {
-        if mode == SelectionMode::Iphone && self.iphone.is_some() {
-            self.preview_iphone(cx);
-        } else {
-            self.set_selection_mode(mode, cx);
-            // No phone yet: the badge says so, and the mirror opens if discovery finds one.
-            self.open_iphone_when_found = mode == SelectionMode::Iphone;
-        }
-    }
-
-    /// ⌥⇧ released: record what the switcher shows. An iPhone that isn't there or a drag too
-    /// small for an area records nothing.
-    fn commit_switcher(&mut self, mode: SelectionMode, cx: &mut Context<Self>) {
-        match self.selection_mode().unwrap_or(mode) {
-            SelectionMode::Screen => self.start_recording_full_screen(cx),
-            SelectionMode::Window => {
-                if self.hovered_window.is_none() {
-                    if self.windows_loading {
-                        self.selectable_windows = list_selectable_windows();
-                        self.windows_loading = false;
-                    }
-                    self.hovered_window = current_mouse_screen()
-                        .and_then(|[x, y]| {
-                            selectable_window_at(
-                                &self.selectable_windows,
-                                f64::from(x),
-                                f64::from(y),
-                            )
-                        })
-                        .cloned();
-                }
-                match self.hovered_window.clone() {
-                    Some(target) => self.start_recording_with_target(target, cx),
-                    None => self.start_recording_full_screen(cx),
-                }
-            }
-            SelectionMode::Iphone => {
-                if self.iphone.is_some() || self.iphone_preview.is_some() {
-                    self.start_recording_iphone(cx);
-                } else {
-                    self.cancel_recording(cx);
-                }
-            }
-            SelectionMode::Area => match self
-                .selection_drag
-                .and_then(|(a, b)| area_rect(a, b, self.display_rect))
-            {
-                Some([x, y, w, h]) => {
-                    let target = region_target(x, y, w, h, &self.selectable_windows);
-                    self.start_recording_with_target(target, cx);
-                }
-                None => self.cancel_recording(cx),
-            },
         }
     }
 
@@ -1490,7 +1407,7 @@ impl ScrawlCoordinator {
         // The recording's overlay becomes the picker's (moved if the picker opens on another
         // display), so the border never swaps windows (as the picker → recording path does).
         self.picker_metal_overlay = overlay;
-        self.open_picker(Some(mode), false, cx);
+        self.open_picker(Some(mode), cx);
         if self.is_selecting() && chips_shown && !self.reduced_motion {
             // The chips showed Screen; the picker shows `mode`.
             self.highlight_prev = Some(SelectionMode::Screen);
@@ -1715,7 +1632,6 @@ impl ScrawlCoordinator {
             "q" => cx.quit(),
             "," => {
                 if self.is_selecting() {
-                    self.switcher.reset();
                     self.cancel_recording(cx);
                 }
                 self.open_settings(None);
@@ -1725,14 +1641,19 @@ impl ScrawlCoordinator {
         true
     }
 
-    pub fn handle_selection_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) -> bool {
+    /// `repeat`: the key is held and repeating, which never records.
+    pub fn handle_selection_key(
+        &mut self,
+        keystroke: &Keystroke,
+        repeat: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(mode) = self.selection_mode() else {
             return false;
         };
         let mods = keystroke.modifiers;
-        // Esc cancels even with ⌥⇧ still held from the switcher.
+        // Esc cancels even with ⌥⇧ still held from the shortcut.
         if keystroke.key == "escape" {
-            self.switcher.reset();
             self.cancel_recording(cx);
             return true;
         }
@@ -1753,7 +1674,9 @@ impl ScrawlCoordinator {
             mods.alt,
             mods.shift,
         ) {
-            self.telemetry.emit_capture_shortcut();
+            if !repeat {
+                self.telemetry.emit_capture_shortcut();
+            }
             return true;
         }
         if mods.platform || mods.control || mods.alt {
@@ -1763,7 +1686,9 @@ impl ScrawlCoordinator {
         // The record shortcut's key ("S") also records on its own while the picker is up.
         let label = self.shortcut_label();
         let record_key = crate::capture::shortcut_parts(&label).1;
+        let records = |key: &str| key == "enter" || key.eq_ignore_ascii_case(record_key);
         match keystroke.key.as_str() {
+            key if repeat && records(key) => {}
             "space" | " " => self.toggle_selection_mode(cx),
             "escape" => self.cancel_recording(cx),
             "enter" => self.record_selected_mode(cx),
@@ -1968,19 +1893,6 @@ impl ScrawlCoordinator {
     fn picker_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let [sx, sy] = current_mouse_screen()
             .unwrap_or([f32::from(event.position.x), f32::from(event.position.y)]);
-        // The held switcher keeps the area until ⌥⇧ is released.
-        if self.hold_picker {
-            if self.selection_mode() == Some(SelectionMode::Area)
-                && let Some((start, _)) = self.selection_drag
-            {
-                self.selection_drag = Some((start, [sx, sy]));
-            } else {
-                self.selection_drag = None;
-            }
-            self.sync_picker_overlay();
-            cx.notify();
-            return;
-        }
         if let Some((start, _)) = self.selection_drag.take() {
             if let Some([x, y, w, h]) = area_rect(start, [sx, sy], self.display_rect) {
                 let target = region_target(x, y, w, h, &self.selectable_windows);
@@ -2027,27 +1939,14 @@ impl ScrawlCoordinator {
         let elapsed_ms = recording_ms.unwrap_or(self.last_elapsed_ms);
         let clock = format_clock(elapsed_ms);
         let has_iphone = self.iphone.is_some();
-        let stroke_count = self
-            .telemetry
-            .strokes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter(|s| !s.laser)
-            .count();
 
         let pres = match self.island_phase {
             IslandPhase::Hidden | IslandPhase::Dismissing => Pres::Hidden,
-            IslandPhase::Selecting { mode } => Pres::Selecting {
-                mode,
-                hold: self.hold_picker,
-                has_iphone,
-            },
-            IslandPhase::Recording if self.is_paused() => Pres::Paused { stroke_count },
+            IslandPhase::Selecting { mode } => Pres::Selecting { mode, has_iphone },
+            IslandPhase::Recording if self.is_paused() => Pres::Paused,
             IslandPhase::Recording => Pres::Recording {
                 chips: self.reveal.is_open(),
                 has_iphone,
-                stroke_count,
                 pausable: matches!(
                     self.active_recording.as_ref().map(|rec| &rec.source),
                     Some(CaptureSource::Screen { .. })
@@ -2056,6 +1955,7 @@ impl ScrawlCoordinator {
             IslandPhase::Processing => Pres::Processing,
             IslandPhase::Completed { inbox_count, .. } => Pres::Completed {
                 label: completed_label(inbox_count, self.completed_note.as_deref()),
+                routes: self.route_chip_labels(),
             },
         };
         PillSnapshot {
@@ -2070,7 +1970,7 @@ impl ScrawlCoordinator {
     /// clicks and decides what it shows: the always-on bar, the hint, listening, a notice.
     pub fn tick_dictation(&mut self, cx: &mut Context<Self>) {
         use crate::native::pill::PillAction;
-        let capture_busy = self.switcher.is_held()
+        let capture_busy = self.shortcut.is_pending()
             || self.is_recording()
             || self.is_selecting()
             || self.is_processing();
@@ -2151,13 +2051,13 @@ impl ScrawlCoordinator {
             PillAction::SelectMode(mode) => self.click_selection_mode(mode, cx),
             PillAction::SwitchRecording(mode) => self.switch_recording(mode, cx),
             PillAction::RecordSelected => self.record_selected_mode(cx),
-            PillAction::Undo => self.undo_stroke(cx),
             PillAction::Cancel => self.cancel_recording(cx),
             PillAction::Finish => self.finish_recording(cx),
             PillAction::TogglePause => self.toggle_pause(cx),
             PillAction::Paste(target) => self.paste_completed_bundle(target, cx),
             PillAction::Inspect => self.inspect_completed_bundle(cx),
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
+            PillAction::Route(index) => self.choose_route(index, cx),
             // Dictation's states never show while a capture owns the capsule.
             PillAction::MessageClicked => {}
             PillAction::RecordScreen if !self.is_recording() => self.record_from_pill(cx),
@@ -2166,7 +2066,9 @@ impl ScrawlCoordinator {
     }
 
     pub fn dismiss_island(&mut self, cx: &mut Context<Self>) {
-        if !self.is_recording() { self.playback.take(); }
+        if !self.is_recording() {
+            self.playback.take();
+        }
         if matches!(
             self.island_phase,
             IslandPhase::Hidden | IslandPhase::Dismissing
@@ -2235,7 +2137,9 @@ impl ScrawlCoordinator {
     }
 
     /// Acts on smart routing's decision for a finished local capture (the clipboard already has
-    /// it): a send waits out the undo window first; an offer is only named in the review window.
+    /// it): a send waits out the undo window first, with the runner-up one click away; an offer
+    /// asks on the Completed island ("Send to DESKTOP" beside Paste) and sends nothing until a
+    /// session is picked.
     fn act_on_route(
         &mut self,
         dir: PathBuf,
@@ -2244,21 +2148,67 @@ impl ScrawlCoordinator {
         cx: &mut Context<Self>,
     ) {
         use crate::routing::smart::Decision;
+        let showing = self.completed_dir.as_deref() == Some(dir.as_path());
         match &judgement.decision {
-            Decision::Send { .. } => {
-                if let Some(dest) = crate::routing::smart::destination(&judgement, url.as_deref()) {
-                    self.send_after_undo(dir, dest, cx);
+            Decision::Send { to, instead } => {
+                if showing {
+                    self.route_chips = RouteChip::switches(instead, url.as_deref());
                 }
+                self.send_after_undo(
+                    dir,
+                    crate::routing::smart::destination_of(to, url.as_deref()),
+                    cx,
+                );
             }
             Decision::Offer { choices } => {
+                if showing {
+                    self.route_chips = RouteChip::asks(choices, url.as_deref());
+                }
                 let names: Vec<String> = choices
                     .iter()
                     .map(|c| island_title(c.candidate.label()))
                     .collect();
-                self.review_status = Some(format!("Copied · for {}?", names.join(" or ")));
+                if self
+                    .review_bundle
+                    .as_ref()
+                    .is_some_and(|(shown, _)| *shown == dir)
+                {
+                    self.review_status = Some(format!("Copied · for {}?", names.join(" or ")));
+                }
             }
             Decision::Keep { .. } => {}
         }
+    }
+
+    /// The labels of the Completed island's route chips.
+    fn route_chip_labels(&self) -> Vec<String> {
+        self.route_chips
+            .iter()
+            .map(|chip| chip.label.clone())
+            .collect()
+    }
+
+    /// A route chip on the Completed island was clicked: the capture goes to that session now,
+    /// as Kit's choice (it replaces a send waiting out its undo window).
+    pub fn choose_route(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(dir) = self.completed_dir.clone() else {
+            return;
+        };
+        let Some(chip) = self.route_chips.get(index).cloned() else {
+            return;
+        };
+        self.route_chips.clear();
+        self.routing = None;
+        self.pending_send = None;
+        self.mark_handled(&dir);
+        scrawl_log(format!(
+            "routing (smart): chose {} ({}) for {}",
+            chip.dest.title,
+            chip.dest.session,
+            dir.display()
+        ));
+        self.send_completed(dir, chip.dest, cx);
+        cx.notify();
     }
 
     /// Shows "Sending to …" for `SMART_SEND_UNDO`, then records the destination and sends,
@@ -2270,7 +2220,9 @@ impl ScrawlCoordinator {
         cx: &mut Context<Self>,
     ) {
         self.pending_send = Some(dir.clone());
-        self.completed_note = Some(format!("Sending to {}…", island_title(&dest.title)));
+        if self.completed_dir.as_deref() == Some(dir.as_path()) {
+            self.completed_note = Some(format!("Sending to {}…", island_title(&dest.title)));
+        }
         cx.spawn(async move |entity, cx| {
             cx.background_executor().timer(SMART_SEND_UNDO).await;
             let _ = entity.update(cx, |coord, cx| {
@@ -2278,11 +2230,7 @@ impl ScrawlCoordinator {
                     return;
                 }
                 coord.pending_send = None;
-                if let Err(err) = crate::handoff::load_bundle(&dir).and_then(|(_, mut bundle)| {
-                    crate::routing::record_destination(&dir, &mut bundle, dest.clone())
-                }) {
-                    scrawl_log(format!("routing: couldn't record the destination: {err:#}"));
-                }
+                coord.route_chips.clear();
                 coord.send_completed(dir, dest, cx);
                 cx.notify();
             });
@@ -2290,8 +2238,18 @@ impl ScrawlCoordinator {
         .detach();
     }
 
-    /// Cancels a smart send of `dir` that is still in its undo window.
+    /// Cancels an automatic send of `dir` (while its route is worked out or during its undo window).
     fn keep_pending_send(&mut self, dir: &std::path::Path) {
+        if self.completed_dir.as_deref() == Some(dir) {
+            self.route_chips.clear();
+        }
+        if self.routing.as_deref() == Some(dir) {
+            self.routing = None;
+            scrawl_log(format!(
+                "routing: kept {} on the clipboard while its route was worked out",
+                dir.display()
+            ));
+        }
         if self.pending_send.as_deref() == Some(dir) {
             self.pending_send = None;
             self.completed_note = None;
@@ -2311,12 +2269,26 @@ impl ScrawlCoordinator {
         cx: &mut Context<Self>,
     ) {
         let title = island_title(&dest.title);
-        self.completed_note = Some(format!("Sending to {title}…"));
+        if self.completed_dir.as_deref() == Some(dir.as_path()) {
+            self.completed_note = Some(format!("Sending to {title}…"));
+        }
+        if self
+            .review_bundle
+            .as_ref()
+            .is_some_and(|(shown, _)| *shown == dir)
+        {
+            self.review_status = Some(format!("Sending to {title}…"));
+        }
         let (sender, receiver) = flume::bounded(1);
         let send_dir = dir.clone();
         let spawned = std::thread::Builder::new()
             .name("scrawl-send".into())
             .spawn(move || {
+                if let Err(err) = crate::handoff::load_bundle(&send_dir).and_then(|(_, mut bundle)| {
+                    crate::routing::record_destination(&send_dir, &mut bundle, dest.clone())
+                }) {
+                    scrawl_log(format!("routing: couldn't record the destination: {err:#}"));
+                }
                 let _ = sender.send(crate::delivery::deliver(
                     &send_dir,
                     &dest.session,
@@ -2512,20 +2484,16 @@ impl ScrawlCoordinator {
     /// The menu bar's picker, opening on the mode the last recording used.
     pub fn begin_target_selection(&mut self, cx: &mut Context<Self>) {
         if self.ready_to_record() {
-            self.open_picker(None, false, cx);
+            self.open_picker(None, cx);
         }
     }
 
-    /// Opens the picker on `mode`, else on the mode the last recording used. `hold`: it is the
-    /// held switcher (`crate::hold`), which records on release.
-    fn open_picker(&mut self, mode: Option<SelectionMode>, hold: bool, cx: &mut Context<Self>) {
+    /// Opens the picker on `mode`, else on the mode the last recording used.
+    fn open_picker(&mut self, mode: Option<SelectionMode>, cx: &mut Context<Self>) {
         if self.is_recording() || self.is_processing() {
             return;
         }
-        scrawl_log(format!(
-            "open_picker invoked (mode: {mode:?}, hold: {hold})"
-        ));
-        self.hold_picker = hold;
+        scrawl_log(format!("open_picker invoked (mode: {mode:?})"));
         let started = Instant::now();
         self.recording_shortcut_key = false;
         self.selectable_windows.clear();
@@ -2691,9 +2659,7 @@ impl ScrawlCoordinator {
             quick && target.mode == CaptureMode::Display,
             std::sync::atomic::Ordering::Release,
         );
-        if let IslandPhase::Selecting { mode } = self.island_phase
-            && !self.hold_picker
-        {
+        if let IslandPhase::Selecting { mode } = self.island_phase {
             self.remember_mode(mode);
         }
         self.recording_shortcut_key = false;
@@ -2967,6 +2933,7 @@ impl ScrawlCoordinator {
         drop(rec._metal_overlay);
         self.set_island_phase(IslandPhase::Processing);
         self.completed_note = None;
+        self.route_chips.clear();
         cx.notify();
         if matches!(source, CaptureSource::Lab) {
             let duration_ms = rec.started.elapsed().as_millis() as u64;
@@ -3001,6 +2968,7 @@ impl ScrawlCoordinator {
             })
             .flatten();
         let captured = target.bundle_id.clone();
+        let finish_started = Instant::now();
         let route = (screen && !smart).then(|| {
             let (front, captured) = (front.clone(), captured.clone());
             std::thread::spawn(move || {
@@ -3038,14 +3006,10 @@ impl ScrawlCoordinator {
                             }
                             let duration_ms =
                                 finalized.as_ref().map_or(0, |(_, b, _)| b.duration_ms);
-                            return (finalized, duration_ms, None);
+                            return (finalized, duration_ms);
                         }
                         CaptureSource::Lab => {
-                            return (
-                                Err(anyhow::anyhow!("a lab recording has no bundle")),
-                                0,
-                                None,
-                            );
+                            return (Err(anyhow::anyhow!("a lab recording has no bundle")), 0);
                         }
                     };
                     let stop_started = Instant::now();
@@ -3066,7 +3030,7 @@ impl ScrawlCoordinator {
                     activity.stop_started = Some(stop_started);
                     activity.stop_ms = Some(stop_started.elapsed().as_millis() as u64);
                     let duration_ms = recording.duration_ms;
-                    let mut finalized = crate::finalize_capture_bundle(
+                    let finalized = crate::finalize_capture_bundle(
                         &bundle_dir,
                         target,
                         recording,
@@ -3076,50 +3040,163 @@ impl ScrawlCoordinator {
                         None,
                         activity,
                     );
-                    if let Ok((dir, bundle, _)) = &mut finalized
-                        && let Some(Ok(Some(dest))) = route.map(std::thread::JoinHandle::join)
-                        && let Err(err) = crate::routing::record_destination(dir, bundle, dest)
-                    {
-                        scrawl_log(format!("routing: couldn't record the destination: {err:#}"));
-                    }
-                    let judged = match (&finalized, look.map(std::thread::JoinHandle::join)) {
-                        (Ok((dir, bundle, _)), Some(Ok(Some(live)))) => {
-                            Some(crate::routing::judge_capture(dir, bundle, live))
-                        }
-                        _ => None,
-                    };
-                    (finalized, duration_ms, judged)
+                    (finalized, duration_ms)
                 })
                 .await;
 
-            let _ = entity.update(cx, |coord, cx| {
-                let (finalized, duration_ms, judged) = result;
-                let mut frame_count = 1;
-                coord.completed_dir = None;
-                if let Ok((dir, bundle, _)) = finalized {
-                    frame_count = bundle.keyframes.len();
-                    let _ = crate::handoff::copy_bundle_to_clipboard(&dir);
-                    coord.completed_dir = Some(dir.clone());
-                    coord.last_local_capture_ms = crate::now_epoch_ms();
-                    if let Some(dest) = bundle.destination.clone() {
-                        coord.send_completed(dir.clone(), dest, cx);
+            // The capture is copied and shown as done as soon as it's built; routing (the
+            // browser tab, the port's process, OpenCode's sessions) can take seconds, or longer
+            // when the server is down, so its outcome follows when it's ready.
+            let routed = entity
+                .update(cx, |coord, cx| {
+                    let (finalized, duration_ms) = result;
+                    let mut frame_count = 1;
+                    let mut routed = None;
+                    coord.completed_dir = None;
+                    if let Ok((dir, bundle, _)) = finalized {
+                        frame_count = bundle.keyframes.len();
+                        let _ = crate::handoff::copy_bundle_to_clipboard(&dir);
+                        coord.completed_dir = Some(dir.clone());
+                        coord.last_local_capture_ms = crate::now_epoch_ms();
+                        if route.is_some() || look.is_some() {
+                            coord.routing = Some(dir.clone());
+                            routed = Some((dir.clone(), look.is_some().then(|| bundle.clone())));
+                        }
+                        coord.set_review_bundle((dir, bundle), coord.completed_note.clone());
                     }
-                    coord.set_review_bundle((dir.clone(), bundle), coord.completed_note.clone());
-                    if let Some((judgement, url)) = judged {
-                        coord.act_on_route(dir, judgement, url, cx);
+                    coord.set_island_phase(IslandPhase::Completed {
+                        finished_at: Instant::now(),
+                        frame_count,
+                        duration_ms,
+                        inbox_count: 0,
+                    });
+                    cx.notify();
+                    routed
+                })
+                .ok()
+                .flatten();
+            let copied_ms = finish_started.elapsed().as_millis();
+            let Some((dir, bundle)) = routed else {
+                return;
+            };
+            let route_dir = dir.clone();
+            let route = cx
+                .background_executor()
+                .spawn(async move {
+                    if let Some(dest) = route.and_then(|route| route.join().ok().flatten()) {
+                        return RouteOutcome::Send(dest);
                     }
-                }
-                coord.set_island_phase(IslandPhase::Completed {
-                    finished_at: Instant::now(),
-                    frame_count,
-                    duration_ms,
-                    inbox_count: 0,
-                });
-                cx.notify();
-            });
+                    if let (Some(bundle), Some(live)) =
+                        (bundle, look.and_then(|look| look.join().ok().flatten()))
+                    {
+                        let (judgement, url) =
+                            crate::routing::judge_capture(&route_dir, &bundle, live);
+                        return RouteOutcome::Judged(judgement, url);
+                    }
+                    RouteOutcome::None
+                })
+                .await;
+            scrawl_log(format!(
+                "finish: copied at {copied_ms}ms · routed at {}ms",
+                finish_started.elapsed().as_millis()
+            ));
+            let _ = entity.update(cx, |coord, cx| coord.route_arrived(dir, route, cx));
         })
         .detach();
     }
+
+    /// Acts on a local capture's route once it's worked out, unless ✕ or Paste on the Completed
+    /// island kept the capture on the clipboard first.
+    fn route_arrived(
+        &mut self,
+        dir: PathBuf,
+        route: RouteOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        if self.routing.as_deref() != Some(dir.as_path()) {
+            if !matches!(route, RouteOutcome::None) {
+                scrawl_log(format!(
+                    "routing: {} was kept on the clipboard before its route arrived",
+                    dir.display()
+                ));
+            }
+            return;
+        }
+        self.routing = None;
+        match route {
+            RouteOutcome::None => return,
+            RouteOutcome::Send(dest) => self.send_completed(dir, dest, cx),
+            RouteOutcome::Judged(judgement, url) => self.act_on_route(dir, judgement, url, cx),
+        }
+        cx.notify();
+    }
+}
+
+/// A session offered one click away on the Completed island.
+#[derive(Clone, Debug)]
+struct RouteChip {
+    label: String,
+    dest: crate::model::Destination,
+}
+
+impl RouteChip {
+    /// How many fit beside Paste.
+    const MAX: usize = 2;
+
+    fn chosen(scored: &crate::routing::smart::Scored, url: Option<&str>, label: String) -> Self {
+        let mut dest = crate::routing::smart::destination_of(scored, url);
+        dest.via = "chosen".into();
+        Self { label, dest }
+    }
+
+    /// An offer's chips: "Send to DESKTOP", then the runner-up by name.
+    fn asks(choices: &[crate::routing::smart::Scored], url: Option<&str>) -> Vec<Self> {
+        choices
+            .iter()
+            .take(Self::MAX)
+            .enumerate()
+            .map(|(i, scored)| {
+                let title = chip_title(scored.candidate.label());
+                let label = if i == 0 {
+                    format!("Send to {title}")
+                } else {
+                    title
+                };
+                Self::chosen(scored, url, label)
+            })
+            .collect()
+    }
+
+    /// The undo window's chip beside "Sending to DESKTOP…": "Send to OPENCODE IOS" instead.
+    fn switches(instead: &[crate::routing::smart::Scored], url: Option<&str>) -> Vec<Self> {
+        instead
+            .iter()
+            .take(1)
+            .map(|scored| {
+                let label = format!("Send to {}", chip_title(scored.candidate.label()));
+                Self::chosen(scored, url, label)
+            })
+            .collect()
+    }
+}
+
+/// A session title short enough for a chip.
+fn chip_title(title: &str) -> String {
+    const MAX: usize = 16;
+    if title.chars().count() > MAX {
+        format!(
+            "{}…",
+            title.chars().take(MAX - 1).collect::<String>().trim_end()
+        )
+    } else {
+        title.to_owned()
+    }
+}
+
+enum RouteOutcome {
+    None,
+    Send(crate::model::Destination),
+    Judged(crate::routing::smart::Judgement, Option<String>),
 }
 
 pub struct HudPillWindow {
@@ -3186,19 +3263,10 @@ impl Render for HudPillWindow {
         let island_velocity = coord.island_velocity;
         let highlight_prev = coord.highlight_prev;
         let highlight_p = ease_out_cubic(motion::age(coord.highlight_since) / HIGHLIGHT_FADE_S);
-        let stroke_count = coord
-            .telemetry
-            .strokes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter(|s| !s.laser)
-            .count();
-
         let clock = format_clock(elapsed_ms);
         let has_iphone = coord.iphone.is_some();
         let completed_note = coord.completed_note.clone();
-        let hold = coord.hold_picker;
+        let routes = coord.route_chip_labels();
         // The Recording capsule's trailing group: switch chips or controls, and the swap between.
         let chips = if matches!(phase, IslandPhase::Recording) {
             coord.reveal.is_open()
@@ -3222,9 +3290,9 @@ impl Render for HudPillWindow {
             target_phase,
             &clock,
             has_iphone,
-            hold,
             chips,
             completed_note.as_deref(),
+            &routes,
         );
         let snap_initial_width =
             phase_age < 0.025 && matches!(phase, IslandPhase::Selecting { .. }) && opacity < 0.35;
@@ -3337,6 +3405,7 @@ impl Render for HudPillWindow {
         let c_paste_out = self.coordinator.clone();
         let c_inspect = self.coordinator.clone();
         let c_dismiss = self.coordinator.clone();
+        let c_route = self.coordinator.clone();
         let c_record = self.coordinator.clone();
         let c_sel_cancel = self.coordinator.clone();
 
@@ -3373,9 +3442,9 @@ impl Render for HudPillWindow {
             let Some(layout) = switch_layout else {
                 return Vec::new();
             };
-            let modes = SelectionMode::available(has_iphone || hold);
+            let modes = SelectionMode::available(has_iphone);
             let mut widths: Vec<f32> = modes.iter().map(|&m| segment_width(window, m)).collect();
-            if mode.shows_record() && !hold {
+            if mode.shows_record() {
                 widths.push(chip_width(window, "Record", FontWeight::SEMIBOLD));
             }
             widths.extend([layout.divider_w, CHIP_H]);
@@ -3443,14 +3512,14 @@ impl Render for HudPillWindow {
             IslandPhase::Selecting { mode } => {
                 let alphas = selecting_alphas(mode);
                 let alpha = |i: usize| alphas.get(i).copied().unwrap_or(1.0);
-                let n_modes = SelectionMode::available(has_iphone || hold).len();
-                let record = mode.shows_record() && !hold;
+                let n_modes = SelectionMode::available(has_iphone).len();
+                let record = mode.shows_record();
                 let after = n_modes + usize::from(record);
                 traced(
                     row.when_some(switch_layout, |row, layout| {
                         row.relative().left(px(layout.dx))
                     }),
-                    SelectionMode::available(has_iphone || hold)
+                    SelectionMode::available(has_iphone)
                         .iter()
                         .map(|m| m.label())
                         .map(|label| format!("chip:{label}"))
@@ -3461,7 +3530,7 @@ impl Render for HudPillWindow {
                         .collect(),
                 )
                 .children(
-                    SelectionMode::available(has_iphone || hold)
+                    SelectionMode::available(has_iphone)
                         .iter()
                         .enumerate()
                         .map(|(i, &segment)| {
@@ -3495,7 +3564,13 @@ impl Render for HudPillWindow {
             }
             IslandPhase::Completed { inbox_count, .. } => traced(
                 row,
-                named(&["done.lead", "divider.lead", "paste", "inspect", "close"]),
+                ["done.lead", "divider.lead", "paste"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .chain((0..routes.len()).map(|i| format!("route:{i}")))
+                    .chain(["inspect".to_owned(), "close".to_owned()])
+                    .map(|name| Some((name, 1.0)))
+                    .collect(),
             )
             .child(
                 island_lead()
@@ -3550,8 +3625,14 @@ impl Render for HudPillWindow {
                         });
                     }),
             )
+            .children(routes.iter().enumerate().map(|(i, label)| {
+                let c_route = c_route.clone();
+                pill_chip(("hud-route", i), label.clone()).on_click(move |_, _, cx| {
+                    c_route.update(cx, |coord, cx| coord.choose_route(i, cx));
+                })
+            }))
             .child(
-                pill_chip("hud-inspect", "Inspect", true).on_click(move |_, _, cx| {
+                pill_chip("hud-inspect", "Inspect").on_click(move |_, _, cx| {
                     c_inspect.update(cx, |coord, cx| coord.inspect_completed_bundle(cx));
                 }),
             )
@@ -3642,13 +3723,7 @@ impl Render for HudPillWindow {
                         (fade > 0.002).then(|| {
                             let (out_alphas, _) = alphas(out_chips, fade);
                             traced(
-                                self.recording_trail(
-                                    out_chips,
-                                    has_iphone,
-                                    stroke_count,
-                                    &out_alphas,
-                                    false,
-                                ),
+                                self.recording_trail(out_chips, has_iphone, &out_alphas, false),
                                 trail_keys(out_chips, has_iphone, &out_alphas, "out:"),
                             )
                         })
@@ -3664,7 +3739,7 @@ impl Render for HudPillWindow {
                             slot.child(div().absolute().left(px(0.0)).top(px(0.0)).child(group))
                         })
                         .child(traced(
-                            self.recording_trail(chips, has_iphone, stroke_count, &in_alphas, true),
+                            self.recording_trail(chips, has_iphone, &in_alphas, true),
                             trail_keys(chips, has_iphone, &in_alphas, ""),
                         ))
                 })
@@ -3724,7 +3799,7 @@ impl Render for HudPillWindow {
             // Clicking a chip can make the pill the key window; keep the picker's keyboard map.
             .on_key_down(move |event: &KeyDownEvent, _, cx| {
                 if c_keys.update(cx, |coord, cx| {
-                    coord.handle_selection_key(&event.keystroke, cx)
+                    coord.handle_selection_key(&event.keystroke, event.is_held, cx)
                 }) {
                     cx.stop_propagation();
                 }
@@ -3845,13 +3920,12 @@ impl SwitchLayout {
 
 impl HudPillWindow {
     /// One trailing group of the Recording capsule, each item faded by `alphas`: the switch chips
-    /// (Screen selected, as a tap records the screen) or Undo · Cancel · Finish. An outgoing
+    /// (Screen selected, as a tap records the screen) or Cancel · Finish. An outgoing
     /// group isn't `interactive`.
     fn recording_trail(
         &self,
         chips: bool,
         has_iphone: bool,
-        stroke_count: usize,
         alphas: &[f32],
         interactive: bool,
     ) -> Div {
@@ -3871,22 +3945,12 @@ impl HudPillWindow {
                 },
             ));
         }
-        let c_undo = self.coordinator.clone();
         let c_cancel = self.coordinator.clone();
         let c_finish = self.coordinator.clone();
         group
             .child(
-                pill_chip("hud-undo", "Undo", stroke_count > 0)
+                pill_chip("hud-cancel", "Cancel")
                     .opacity(alpha(0))
-                    .when(interactive && stroke_count > 0, |d| {
-                        d.on_click(move |_, _, cx| {
-                            c_undo.update(cx, |coord, cx| coord.undo_stroke(cx));
-                        })
-                    }),
-            )
-            .child(
-                pill_chip("hud-cancel", "Cancel", true)
-                    .opacity(alpha(1))
                     .when(interactive, |d| {
                         d.on_click(move |_, _, cx| {
                             c_cancel.update(cx, |coord, cx| coord.cancel_recording(cx));
@@ -3895,7 +3959,7 @@ impl HudPillWindow {
             )
             .child(
                 primary_chip("hud-done", "Finish")
-                    .opacity(alpha(2))
+                    .opacity(alpha(1))
                     .when(interactive, |d| {
                         d.on_click(move |_, _, cx| {
                             c_finish.update(cx, |coord, cx| coord.finish_recording(cx));
@@ -3926,7 +3990,7 @@ fn island_divider() -> Div {
         .bg(rgba(0xffffff1a))
 }
 
-fn hud_chip(id: &'static str) -> gpui::Stateful<Div> {
+fn hud_chip(id: impl Into<gpui::ElementId>) -> gpui::Stateful<Div> {
     div()
         .id(id)
         .h(px(CHIP_H))
@@ -3939,19 +4003,16 @@ fn hud_chip(id: &'static str) -> gpui::Stateful<Div> {
         .whitespace_nowrap()
 }
 
-fn pill_chip(id: &'static str, label: &'static str, enabled: bool) -> gpui::Stateful<Div> {
+fn pill_chip(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+) -> gpui::Stateful<Div> {
     hud_chip(id)
         .font_weight(FontWeight::MEDIUM)
-        .text_color(if enabled {
-            rgb(TEXT_SOFT)
-        } else {
-            rgb(0x56565a)
-        })
-        .when(enabled, |d| {
-            d.cursor_pointer()
-                .hover(|s| s.bg(rgba(0xffffff14)).text_color(rgb(TEXT_COLOR)))
-        })
-        .child(label)
+        .text_color(rgb(TEXT_SOFT))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgba(0xffffff14)).text_color(rgb(TEXT_COLOR)))
+        .child(label.into())
 }
 
 fn primary_chip(id: &'static str, label: &'static str) -> gpui::Stateful<Div> {
@@ -4066,10 +4127,6 @@ impl Render for TargetPickerWindow {
             .and_then(PhoneSession::device)
             .or_else(|| coord.iphone.clone())
             .map_or_else(|| "iPhone".to_string(), |d| d.name);
-        let hold = coord.hold_picker;
-        let shortcut = coord.shortcut_label();
-        let (hold_mods, hold_key) = crate::capture::shortcut_parts(&shortcut);
-        let no_phone = hold && iphone_rect.is_none() && coord.iphone.is_none();
 
         // Selection rect in window-local coordinates, clipped to the screen, plus its badge.
         let highlight: Option<([f32; 4], String)> = match mode {
@@ -4084,29 +4141,14 @@ impl Render for TargetPickerWindow {
             }),
             // A picked window is plain to see under the overlay tint, so it gets no badge.
             SelectionMode::Window => None,
-            SelectionMode::Screen if hold => Some((
-                [0.0, 0.0, screen[0], screen[1]],
-                format!(
-                    "Full screen · {hold_key} to switch · drag for an area · release {hold_mods} to record"
-                ),
-            )),
             SelectionMode::Screen => Some((
                 [0.0, 0.0, screen[0], screen[1]],
                 "Full screen · Click to record".to_string(),
             )),
-            SelectionMode::Iphone if no_phone => Some((
-                [0.0, 0.0, screen[0], screen[1]],
-                "No iPhone connected".to_string(),
-            )),
             SelectionMode::Iphone => iphone_rect.map(|[rx, ry, rw, rh]| {
-                let action = if hold {
-                    format!("release {hold_mods} to record")
-                } else {
-                    "Click to record".to_string()
-                };
                 (
                     [(rx - origin[0]) * k, (ry - origin[1]) * k, rw * k, rh * k],
-                    format!("{iphone_name} · {action}"),
+                    format!("{iphone_name} · Click to record"),
                 )
             }),
         }
@@ -4123,7 +4165,6 @@ impl Render for TargetPickerWindow {
                 measure_text(window, &measured_label, BADGE_TEXT, FontWeight::MEDIUM).min(max_text);
             let size = [text_w + 2.0 * BADGE_PX + 2.0, BADGE_H];
             let anchor = match mode {
-                SelectionMode::Iphone if no_phone => BadgeAnchor::Center,
                 SelectionMode::Area | SelectionMode::Iphone => BadgeAnchor::BelowTrailing,
                 SelectionMode::Window | SelectionMode::Screen => BadgeAnchor::Center,
             };
@@ -4184,7 +4225,7 @@ impl Render for TargetPickerWindow {
             // equivalent, keyDown, or input method command) and this runs up to three times:
             // Space and the arrows then toggle or cycle back to where they started.
             if c_key.update(cx, |coord, cx| {
-                coord.handle_selection_key(&event.keystroke, cx)
+                coord.handle_selection_key(&event.keystroke, event.is_held, cx)
             }) {
                 cx.stop_propagation();
             }
@@ -4199,15 +4240,6 @@ impl Render for TargetPickerWindow {
                         IslandPhase::Selecting { mode } => mode,
                         _ => return,
                     };
-                    // The held switcher: a drag selects an area; releasing ⌥⇧ records.
-                    if coord.hold_picker {
-                        coord.selection_drag = Some(([sx, sy], [sx, sy]));
-                        if cur_mode == SelectionMode::Area {
-                            coord.sync_picker_overlay();
-                            cx.notify();
-                        }
-                        return;
-                    }
                     match cur_mode {
                         SelectionMode::Area => {
                             coord.selection_drag = Some(([sx, sy], [sx, sy]));
@@ -4254,29 +4286,12 @@ impl Render for TargetPickerWindow {
         .on_mouse_move(move |event: &MouseMoveEvent, _window, cx| {
             let [sx, sy] = current_mouse_screen()
                 .unwrap_or([f32::from(event.position.x), f32::from(event.position.y)]);
-            let dragging = event.pressed_button == Some(MouseButton::Left);
             c_move.update(cx, |coord, cx| {
                 coord.selection_pointer = Some([sx, sy]);
                 let cur_mode = match coord.island_phase {
                     IslandPhase::Selecting { mode } => mode,
                     _ => return,
                 };
-                if coord.hold_picker
-                    && dragging
-                    && let Some((start, _)) = coord.selection_drag
-                {
-                    let moved = (sx - start[0]).hypot(sy - start[1]) >= 6.0;
-                    if cur_mode != SelectionMode::Area && moved {
-                        let action = coord.switcher.drag();
-                        coord.apply_switcher(action, cx);
-                    }
-                    if coord.selection_mode() == Some(SelectionMode::Area) {
-                        coord.selection_drag = Some((start, [sx, sy]));
-                        coord.sync_picker_overlay();
-                        cx.notify();
-                    }
-                    return;
-                }
                 match cur_mode {
                     SelectionMode::Area => {
                         if let Some((start, _)) = coord.selection_drag {
@@ -4713,11 +4728,13 @@ impl Render for BundleReviewWindow {
                                     false,
                                 )
                                 .on_click(move |_, _, cx| {
-                                    let _ = crate::handoff::open_path(&send_dir);
+                                    let res = crate::handoff::open_path(&send_dir);
+                                    let manager = platform::FILE_MANAGER;
                                     c_send.update(cx, |coord, cx| {
-                                        coord.review_status = Some(
-                                            format!("Opened in {}", platform::FILE_MANAGER).into(),
-                                        );
+                                        coord.review_status = Some(match res {
+                                            Ok(()) => format!("Opened in {manager}"),
+                                            Err(e) => format!("Show in {manager} failed: {e}"),
+                                        });
                                         cx.notify();
                                     });
                                 }),
@@ -5028,6 +5045,7 @@ fn tab_chip(id: &'static str, label: &'static str, selected: bool) -> gpui::Stat
 fn button_base(id: &'static str, primary: bool) -> gpui::Stateful<Div> {
     div()
         .id(id)
+        .map(platform::drag_region_control)
         .h(px(28.0))
         .px(px(12.0))
         .rounded(px(7.0))
@@ -5139,9 +5157,8 @@ fn open_picker_windows(coord_entity: &Entity<ScrawlCoordinator>, cx: &mut App) {
         },
     );
     // A menu bar (accessory) app isn't active when its menu or capsule is used, and keys only
-    // reach the picker while it is. The held switcher takes its keys from the key tap instead,
-    // so it leaves the app in front alone.
-    if !lab && !coord_entity.read(cx).switcher.is_held() {
+    // reach the picker while it is.
+    if !lab {
         platform::take_keys(cx);
     }
 
@@ -5414,6 +5431,7 @@ pub fn run_app(
         start_global_input_tap(Arc::clone(&telemetry));
         platform::start_updates();
         crate::retention::start();
+        crate::recover::start();
         crate::hex::watch();
         crate::speech_model::ensure();
         let menu_rx = install_status_bar();
@@ -5573,6 +5591,7 @@ pub fn run_app(
                                 let duration_ms = bundle.duration_ms;
                                 let inbox_count = coord.add_to_inbox(&dir, &bundle);
                                 coord.completed_dir = Some(dir.clone());
+                                coord.route_chips.clear();
                                 coord.set_review_bundle((dir, *bundle), status);
                                 coord.set_island_phase(IslandPhase::Completed {
                                     finished_at: Instant::now(),
@@ -5591,8 +5610,8 @@ pub fn run_app(
 
                     motion::poll_tune();
                     loop_coord.update(cx, |coord, cx| coord.tick_dictation(cx));
-                    if loop_coord.read(cx).switcher.is_held() {
-                        loop_coord.update(cx, |coord, cx| coord.tick_switcher(cx));
+                    if loop_coord.read(cx).shortcut.is_pending() {
+                        loop_coord.update(cx, |coord, cx| coord.tick_shortcut(cx));
                     } else if loop_coord.read(cx).telemetry.take_escape()
                         && (loop_coord.read(cx).is_selecting()
                             || (loop_coord.read(cx).is_recording()

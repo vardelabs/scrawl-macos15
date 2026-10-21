@@ -133,6 +133,13 @@ pub(super) fn window_drag_region(region: Div) -> Div {
         .window_control_area(WindowControlArea::Drag)
 }
 
+/// A control inside a `window_drag_region`. Windows hit-tests a press before it is delivered:
+/// over a control that doesn't occlude, the region answers `HTCAPTION`, and the caption's move
+/// loop swallows the mouse-up, so the click never fires.
+pub(super) fn drag_region_control<E: InteractiveElement>(control: E) -> E {
+    control.occlude()
+}
+
 /// Minimize, maximize and close, drawn with Segoe Fluent Icons like every Windows 11 app.
 pub(super) fn caption_buttons() -> Option<AnyElement> {
     let glyph_font = if win::shell::windows_11() {

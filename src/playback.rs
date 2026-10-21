@@ -1,36 +1,37 @@
-//! A warm helper handles volume ramps (one second, or a quick one for dictation) without blocking recording or the UI.
-//! Pipe EOF also restores volume when the parent exits unexpectedly.
+//! Lowers the output volume while recording (`lowerPlayback`). A warm `scrawl-helper
+//! playback-volume` ramps it without blocking recording or the UI, and puts it back when told
+//! to stop, when this process exits or crashes (its stdin closes), or when it is terminated.
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
+use crate::handoff::{default_config_path, load_config_from};
+
+/// Restores the volume when dropped.
 pub struct Guard;
-static HELPER: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 
-fn level(mode: Option<&str>, percent: Option<u8>) -> Option<u8> {
-    match mode {
-        Some("mute") => Some(0),
-        Some("lower") => Some(percent.unwrap_or(20).min(100)),
-        _ => None,
-    }
-}
+static HELPER: Mutex<Option<Child>> = Mutex::new(None);
 
 fn command(line: Option<&str>) -> anyhow::Result<()> {
-    let mut helper = HELPER.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
+    let mut helper = HELPER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(child) = helper.as_mut()
         && child.try_wait()?.is_some()
     {
         helper.take();
     }
     if helper.is_none() {
-        *helper = Some(Command::new(crate::helper::path()?)
-            .args(["playback-volume", "--server"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .spawn()?);
+        *helper = Some(
+            Command::new(crate::helper::path()?)
+                .args(["playback-volume", "--server"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()?,
+        );
     }
     if let Some(line) = line {
-        let stdin = helper.as_mut().and_then(|child| child.stdin.as_mut())
+        let stdin = helper
+            .as_mut()
+            .and_then(|child| child.stdin.as_mut())
             .ok_or_else(|| anyhow::anyhow!("Playback helper stdin missing"))?;
         writeln!(stdin, "{line}")?;
         stdin.flush()?;
@@ -38,8 +39,11 @@ fn command(line: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Starts the helper ahead of the first recording, when the setting is on.
 pub fn warm_up() {
-    if let Err(error) = command(None) {
+    if load_config_from(&default_config_path()).lowers_playback()
+        && let Err(error) = command(None)
+    {
         crate::capture::scrawl_log(format!("Playback helper: {error:#}"));
     }
 }
@@ -48,17 +52,22 @@ pub fn warm_up() {
 const QUICK_RAMP_S: f32 = 0.12;
 
 impl Guard {
+    /// Lowers the volume over one second if the setting is on.
     pub fn start() -> Option<Self> {
         Self::start_with(None)
     }
 
+    /// Lowers the volume over `QUICK_RAMP_S`, for dictation.
     pub fn start_quick() -> Option<Self> {
         Self::start_with(Some(QUICK_RAMP_S))
     }
 
     fn start_with(seconds: Option<f32>) -> Option<Self> {
-        let config = crate::handoff::load_config_from(&crate::handoff::default_config_path());
-        let percent = level(Some(crate::handoff::playback_mode_in(&config)), config.playback_level)?;
+        let config = load_config_from(&default_config_path());
+        if !config.lowers_playback() {
+            return None;
+        }
+        let percent = config.recording_volume();
         let line = match seconds {
             Some(seconds) => format!("start {percent} {seconds}"),
             None => format!("start {percent}"),
@@ -78,20 +87,5 @@ impl Drop for Guard {
         if let Err(error) = command(Some("stop")) {
             crate::capture::scrawl_log(format!("Restoring playback volume: {error:#}"));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn only_mute_and_lower_change_playback_and_levels_are_bounded() {
-        assert_eq!(level(None, Some(0)), None);
-        assert_eq!(level(Some("unknown"), Some(0)), None);
-        assert_eq!(level(Some("unchanged"), Some(0)), None);
-        assert_eq!(level(Some("mute"), Some(80)), Some(0));
-        assert_eq!(level(Some("lower"), None), Some(20));
-        assert_eq!(level(Some("lower"), Some(0)), Some(0));
-        assert_eq!(level(Some("lower"), Some(255)), Some(100));
     }
 }

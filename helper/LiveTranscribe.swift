@@ -7,27 +7,23 @@ import Speech
 /// `{"segment":{t0,t1,text},"words":[…]}` per finalized result, and after stdin closes and the
 /// tail is finalized `{"done":true,"samples":N}`. Times are ms from the first sample, as
 /// `transcribe` gives them for the WAV. It never downloads a model: one that isn't installed
-/// fails at once, and Scrawl transcribes the finished recording instead. Like `Transcriber`, it
-/// needs macOS 26's SpeechAnalyzer and fails at once on older systems.
+/// fails at once, and Scrawl transcribes the finished recording instead.
+/// Before macOS 26 there is no SpeechAnalyzer to stream to, so it fails at once the same way.
 enum LiveTranscriber {
-  static func run() async throws {
-    #if SCRAWL_MACOS26_SDK
-    guard #available(macOS 26, *) else { throw Transcriber.unavailable }
-    try await LiveAnalyzer.run()
-    #else
-    throw Transcriber.unavailable
+  static func run(preferred: String? = nil) async throws {
+    #if compiler(>=6.2)
+    if #available(macOS 26, *) { return try await stream(preferred: preferred) }
     #endif
+    throw HelperError("live transcription needs macOS 26's SpeechAnalyzer")
   }
-}
 
-#if SCRAWL_MACOS26_SDK
-@available(macOS 26, *)
-private enum LiveAnalyzer {
-  static func run() async throws {
-    guard SpeechTranscriber.isAvailable else { throw HelperError("SpeechTranscriber isn't available on this Mac") }
-    var found = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current)
-    if found == nil { found = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "en-US")) }
-    guard let locale = found else { throw HelperError("SpeechTranscriber has no supported locale") }
+  #if compiler(>=6.2)
+  @available(macOS 26, *)
+  private static func stream(preferred: String?) async throws {
+    guard let choice = await SpeechModel.choose(preferred: preferred), choice.engine == .speech else {
+      throw HelperError("SpeechTranscriber isn't available on this Mac")
+    }
+    let locale = choice.locale
     let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
     guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
       throw HelperError("the speech model for \(locale.identifier) isn't installed")
@@ -72,8 +68,10 @@ private enum LiveAnalyzer {
   private static func ms(_ time: CMTime) -> Int {
     time.seconds.isFinite ? max(0, Int((time.seconds * 1000).rounded())) : 0
   }
+  #endif
 }
 
+#if compiler(>=6.2)
 /// Turns stdin into analyzer buffers, about 100 ms at a time.
 @available(macOS 26, *)
 private final class StdinPCM: @unchecked Sendable {

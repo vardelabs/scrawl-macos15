@@ -999,7 +999,7 @@ fn run_key_poller(telemetry: Arc<SharedCaptureTelemetry>) {
             await_shift_release = true;
         }
 
-        // Esc for the switcher, from key state while the keyboard hook is off.
+        // Esc for the picker, from key state while the keyboard hook is off.
         let escape_now = key_down(VK_ESCAPE.0);
         if escape_now && !prev_escape && !KEYBOARD_HOOK_LIVE.load(Ordering::Acquire) {
             telemetry.escape_pressed.store(true, Ordering::Release);

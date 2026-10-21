@@ -1,8 +1,8 @@
 //! Transcription: Apple's SpeechAnalyzer through `scrawl-helper` (measured word and segment
 //! timings), Hex when `"transcriber": "hex"` is set and Hex is connected (`crate::hex`; word
-//! times estimated), or a program of the user's own when `"transcriber": "command"` is set
-//! (`crate::command_transcriber`). Any trouble with Hex or the program falls back to Apple for
-//! that recording.
+//! times estimated), or a program of the user's when `"transcriber": "command"`
+//! (`crate::command_transcriber`). Any Hex or command trouble falls back to Apple for that
+//! recording.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -35,15 +35,6 @@ impl Engine {
             Self::Apple => "apple",
             Self::Hex => "hex",
             Self::Command => "command",
-        }
-    }
-
-    /// How the log names the engine.
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Apple => "Apple Speech",
-            Self::Hex => "Hex",
-            Self::Command => "Command",
         }
     }
 
@@ -147,10 +138,15 @@ pub fn prestart() -> Option<crate::command_transcriber::Prestarted> {
     if Engine::preferred() != Engine::Command {
         return None;
     }
-    let settings = crate::handoff::transcribe_command().filter(|settings| settings.prestart)?;
-    crate::command_transcriber::prestart(&settings)
-        .inspect_err(|error| {
-            crate::capture::scrawl_log(format!("Prestarting the command transcriber failed: {error:#}"))
+    let program = crate::handoff::transcribe_command()
+        .ok()
+        .filter(|program| program.prestarts())?;
+    program
+        .prestart()
+        .inspect_err(|failure| {
+            crate::capture::scrawl_log(format!(
+                "Prestarting the command transcriber failed: {failure}"
+            ))
         })
         .ok()
 }
@@ -192,15 +188,18 @@ pub fn transcribe(wav: Option<&Path>, audio: Option<&RecordedAudio>) -> Transcri
     };
     let live = audio.live.take();
     let engine = Engine::preferred();
-    let external = || match engine {
-        Engine::Hex => try_hex(audio),
-        Engine::Command => try_command(wav, audio),
-        Engine::Apple => Ok(None),
-    };
-    let mut transcript = run(engine, external, || {
-        live.and_then(|live| finish_live(live, audio))
-            .unwrap_or_else(|| apple(wav))
-    });
+    let mut transcript = run(
+        engine,
+        || match engine {
+            Engine::Apple => Ok(None),
+            Engine::Hex => try_hex(audio),
+            Engine::Command => try_command(wav, audio),
+        },
+        || {
+            live.and_then(|live| finish_live(live, audio))
+                .unwrap_or_else(|| apple(wav))
+        },
+    );
     if crate::handoff::remove_fillers() {
         crate::fillers::clean(&mut transcript);
     }
@@ -232,45 +231,55 @@ fn finish_live(
     }
 }
 
-/// The preferred engine first, with Apple as the answer to anything it can't do. `external`
-/// returns `Ok(None)` when that engine isn't available at all (Hex not connected, no model
-/// ready, no command configured).
+/// The preferred engine when it isn't Apple, with Apple as the answer to anything it can't do.
+/// `other` returns `Ok(None)` when that engine isn't there at all (Hex not connected or without a
+/// ready model, no usable `transcribeCommand`).
 fn run(
     engine: Engine,
-    external: impl FnOnce() -> Result<Option<TranscriptData>>,
+    other: impl FnOnce() -> Result<Option<TranscriptData>>,
     apple: impl FnOnce() -> TranscriptData,
 ) -> TranscriptData {
-    if engine != Engine::Apple {
-        match external() {
-            Ok(Some(transcript)) => return transcript,
-            Ok(None) => {}
-            Err(error) => crate::capture::scrawl_log(format!(
-                "{} transcription failed, using {LOCAL_ENGINE_TITLE}: {error:#}",
-                engine.title()
-            )),
-        }
+    let name = match engine {
+        Engine::Apple => return apple(),
+        Engine::Hex => "Hex",
+        Engine::Command => "Command",
+    };
+    match other() {
+        Ok(Some(transcript)) => return transcript,
+        Ok(None) => {}
+        Err(error) => crate::capture::scrawl_log(format!(
+            "{name} transcription failed, using {LOCAL_ENGINE_TITLE}: {error:#}"
+        )),
     }
     apple()
 }
 
+/// Runs `transcribeCommand`. Its errors are fixed reasons (`command_transcriber::Failure`),
+/// never what the program printed or was given.
 fn try_command(wav: &Path, audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
-    let Some(settings) = crate::handoff::transcribe_command() else {
-        LOGGED_NO_COMMAND.call_once(|| {
-            crate::capture::scrawl_log(
-                "Command transcriber preferred but transcribeCommand is not usable; using Apple Speech".to_owned(),
-            );
-        });
-        return Ok(None);
+    let program = match crate::handoff::transcribe_command() {
+        Ok(program) => program,
+        Err(unusable) => {
+            LOGGED_NO_COMMAND.call_once(|| {
+                crate::capture::scrawl_log(format!(
+                    "Command transcriber preferred but {unusable}; using {LOCAL_ENGINE_TITLE}"
+                ));
+            });
+            return Ok(None);
+        }
     };
-    if let Some(prestarted) = audio.prestarted.take() {
-        match prestarted.finish(wav, audio.duration_ms) {
+    let mut log = |line: &str| crate::capture::scrawl_log(line);
+    if let Some(prestarted) = audio.prestarted.take().filter(|p| p.runs(&program)) {
+        match prestarted.finish(wav, audio.sample_count, &mut log) {
             Ok(transcript) => return Ok(Some(transcript)),
-            Err(error) => crate::capture::scrawl_log(format!(
-                "Prestarted command transcriber failed, running it again: {error:#}"
+            Err(failure) => crate::capture::scrawl_log(format!(
+                "Prestarted command transcriber failed, running it again: {failure}"
             )),
         }
     }
-    crate::command_transcriber::transcribe(&settings, wav, audio.duration_ms).map(Some)
+    let transcript =
+        crate::command_transcriber::transcribe(&program, wav, audio.sample_count, &mut log)?;
+    Ok(Some(transcript))
 }
 
 fn try_hex(audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
@@ -291,7 +300,7 @@ fn try_hex(audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
     let Some(model) = crate::hex::pick_model(&models, configured.as_deref()) else {
         return not_connected("no ready model".into());
     };
-    crate::hex::transcribe_audio(&client, &model, audio).map(Some)
+    crate::hex::transcribe_audio(&client, &model, &crate::handoff::hex_language(), audio).map(Some)
 }
 
 fn apple(wav: &Path) -> TranscriptData {
@@ -300,7 +309,7 @@ fn apple(wav: &Path) -> TranscriptData {
         TranscriptData {
             source: "offline".into(),
             missing: Some(crate::model::MissingTranscript {
-                reason: format!("Apple Speech failed ({error:#})."),
+                reason: format!("{LOCAL_ENGINE_TITLE} failed ({error:#})."),
                 retry: false,
             }),
             ..Default::default()
@@ -336,52 +345,38 @@ mod tests {
     }
 
     #[test]
-    fn command_is_used_when_it_answers_and_apple_covers_its_failures() {
-        let result = run(
-            Engine::Command,
-            || Ok(Some(named("command:parakeet"))),
-            || panic!("Apple must not be asked"),
-        );
-        assert_eq!(result.source, "command:parakeet");
-        let apple = || named("speech-analyzer");
-        assert_eq!(run(Engine::Command, || Ok(None), apple).source, "speech-analyzer");
-        let failed = run(Engine::Command, || Err(anyhow::anyhow!("timeout")), apple);
-        assert_eq!(failed.source, "speech-analyzer");
-    }
-
-    #[test]
-    fn apple_preference_never_touches_hex() {
+    fn apple_preference_never_asks_another_engine() {
         let result = run(
             Engine::Apple,
-            || panic!("Hex must not be asked"),
+            || panic!("no other engine may be asked"),
             || named("speech-analyzer"),
         );
         assert_eq!(result.source, "speech-analyzer");
     }
 
     #[test]
-    fn hex_is_used_when_it_answers() {
-        let result = run(
-            Engine::Hex,
-            || Ok(Some(named("hex:parakeet_v3"))),
-            || panic!("Apple must not be asked"),
-        );
-        assert_eq!(result.source, "hex:parakeet_v3");
+    fn the_preferred_engine_is_used_when_it_answers() {
+        for (engine, source) in [
+            (Engine::Hex, "hex:parakeet_v3"),
+            (Engine::Command, "command:whisper-scrawl"),
+        ] {
+            let result = run(
+                engine,
+                || Ok(Some(named(source))),
+                || panic!("Apple must not be asked"),
+            );
+            assert_eq!(result.source, source);
+        }
     }
 
     #[test]
-    fn unavailable_or_failing_hex_falls_back_to_apple() {
-        let apple = || named("speech-analyzer");
-        assert_eq!(
-            run(Engine::Hex, || Ok(None), apple).source,
-            "speech-analyzer"
-        );
-        let failed = run(
-            Engine::Hex,
-            || Err(anyhow::anyhow!("Hex took too long")),
-            apple,
-        );
-        assert_eq!(failed.source, "speech-analyzer");
+    fn an_unavailable_or_failing_engine_falls_back_to_apple() {
+        for engine in [Engine::Hex, Engine::Command] {
+            let apple = || named("speech-analyzer");
+            assert_eq!(run(engine, || Ok(None), apple).source, "speech-analyzer");
+            let failed = run(engine, || Err(anyhow::anyhow!("took too long")), apple);
+            assert_eq!(failed.source, "speech-analyzer");
+        }
     }
 
     #[test]

@@ -106,6 +106,11 @@ pub(super) fn window_drag_region(region: Div) -> Div {
     })
 }
 
+/// A control inside a `window_drag_region` gets its clicks as it is.
+pub(super) fn drag_region_control<E>(control: E) -> E {
+    control
+}
+
 /// AppKit opens the menu itself (refreshed in menuNeedsUpdate:).
 pub(super) fn poll_status_bar() {}
 

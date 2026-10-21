@@ -16,7 +16,8 @@ pub fn default_captures_dir() -> PathBuf {
             if cfg!(target_os = "windows") {
                 dirs::data_local_dir()
                     .unwrap_or_else(|| PathBuf::from("."))
-                    .join("scrawl/captures")
+                    .join("scrawl")
+                    .join("captures")
             } else {
                 dirs::home_dir()
                     .unwrap_or_else(|| PathBuf::from("."))
@@ -467,47 +468,39 @@ pub struct Config {
     /// Feature flag: shows **Export Last Capture as Video…** in the menu (default off).
     #[serde(default)]
     pub video_export: Option<bool>,
-    /// A tap of the record shortcut opens the picker instead of recording the whole screen;
-    /// holding it still switches modes (default off).
+    /// A press of the record shortcut opens the picker instead of recording the whole screen
+    /// (default off).
     #[serde(default)]
     pub tap_chooses: Option<bool>,
     /// Zooms a window capture's keyframes in to the activity inside the window, as full-screen
     /// captures are (default on; `autocrop`).
     #[serde(default)]
     pub crop_window_captures: Option<bool>,
-    /// Read only to carry an older setting over: `false` means `playbackMode` `"unchanged"`.
-    #[serde(default)]
-    pub mute_audio: Option<bool>,
     /// Esc discards a running recording, as it cancels the picker (default on). Off for a
     /// keyboard that sends Esc on its own, such as CapsLock-as-Control remaps.
     #[serde(default)]
     pub escape_cancels: Option<bool>,
     /// `"apple"` (default), `"hex"` or `"command"`: which engine transcribes recordings
-    /// (`transcribe`).
+    /// (`transcribe`). The command's own keys are read by `transcribe_command`, not here, so a
+    /// malformed one can't reset this struct.
     #[serde(default)]
     pub transcriber: Option<String>,
-    /// `"mute"` (this fork's default), `"lower"` or `"unchanged"`: what playback does while
-    /// recording (`playback`).
+    /// Lower the output volume while recording (`playback`) to `playbackLevel` percent of it
+    /// (default on, muted: `lowers_playback`, `recording_volume`).
     #[serde(default)]
-    pub playback_mode: Option<String>,
-    /// How far `"lower"` turns playback down, in percent of its volume (default 20).
+    pub lower_playback: Option<bool>,
     #[serde(default)]
     pub playback_level: Option<u8>,
     /// The Hex model to use when `transcriber` is `"hex"` (default: the first ready one of
     /// `hex::PREFERRED_MODELS`).
     #[serde(default)]
     pub hex_model: Option<String>,
-    /// The program run on each recording's WAV when `transcriber` is `"command"`, as an argv
-    /// array (`command_transcriber`).
+    /// Hex language code (`"en"` by default, `"auto"` for model language detection).
     #[serde(default)]
-    pub transcribe_command: Option<Vec<String>>,
-    /// How long that program may run, in seconds (default: grows with the recording).
+    pub hex_language: Option<String>,
+    /// Apple Speech locale (BCP-47, e.g. "zh-TW"); missing means the Mac's own language.
     #[serde(default)]
-    pub transcribe_timeout_seconds: Option<u64>,
-    /// Starts that program when a recording begins, so it loads its model while the user talks
-    /// and gets the WAV's path on stdin at the end (default off; `command_transcriber`).
-    #[serde(default)]
-    pub transcribe_prestart: Option<bool>,
+    pub apple_locale: Option<String>,
     /// Drops "um", "uh" and comma-wrapped "like" from transcripts (default on; `fillers`).
     #[serde(default)]
     pub remove_fillers: Option<bool>,
@@ -551,6 +544,35 @@ pub struct Config {
     /// Adds names and terms the user types over pasted dictation to the dictionary (default on).
     #[serde(default)]
     pub dictation_learn: Option<bool>,
+    /// Smart routing's settings (`routing::look`).
+    #[serde(default)]
+    pub routing: Option<RoutingConfig>,
+}
+
+impl Config {
+    /// Whether recordings lower the output volume. This fork mutes it unless told not to.
+    pub fn lowers_playback(&self) -> bool {
+        self.lower_playback.unwrap_or(true)
+    }
+
+    /// The output volume while recording when `lowerPlayback` is on, in percent of what it was.
+    pub fn recording_volume(&self) -> u8 {
+        self.playback_level.unwrap_or(0).min(100)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingConfig {
+    /// The checkout each app is built from, by bundle ID or a prefix of one
+    /// (`{"ai.opencode.desktop": "~/code/opencode"}`), for apps whose checkout isn't named like
+    /// them.
+    #[serde(default)]
+    pub apps: std::collections::BTreeMap<String, String>,
+    /// The folder a URL prefix serves, for file servers whose pages aren't their own project's
+    /// (`{"https://studio.example.ts.net:8444/raw/": "~/code/home/artifacts"}`).
+    #[serde(default)]
+    pub servers: std::collections::BTreeMap<String, String>,
 }
 
 /// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
@@ -603,8 +625,8 @@ fn log_config_once(message: String) {
     }
 }
 
-/// More of what Scrawl already knows in the summary and on the frames: marks, shortcuts, drags
-/// and windows inline at their time, numbered marks on shared frames, where a screen changed.
+/// More of what Scrawl already knows in the summary: marks, shortcuts, drags and windows inline
+/// at their time, numbered marks on shared frames, where a screen changed.
 pub const AGENT_CONTEXT: &str = "agentContext";
 
 /// Transcribe Mac recordings while they record, so finishing only waits for the last words
@@ -653,22 +675,9 @@ pub fn load_config_from(path: &Path) -> Config {
         .unwrap_or_default()
 }
 
-/// The command transcriber's settings when `transcribeCommand` is usable.
-pub fn transcribe_command() -> Option<crate::command_transcriber::Settings> {
-    transcribe_command_from(&config())
-}
-
 /// Whether transcripts lose their spoken fillers (`removeFillers`, default on).
 pub fn remove_fillers() -> bool {
     config().remove_fillers.unwrap_or(true)
-}
-
-pub fn transcribe_command_from(config: &Config) -> Option<crate::command_transcriber::Settings> {
-    crate::command_transcriber::settings(
-        config.transcribe_command.as_deref(),
-        config.transcribe_timeout_seconds,
-        config.transcribe_prestart.unwrap_or(false),
-    )
 }
 
 /// The config in `value`. A key whose value doesn't fit (`"autoSend": "maybe"`) is dropped and
@@ -786,6 +795,38 @@ pub fn ensure_ingest_token() -> Result<String> {
     ensure_ingest_token_in(&default_config_path())
 }
 
+/// `routing.apps` from config.json, `~` expanded. Tests see none.
+pub fn routing_apps() -> Vec<(String, PathBuf)> {
+    routing_paths(|routing| routing.apps)
+}
+
+/// `routing.servers` in config.json: URL prefixes and the folders they serve, `~` expanded.
+pub fn routing_servers() -> Vec<(String, PathBuf)> {
+    routing_paths(|routing| routing.servers)
+}
+
+fn routing_paths(
+    pick: fn(RoutingConfig) -> std::collections::BTreeMap<String, String>,
+) -> Vec<(String, PathBuf)> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let home = dirs::home_dir().unwrap_or_default();
+    config()
+        .routing
+        .map(pick)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, path)| {
+            let path = match path.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => PathBuf::from(path),
+            };
+            (id, path)
+        })
+        .collect()
+}
+
 /// Whether Mac captures of a dev site go straight to its session (`autoSend`, default on).
 pub fn auto_send() -> bool {
     config().auto_send.unwrap_or(true)
@@ -852,18 +893,6 @@ pub fn tap_chooses() -> bool {
     config().tap_chooses.unwrap_or(false)
 }
 
-/// What playback does while recording: a valid `playbackMode`, else `"unchanged"` when the
-/// older `"muteAudio": false` is set, else `"mute"`.
-pub fn playback_mode_in(config: &Config) -> &'static str {
-    match config.playback_mode.as_deref() {
-        Some("mute") => "mute",
-        Some("lower") => "lower",
-        Some("unchanged") => "unchanged",
-        _ if config.mute_audio == Some(false) => "unchanged",
-        _ => "mute",
-    }
-}
-
 /// Whether Esc discards a running recording (`escapeCancels`, default on).
 pub fn escape_cancels() -> bool {
     config().escape_cancels.unwrap_or(true)
@@ -880,6 +909,38 @@ pub fn hex_model() -> Option<String> {
         .hex_model
         .map(|model| model.trim().to_owned())
         .filter(|model| !model.is_empty())
+}
+
+/// The configured Hex language, defaulting to the previous English behavior.
+pub fn hex_language() -> String {
+    hex_language_from(&config())
+}
+
+pub fn hex_language_from(config: &Config) -> String {
+    config
+        .hex_language
+        .as_deref()
+        .and_then(crate::hex::language_code)
+        .unwrap_or_else(|| crate::hex::DEFAULT_LANGUAGE.into())
+}
+
+/// The configured Apple Speech locale, or the Mac's own language when unset.
+pub fn apple_locale() -> Option<String> {
+    apple_locale_from(&config())
+}
+
+pub fn apple_locale_from(config: &Config) -> Option<String> {
+    config
+        .apple_locale
+        .as_deref()
+        .and_then(crate::speech_model::locale_id)
+}
+
+/// The command transcriber's program (`transcribeCommand`, `transcribeTimeoutSeconds`), read
+/// on its own from the config file.
+pub fn transcribe_command()
+-> Result<crate::command_transcriber::Program, crate::command_transcriber::Unusable> {
+    crate::command_transcriber::Program::load_from(&default_config_path())
 }
 
 /// Whether the native AppKit + Metal recording pill is enabled (`SCRAWL_NATIVE_PILL` or
@@ -1165,11 +1226,214 @@ pub(crate) fn query_escape(value: &str) -> String {
 pub type ApiGet<'a> = dyn FnMut(&str) -> Result<Vec<u8>> + 'a;
 
 pub fn api_get(path: &str) -> Result<Vec<u8>> {
+    if agent_host().is_none()
+        && let Ok(body) = api_get_within(path, std::time::Duration::from_secs(5))
+    {
+        return Ok(body);
+    }
     opencode_api("get", path, None)
 }
 
+/// How long a TCP connect to the local OpenCode server may take before giving up.
+pub const SERVER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+const SERVER_RESPONSE_LIMIT: u64 = 16 * 1024 * 1024;
+const DEFAULT_SERVER_PORT: u16 = 0xc0de;
+
+/// Only the connection fields of OpenCode's `service.json` (never its `env` block).
+#[derive(Default, Deserialize)]
+struct ServiceFile {
+    url: Option<String>,
+    hostname: Option<String>,
+    port: Option<u16>,
+    password: Option<String>,
+}
+
+impl ServiceFile {
+    fn load(path: &Path) -> Option<Self> {
+        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    }
+
+    fn address(&self) -> Option<std::net::SocketAddr> {
+        self.url.as_deref().and_then(server_address).or_else(|| {
+            let host = self.hostname.as_deref().unwrap_or("127.0.0.1");
+            server_address(&format!("http://{host}:{}", self.port?))
+        })
+    }
+
+    fn password(&self) -> Option<String> {
+        non_empty(self.password.as_deref())
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+}
+
+/// The socket address in `http://127.0.0.1:4096…` when its host is an IP or `localhost` (no
+/// lookups).
+fn server_address(url: &str) -> Option<std::net::SocketAddr> {
+    let rest = url.split_whitespace().next()?;
+    let (scheme, rest) = rest.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let (host, rest) = v6.split_once(']')?;
+        match rest.strip_prefix(':') {
+            Some(port) => (host, port.parse().ok()?),
+            None => (host, default_port),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) => (host, port.parse().ok()?),
+            None => (authority, default_port),
+        }
+    };
+    let ip = if host.eq_ignore_ascii_case("localhost") {
+        std::net::IpAddr::from([127, 0, 0, 1])
+    } else {
+        host.parse().ok()?
+    };
+    Some(std::net::SocketAddr::new(ip, port))
+}
+
+fn resolve_server(
+    files: &[ServiceFile],
+    env_password: Option<&str>,
+) -> (std::net::SocketAddr, Option<String>) {
+    let (address, matched_password) = files
+        .iter()
+        .find_map(|f| Some((f.address()?, f.password())))
+        .unwrap_or_else(|| {
+            (
+                std::net::SocketAddr::from(([127, 0, 0, 1], DEFAULT_SERVER_PORT)),
+                None,
+            )
+        });
+    let password = matched_password
+        .or_else(|| non_empty(env_password))
+        .or_else(|| files.iter().find_map(ServiceFile::password));
+    (address, password)
+}
+
+/// Finds the local OpenCode V2 server from its state registration (`$XDG_STATE_HOME/opencode/service.json`
+/// or `~/.local/state/opencode/service.json`), service config (`$OPENCODE_CONFIG_DIR/service.json`
+/// or `~/.config/opencode/service.json`), and `OPENCODE_PASSWORD`.
+fn local_server() -> (std::net::SocketAddr, Option<String>) {
+    let env_dir = |name: &str| {
+        std::env::var_os(name)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+    };
+    let home = dirs::home_dir();
+    let files: Vec<ServiceFile> = [
+        env_dir("XDG_STATE_HOME").map(|d| d.join("opencode/service.json")),
+        home.as_ref().map(|h| h.join(".local/state/opencode/service.json")),
+        env_dir("OPENCODE_CONFIG_DIR").map(|d| d.join("service.json")),
+        env_dir("XDG_CONFIG_HOME").map(|d| d.join("opencode/service.json")),
+        home.as_ref().map(|h| h.join(".config/opencode/service.json")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|p| ServiceFile::load(&p))
+    .collect();
+    let env_password = std::env::var("OPENCODE_PASSWORD")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("OPENCODE_SERVER_PASSWORD").ok());
+    resolve_server(&files, env_password.as_deref())
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = u32::from_be_bytes([0, c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)]);
+        let ch = |shift: u32| char::from(TABLE[((n >> shift) & 63) as usize]);
+        out.extend([
+            ch(18),
+            ch(12),
+            if c.len() > 1 { ch(6) } else { '=' },
+            if c.len() > 2 { ch(0) } else { '=' },
+        ]);
+    }
+    out
+}
+
+fn http_get(
+    address: std::net::SocketAddr,
+    password: Option<&str>,
+    path: &str,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let connect = SERVER_CONNECT_TIMEOUT.min(timeout).max(std::time::Duration::from_millis(1));
+    let timeout = timeout.max(std::time::Duration::from_millis(1));
+    let mut stream = std::net::TcpStream::connect_timeout(&address, connect)
+        .with_context(|| format!("Could not reach server at http://{address}"))?;
+    stream.set_write_timeout(Some(timeout))?;
+    stream.set_read_timeout(Some(timeout))?;
+    let auth = match password {
+        Some(password) if !password.contains(['\r', '\n']) => format!(
+            "Authorization: Basic {}\r\n",
+            base64(format!("opencode:{password}").as_bytes())
+        ),
+        _ => String::new(),
+    };
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\n{auth}Connection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .with_context(|| format!("Could not write to server at http://{address}"))?;
+    let mut bytes = Vec::new();
+    stream
+        .take(SERVER_RESPONSE_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("OpenCode at http://{address} didn't answer in time"))?;
+    ensure!(
+        bytes.len() as u64 <= SERVER_RESPONSE_LIMIT,
+        "OpenCode response too large"
+    );
+    let split = bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .context("Invalid OpenCode HTTP response")?;
+    let header = std::str::from_utf8(&bytes[..split]).context("Invalid OpenCode HTTP header")?;
+    let status: u16 = header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .context("Missing OpenCode HTTP status")?
+        .parse()
+        .context("Invalid OpenCode HTTP status")?;
+    let body = bytes[split + 4..].to_vec();
+    if let Some(length) = header
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+    {
+        ensure!(body.len() == length, "Incomplete OpenCode HTTP response");
+    }
+    ensure!(
+        (200..300).contains(&status),
+        "OpenCode API failed: HTTP {status}"
+    );
+    Ok(body)
+}
+
+/// [`api_get`] for routing: talks HTTP directly to the local OpenCode server with a
+/// [`SERVER_CONNECT_TIMEOUT`] connect cap and `timeout` read deadline, instead of spawning
+/// `opencode2 api` per request.
+pub fn api_get_within(path: &str, timeout: std::time::Duration) -> Result<Vec<u8>> {
+    if agent_host().is_some() {
+        return opencode_api("get", path, None);
+    }
+    let (address, password) = local_server();
+    http_get(address, password.as_deref(), path, timeout)
+}
+
 /// How many pages of root sessions (100 each, newest first) a search reads before giving up.
-/// Each page is an `opencode2 api` process, plus an SSH connection with `agentHost`.
 pub const ROOT_SEARCH_PAGES: usize = 5;
 const ROOT_PAGE: usize = 100;
 
@@ -1600,21 +1864,6 @@ mod tests {
         assert!(!crops_mode_in(&off, CaptureMode::Window));
     }
 
-    #[test]
-    fn playback_mutes_unless_told_otherwise() {
-        let mode = |playback: Option<&str>, mute: Option<bool>| {
-            playback_mode_in(&Config {
-                playback_mode: playback.map(Into::into),
-                mute_audio: mute,
-                ..Default::default()
-            })
-        };
-        assert_eq!(mode(None, None), "mute");
-        assert_eq!(mode(None, Some(false)), "unchanged");
-        assert_eq!(mode(Some("lower"), Some(false)), "lower");
-        assert_eq!(mode(Some("unchanged"), None), "unchanged");
-        assert_eq!(mode(Some("loud"), None), "mute");
-    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct Fixture(PathBuf);
@@ -1804,41 +2053,67 @@ mod tests {
     }
 
     #[test]
+    fn apple_locale_round_trips_and_keeps_other_keys() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("config.json");
+        fs::write(&path, br#"{"ingestToken":"abc","autoSend":false}"#).unwrap();
+        let config = load_config_from(&path);
+        assert_eq!(apple_locale_from(&config), None);
+        assert_eq!(config.auto_send, Some(false));
+
+        for (value, expected) in [
+            ("zh-TW".into(), Some("zh-TW")),
+            ("bad value".into(), None),
+            (5.into(), None),
+            (serde_json::Value::Null, None),
+        ] {
+            set_config_value_in(&path, "appleLocale", value).unwrap();
+            let config = load_config_from(&path);
+            assert_eq!(apple_locale_from(&config).as_deref(), expected);
+            assert_eq!(config.ingest_token.as_deref(), Some("abc"));
+            assert_eq!(config.auto_send, Some(false));
+        }
+        let raw: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(raw.get("appleLocale").is_none());
+    }
+
+    #[test]
     fn transcriber_preference_round_trips_and_keeps_other_keys() {
         let fixture = Fixture::new();
         let path = fixture.0.join("config.json");
         fs::write(&path, br#"{"ingestToken":"abc","autoSend":false}"#).unwrap();
         let config = load_config_from(&path);
-        assert_eq!((config.transcriber, config.hex_model), (None, None));
+        assert_eq!((&config.transcriber, &config.hex_model), (&None, &None));
+        assert_eq!(hex_language_from(&config), "en");
         set_config_value_in(&path, "transcriber", "hex".into()).unwrap();
         set_config_value_in(&path, "hexModel", "parakeet_v3".into()).unwrap();
+        set_config_value_in(&path, "hexLanguage", "nl".into()).unwrap();
         let config = load_config_from(&path);
         assert_eq!(config.transcriber.as_deref(), Some("hex"));
         assert_eq!(config.hex_model.as_deref(), Some("parakeet_v3"));
+        assert_eq!(hex_language_from(&config), "nl");
         assert_eq!(config.ingest_token.as_deref(), Some("abc"));
         assert_eq!(config.auto_send, Some(false));
-        set_config_value_in(&path, "transcribeCommand", "not an array".into()).unwrap();
-        set_config_value_in(&path, "transcribeTimeoutSeconds", "soon".into()).unwrap();
-        let config = load_config_from(&path);
-        assert_eq!(config.ingest_token.as_deref(), Some("abc"));
-        assert_eq!(config.transcribe_command, None);
-        assert_eq!(transcribe_command_from(&config), None);
-        set_config_value_in(
-            &path,
-            "transcribeCommand",
-            serde_json::json!(["/opt/bin/whisper", "{audio}"]),
-        )
-        .unwrap();
-        set_config_value_in(&path, "transcribeTimeoutSeconds", 120.into()).unwrap();
-        let settings = transcribe_command_from(&load_config_from(&path)).unwrap();
-        assert_eq!(settings.command, vec!["/opt/bin/whisper", "{audio}"]);
-        assert_eq!(settings.timeout, Some(std::time::Duration::from_secs(120)));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn malformed_command_keys_never_reset_the_rest_of_the_config() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("config.json");
+        fs::write(
+            &path,
+            br#"{"transcriber":"command","autoSend":false,"transcribeCommand":"whisper {audio}","transcribeTimeoutSeconds":"soon"}"#,
+        )
+        .unwrap();
+        let config = load_config_from(&path);
+        assert_eq!(config.transcriber.as_deref(), Some("command"));
+        assert_eq!(config.auto_send, Some(false));
     }
 
     #[test]
@@ -1956,6 +2231,124 @@ mod tests {
         assert!(!experiment("neverEnabled"));
         enable_experiment("enabledForThisTest");
         assert!(experiment("enabledForThisTest"));
+    }
+
+    #[test]
+    fn server_addresses_parse_without_lookups() {
+        let addr = |s: &str| server_address(s).map(|a| a.to_string());
+        assert_eq!(
+            addr("http://127.0.0.1:4096\nmore").as_deref(),
+            Some("127.0.0.1:4096")
+        );
+        assert_eq!(
+            addr("http://localhost:4096/").as_deref(),
+            Some("127.0.0.1:4096")
+        );
+        assert_eq!(addr("http://[::1]:5000").as_deref(), Some("[::1]:5000"));
+        assert_eq!(addr("https://10.0.0.2").as_deref(), Some("10.0.0.2:443"));
+        assert_eq!(addr("http://studio.example.ts.net:4096"), None);
+        assert_eq!(addr("nonsense"), None);
+    }
+
+    #[test]
+    fn server_endpoint_reads_state_and_config_service_files() {
+        let fixture = Fixture::new();
+        let state_path = fixture.0.join("state-service.json");
+        let config_path = fixture.0.join("config-service.json");
+        fs::write(
+            &state_path,
+            r#"{"id":"s1","url":"http://127.0.0.1:49374","pid":123,"password":"secret-state"}"#,
+        )
+        .unwrap();
+        fs::write(
+            &config_path,
+            r#"{"hostname":"127.0.0.1","port":4096,"password":"secret-config","env":{"API_KEY":"ignored"}}"#,
+        )
+        .unwrap();
+        let state = ServiceFile::load(&state_path).unwrap();
+        let config = ServiceFile::load(&config_path).unwrap();
+
+        // State registration wins over service config when both exist.
+        let (addr, pw) = resolve_server(&[state, config], None);
+        assert_eq!(addr, "127.0.0.1:49374".parse().unwrap());
+        assert_eq!(pw.as_deref(), Some("secret-state"));
+
+        // When state registration is absent, config's hostname/port and password are used.
+        let config = ServiceFile::load(&config_path).unwrap();
+        let (addr, pw) = resolve_server(&[config], None);
+        assert_eq!(addr, "127.0.0.1:4096".parse().unwrap());
+        assert_eq!(pw.as_deref(), Some("secret-config"));
+
+        // With no address in files, the default port and OPENCODE_PASSWORD are used.
+        let (addr, pw) = resolve_server(&[], Some("env-pw"));
+        assert_eq!(addr, "127.0.0.1:49374".parse().unwrap());
+        assert_eq!(pw.as_deref(), Some("env-pw"));
+    }
+
+    #[test]
+    fn http_get_authenticates_and_times_out_when_slow() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for i in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut req = Vec::new();
+                let mut buf = [0_u8; 256];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut buf).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                }
+                let head = String::from_utf8_lossy(&req);
+                match i {
+                    0 => {
+                        assert!(
+                            head.contains("Authorization: Basic b3BlbmNvZGU6c2VjcmV0\r\n"),
+                            "{head}"
+                        );
+                        let body = br#"{"data":[]}"#;
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .unwrap();
+                        stream.write_all(body).unwrap();
+                    }
+                    1 => {
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .unwrap();
+                    }
+                    _ => {
+                        std::thread::sleep(Duration::from_millis(400));
+                    }
+                }
+            }
+        });
+
+        let body = http_get(address, Some("secret"), "/api/session", Duration::from_secs(1)).unwrap();
+        assert_eq!(body, br#"{"data":[]}"#);
+
+        let err =
+            http_get(address, Some("secret"), "/api/session/missing", Duration::from_secs(1))
+                .unwrap_err();
+        assert!(format!("{err:#}").contains("HTTP 404"), "{err:#}");
+
+        let started = Instant::now();
+        let err = http_get(address, Some("secret"), "/api/session", Duration::from_millis(100))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("didn't answer"), "{err:#}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let _ = server.join();
     }
 }
 

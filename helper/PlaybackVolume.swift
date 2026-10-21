@@ -159,6 +159,9 @@ final class PlaybackRamp {
   }
 }
 
+// Written to from signal handlers, which can't capture anything: wakes the loop below.
+private var signalPipe: [Int32] = [-1, -1]
+
 func runPlaybackVolume(arguments: [String]) {
   if arguments.first == "--self-test" { testPlaybackRamp(); return }
   if arguments.first == "--inspect" {
@@ -182,14 +185,32 @@ func runPlaybackVolume(arguments: [String]) {
     ramp?.retarget(percent / 100, now: now(), duration: seconds)
   }
   if let raw = arguments.first, let percent = Float(raw), (0...100).contains(percent) { start(percent) }
+  // Terminated (`pkill`, an installer, logout) rather than told to stop: put the volume back at
+  // once, without a ramp, unless someone changed it since.
+  _ = pipe(&signalPipe)
+  for sig in [SIGTERM, SIGINT, SIGHUP] {
+    signal(sig) { _ in
+      var byte: UInt8 = 1
+      _ = Darwin.write(signalPipe[1], &byte, 1)
+    }
+  }
+  func terminate() -> Never {
+    if let ramp, !ramp.finished, !ramp.settled || ramp.owned() { _ = ramp.output.write(ramp.original) }
+    exit(0)
+  }
   if arguments.first == "--server" { emit(["event": "ready"]) }
   // A warm helper waits on the pipe. The first volume step runs within one 16 ms
   // tick of a start command, independently of screen/microphone initialization.
   while true {
+    var descriptors = [
+      pollfd(fd: disconnected ? -1 : STDIN_FILENO, events: Int16(POLLIN | POLLHUP), revents: 0),
+      pollfd(fd: signalPipe[0], events: Int16(POLLIN), revents: 0),
+    ]
+    let timeout: Int32 = !disconnected && (ramp == nil || ramp?.settled == true) ? -1 : 16
+    let ready = poll(&descriptors, 2, timeout)
+    if descriptors[1].revents != 0 { terminate() }
     if !disconnected {
-      var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN | POLLHUP), revents: 0)
-      let timeout: Int32 = ramp == nil || ramp?.settled == true ? -1 : 16
-      if poll(&descriptor, 1, timeout) > 0 {
+      if ready > 0 && descriptors[0].revents != 0 {
         var buffer = [UInt8](repeating: 0, count: 1024)
         let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
         if count <= 0 {
@@ -205,8 +226,6 @@ func runPlaybackVolume(arguments: [String]) {
           }
         }
       }
-    } else {
-      usleep(16_000)
     }
     ramp?.tick(now: now())
     if ramp?.finished == true { ramp = nil }

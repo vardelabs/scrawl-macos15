@@ -29,6 +29,12 @@ use crate::settings::{Action, Event, Pane, Pressed};
 const WIDTH: f32 = 620.0;
 const HEIGHT: f32 = 448.0;
 const SIDEBAR: f32 = 210.0;
+/// The content pane's width: what the 620-point window keeps after the sidebar and the
+/// hairline between them. Giving the pane an explicit width (rather than `flex_1`) makes the
+/// space it hands its children definite, which GPUI requires to wrap text: with an indefinite
+/// width a caption measures as one full line, inflates the column and pushes trailing controls
+/// (the permission rows' buttons) past the window's edge.
+const CONTENT: f32 = WIDTH - SIDEBAR - 1.0;
 const TITLEBAR: f32 = 52.0;
 const INSET: f32 = 20.0;
 const ROW: f32 = 42.0;
@@ -95,6 +101,8 @@ struct Shortcut {
     option: bool,
     command: bool,
     is_default: bool,
+    #[serde(default)]
+    clearable: bool,
     recording: bool,
     error: Option<String>,
 }
@@ -113,6 +121,16 @@ struct Transcriber {
     hex_title: String,
     hex_enabled: bool,
     models: Vec<ModelOption>,
+    speech: Speech,
+}
+
+/// `speech_model::Status`: the local model's download.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+struct Speech {
+    state: String,
+    progress: f64,
+    error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -496,6 +514,7 @@ fn key_code(key: &str) -> Option<u32> {
         ("enter", 0x0D),
         ("tab", 0x09),
         ("backspace", 0x08),
+        ("delete", 0x2E),
         ("left", 0x25),
         ("up", 0x26),
         ("right", 0x27),
@@ -507,6 +526,7 @@ fn key_code(key: &str) -> Option<u32> {
         ("enter", 36),
         ("tab", 48),
         ("backspace", 51),
+        ("delete", 117),
         ("left", 123),
         ("right", 124),
         ("down", 125),
@@ -834,7 +854,7 @@ impl SettingsWindow {
         };
         div()
             .id("settings-content")
-            .flex_1()
+            .w(px(CONTENT))
             .h_full()
             .bg(theme.window())
             .relative()
@@ -864,7 +884,7 @@ impl SettingsWindow {
                     )
                     .child(drag_strip("settings-drag-title").absolute().top_0().left_0()),
             )
-            .child(div().px(px(INSET)).flex().flex_col().child(body))
+            .child(div().w_full().px(px(INSET)).flex().flex_col().child(body))
     }
 
     fn general(&self, theme: Theme, state: &ViewState, cx: &mut Context<Self>) -> Div {
@@ -927,14 +947,21 @@ impl SettingsWindow {
         let live = self.live;
         let lit = |on: bool, held: bool| if recording { held } else { on };
         let reset_hidden = shortcut.is_default || recording;
-        let caption_text = if recording {
+        let off = shortcut.label.is_empty();
+        let clear_shown = shortcut.clearable && !off && !recording;
+        let caption_text = if recording && shortcut.clearable {
+            format!(
+                "Press the new shortcut. Esc cancels, {} turns it off.",
+                if WINDOWS { "Backspace" } else { "Delete" }
+            )
+        } else if recording {
             "Press the new shortcut. Esc cancels.".to_owned()
         } else if let Some(error) = &shortcut.error {
             error.clone()
         } else if kind == ShortcutKind::Paste {
             "Pastes the last capture into the app in front.".to_owned()
         } else {
-            "Tap to record. Hold to choose what to record.".to_owned()
+            "Records the screen. Press again to finish.".to_owned()
         };
         let key = if recording {
             "…".to_owned()
@@ -942,7 +969,16 @@ impl SettingsWindow {
             shortcut.key.clone()
         };
         // macOS draws ⇧ ⌃ ⌥ ⌘; Windows names its keys, in the order they sit on the keyboard.
-        let caps = if WINDOWS {
+        let caps = if off && !recording {
+            div()
+                .h(px(52.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(14.0))
+                .text_color(theme.secondary())
+                .child("Set shortcut")
+        } else if WINDOWS {
             div()
                 .flex()
                 .gap(px(6.0))
@@ -968,19 +1004,43 @@ impl SettingsWindow {
             .child(
                 header(theme, &shortcut.title).child(
                     div()
-                        .id(id("reset"))
-                        .size(px(20.0))
-                        .rounded_full()
-                        .bg(theme.control())
                         .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon(crate::icons::RESET, 10.0, theme.secondary()))
-                        .when(reset_hidden, |d| d.opacity(0.0))
-                        .when(!reset_hidden, |d| {
-                            d.cursor_pointer().on_click(cx.listener(move |view, _, _, _| {
-                                view.act(Action::ResetShortcut { kind });
-                            }))
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .id(id("reset"))
+                                .size(px(20.0))
+                                .rounded_full()
+                                .bg(theme.control())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(crate::icons::RESET, 10.0, theme.secondary()))
+                                .when(reset_hidden, |d| d.opacity(0.0))
+                                .when(!reset_hidden, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(
+                                        move |view, _, _, _| {
+                                            view.act(Action::ResetShortcut { kind });
+                                        },
+                                    ))
+                                }),
+                        )
+                        .when(clear_shown, |d| {
+                            d.child(
+                                div()
+                                    .id(id("clear"))
+                                    .size(px(20.0))
+                                    .rounded_full()
+                                    .bg(theme.control())
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .child(icon(crate::icons::X, 10.0, theme.secondary()))
+                                    .on_click(cx.listener(move |view, _, _, _| {
+                                        view.act(Action::ClearShortcut { kind });
+                                    })),
+                            )
                         }),
                 ),
             )
@@ -1072,7 +1132,7 @@ impl SettingsWindow {
                 "Parakeet runs on this PC and times each word. Hex uses a model you have in Hex, and its word times are estimates."
             }
             (true, false) => {
-                "Parakeet runs on this PC with the model Hex installed, and times each word. Hex shows up here while Hex is running."
+                "Parakeet runs on this PC and times each word. Scrawl downloads its 730 MB model once, unless Hex already has it. Hex shows up here while Hex is running."
             }
             (false, true) => {
                 "Apple Speech times each word. Hex uses a model you have in Hex, and its word times are estimates."
@@ -1081,12 +1141,37 @@ impl SettingsWindow {
                 "Apple Speech runs on this Mac and times each word. Hex shows up here while Hex is running."
             }
         };
+        let speech = match t.speech.state.as_str() {
+            _ if !WINDOWS || hex => None,
+            "downloading" => Some((
+                format!(
+                    "Downloading the speech model: {:.0}%",
+                    (t.speech.progress * 100.0).clamp(0.0, 100.0)
+                ),
+                false,
+            )),
+            "failed" => Some((
+                format!(
+                    "The speech model couldn't be downloaded{}. Scrawl tries again in a few minutes.",
+                    t.speech
+                        .error
+                        .as_deref()
+                        .map(|e| format!(" ({e})"))
+                        .unwrap_or_default()
+                ),
+                true,
+            )),
+            _ => None,
+        };
         let video = state.video_export;
         div()
             .flex()
             .flex_col()
             .child(group(theme, rows))
             .child(caption(theme, note, false))
+            .when_some(speech, |pane, (text, error)| {
+                pane.child(caption(theme, &text, error))
+            })
             .child(header(theme, "Experimental"))
             .child(group(
                 theme,
@@ -1266,6 +1351,12 @@ impl SettingsWindow {
                 "To show a cabled iPhone".to_owned(),
                 crate::icons::IPHONE,
                 GREEN,
+            ),
+            Permission::SpeechRecognition => (
+                "Speech Recognition",
+                "To write down what you say".to_owned(),
+                crate::icons::MIC,
+                ORANGE,
             ),
         };
         let granted = row.status == Status::Granted;

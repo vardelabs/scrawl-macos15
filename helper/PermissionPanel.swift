@@ -550,8 +550,7 @@ extension PermissionPanel {
   /// One card surface: a two-layer shadow, frosted Liquid Glass, and the content clipped to it.
   /// The flight and the docked panel use the same class so the hand-off is pixel for pixel.
   final class CardSurface: NSView {
-    /// `NSGlassEffectView` on macOS 26; a blurred `NSVisualEffectView` before it.
-    let glass: NSView
+    let glass = CardSurface.makeGlass()
     let clip = NSView()
     let frost = Frost()
     let content: NSView
@@ -562,7 +561,6 @@ extension PermissionPanel {
     init(content: NSView, size: NSSize) {
       self.content = content
       self.contentSize = size
-      self.glass = CardSurface.makeGlass()
       super.init(frame: NSRect(origin: .zero, size: size))
       wantsLayer = true
       layer?.masksToBounds = false
@@ -590,28 +588,29 @@ extension PermissionPanel {
     @available(*, unavailable)
     required init?(coder _: NSCoder) { fatalError() }
 
-    private static func makeGlass() -> NSView {
-      #if SCRAWL_MACOS26_SDK
+    /// Liquid Glass on macOS 26 (when built with its SDK); a frosted popover material before that.
+    static func makeGlass() -> NSView {
+      #if compiler(>=6.2)
       if #available(macOS 26, *) {
-        let liquid = NSGlassEffectView()
-        liquid.style = .regular
-        return liquid
+        let glass = NSGlassEffectView()
+        glass.style = .regular
+        return glass
       }
       #endif
-      let blur = NSVisualEffectView()
-      blur.material = .popover
-      blur.blendingMode = .behindWindow
-      blur.state = .active
-      blur.wantsLayer = true
-      blur.layer?.masksToBounds = true
-      blur.layer?.cornerCurve = .continuous
-      return blur
+      let material = NSVisualEffectView()
+      material.material = .popover
+      material.blendingMode = .behindWindow
+      material.state = .active
+      material.wantsLayer = true
+      material.layer?.masksToBounds = true
+      material.layer?.cornerCurve = .continuous
+      return material
     }
 
-    private func setGlassRadius(_ radius: CGFloat) {
-      #if SCRAWL_MACOS26_SDK
-      if #available(macOS 26, *), let liquid = glass as? NSGlassEffectView {
-        liquid.cornerRadius = radius
+    static func setCornerRadius(_ radius: CGFloat, of glass: NSView) {
+      #if compiler(>=6.2)
+      if #available(macOS 26, *), let glass = glass as? NSGlassEffectView {
+        glass.cornerRadius = radius
         return
       }
       #endif
@@ -622,7 +621,7 @@ extension PermissionPanel {
     func apply(size: NSSize, radius: CGFloat, lift: CGFloat) {
       let bounds = NSRect(origin: .zero, size: size)
       glass.frame = bounds
-      setGlassRadius(radius)
+      CardSurface.setCornerRadius(radius, of: glass)
       clip.frame = bounds
       clip.layer?.cornerRadius = radius
       frost.frame = bounds

@@ -5,6 +5,7 @@ fn main() {
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         embed_windows_resources();
+        stage_transcribe_dlls();
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -22,6 +23,37 @@ fn main() {
                 developer_dir.trim()
             );
             println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_runtime}");
+        }
+    }
+}
+
+/// transcribe.cpp's DLLs (`dynamic-backends`: `transcribe.dll`, `ggml*.dll`) beside `scrawl.exe`
+/// and the test binaries, which load them at start. Its own build script copies them there too,
+/// but only when it runs, and a build restored from CI's cache skips it.
+#[cfg(windows)]
+fn stage_transcribe_dlls() {
+    println!("cargo:rerun-if-env-changed=DEP_TRANSCRIBE_CPP_RUNTIME_DIR");
+    let Some(runtime) = std::env::var_os("DEP_TRANSCRIBE_CPP_RUNTIME_DIR") else {
+        return;
+    };
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    // OUT_DIR is <target>/<profile>/build/scrawl-<hash>/out.
+    let Some(profile) = out_dir.ancestors().nth(3) else {
+        return;
+    };
+    let dlls: Vec<PathBuf> = std::fs::read_dir(&runtime)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "dll"))
+        .collect();
+    for dir in [profile.to_path_buf(), profile.join("deps")] {
+        let _ = std::fs::create_dir_all(&dir);
+        for dll in &dlls {
+            if let Err(error) = std::fs::copy(dll, dir.join(dll.file_name().unwrap())) {
+                println!("cargo:warning=could not copy {}: {error}", dll.display());
+            }
         }
     }
 }
@@ -145,17 +177,9 @@ fn compile_helper() {
     }
     .to_owned();
     let built = out_dir.join("scrawl-helper");
-    let mut swiftc = Command::new("xcrun");
-    swiftc
+    let status = Command::new("xcrun")
         .args(["swiftc", "-O", "-swift-version", "5", "-target"])
-        .arg(format!("{arch}-apple-macos15.0"));
-    // SpeechAnalyzer and NSGlassEffectView exist only in the macOS 26 SDK. A Command Line Tools
-    // install on macOS 15 has the 15 SDK, so the helper compiles those paths out there and
-    // guards them with `#available` when the SDK has them.
-    if macos_sdk_major() >= 26 {
-        swiftc.args(["-D", "SCRAWL_MACOS26_SDK"]);
-    }
-    let status = swiftc
+        .arg(format!("{arch}-apple-macos15.0"))
         .args(&sources)
         .arg("-o")
         .arg(&built)
@@ -173,20 +197,9 @@ fn compile_helper() {
         .expect("xcrun swiftc is required to build scrawl-helper");
     assert!(
         status.success(),
-        "scrawl-helper failed to compile (needs the macOS 15 SDK or newer)"
+        "scrawl-helper failed to compile (needs the macOS 26 SDK; the result runs on macOS 15)"
     );
     let dest = profile_dir.join("scrawl-helper");
     let _ = std::fs::remove_file(&dest);
     std::fs::copy(&built, dest).expect("Could not place scrawl-helper");
-}
-
-fn macos_sdk_major() -> u32 {
-    Command::new("xcrun")
-        .args(["--sdk", "macosx", "--show-sdk-version"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .and_then(|version| version.trim().split('.').next()?.parse().ok())
-        .unwrap_or(0)
 }
