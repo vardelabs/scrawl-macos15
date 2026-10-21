@@ -825,7 +825,7 @@ Word and Outlook (`"dictationCodeFormatting": false` turns this off, and Scrawl 
 from the screen):
 
 ```json
-{ "words": ["Corvus", "Varde Labs"], "replacements": { "corvis": "Corvus" } }
+{ "words": ["Ferris", "Varde Labs"], "replacements": { "feris": "Ferris" } }
 ```
 
 Details are in `docs/dictation.md`.

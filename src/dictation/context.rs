@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn names_brands_abbreviations_and_hyphenated_prose_get_no_backticks() {
-        let text = "Kai deSilva met Neil deGrasse Tyson in Washington D.C. and N.C. The A.C. is \
+        let text = "Ada diFranco met Neil deGrasse Tyson in Washington D.C. and N.C. The A.C. is \
                     broken at 120 mmHg. I love Node.js and Vue.js. I got a new iPhone, watched YouTube on macOS, and use \
                     useState. Self-driving cars, a 24-hour turnaround, a T-shirt and COVID-19.";
         assert_eq!(apply(text, &[], true), text);

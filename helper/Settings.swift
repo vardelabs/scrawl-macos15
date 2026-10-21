@@ -1644,9 +1644,9 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     micNotAllowed.microphone.meter = nil
     var dictating = base
     dictating.dictation.on = true
-    dictating.dictation.words = ["Corvus", "Varde Labs", "Parakeet"]
+    dictating.dictation.words = ["Ferris", "Varde Labs", "Parakeet"]
     dictating.dictation.replacements = [
-      SettingsReplacement(heard: "corvis", write: "Corvus"),
+      SettingsReplacement(heard: "feris", write: "Ferris"),
       SettingsReplacement(heard: "var de labs", write: "Varde Labs"),
     ]
     var replacementsOnly = dictating
