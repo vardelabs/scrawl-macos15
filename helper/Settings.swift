@@ -926,17 +926,24 @@ struct SettingsView: View {
           .foregroundStyle(SettingsTheme(scheme).text)
       }
       .frame(height: SettingsMetrics.titlebar)
+      .padding(.horizontal, SettingsMetrics.inset)
       if model.rendering {
         // ImageRenderer cannot draw the AppKit-backed scroll view; an explicit height keeps the
         // top of a pane taller than the window in view.
-        paneBody(pane).frame(height: SettingsMetrics.height - SettingsMetrics.titlebar, alignment: .top).clipped()
+        paneBody(pane)
+          .padding(.horizontal, SettingsMetrics.inset)
+          .frame(height: SettingsMetrics.height - SettingsMetrics.titlebar, alignment: .top).clipped()
       } else {
-        // Every pane scrolls, so none is cut off at the window's minimum size.
-        ScrollView { paneBody(pane).padding(.bottom, 16) }
+        // Every pane scrolls, so none is cut off at the window's minimum size. The inset is
+        // inside the scroll view, so its bar sits at the window's edge, clear of the groups.
+        ScrollView {
+          paneBody(pane)
+            .padding(.horizontal, SettingsMetrics.inset)
+            .padding(.bottom, 16)
+        }
       }
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, SettingsMetrics.inset)
   }
 
   @ViewBuilder private func paneBody(_ pane: SettingsPane) -> some View {
