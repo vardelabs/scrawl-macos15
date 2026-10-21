@@ -6,7 +6,7 @@
 #
 # Usage: scripts/sync-upstream-readme.sh OLD NEW
 #   OLD: the last upstream commit already merged; NEW: the one being merged.
-set -euo pipefail
+set -uo pipefail
 
 if [[ $# -ne 2 ]]; then
   echo "usage: $0 OLD NEW" >&2
@@ -14,11 +14,13 @@ if [[ $# -ne 2 ]]; then
 fi
 OLD="$1"
 NEW="$2"
-cd "$(git rev-parse --show-toplevel)"
+cd "$(git rev-parse --show-toplevel)" || exit 1
 
 PATCH="$(mktemp)"
 trap 'rm -f "${PATCH}"' EXIT
-git diff "${OLD}" "${NEW}" -- README.md >"${PATCH}"
+git diff "${OLD}" "${NEW}" -- README.md >"${PATCH}" || exit 1
+status=0
+
 if [[ ! -s "${PATCH}" ]]; then
   echo "Kit's README did not change between ${OLD} and ${NEW}."
 else
@@ -28,16 +30,29 @@ else
     -e 's#^--- a/README.md$#--- a/docs/guide.md#' \
     -e 's#^+++ b/README.md$#+++ b/docs/guide.md#' \
     "${PATCH}"
-  git apply -3 "${PATCH}"
-  echo "Applied Kit's README changes to docs/guide.md."
+  if git apply -3 "${PATCH}"; then
+    echo "Applied Kit's README changes to docs/guide.md."
+  else
+    echo "Kit's README changes left conflicts in docs/guide.md; resolve them before committing." >&2
+    status=1
+  fi
   # The guide sits one level down, so a relative link Kit added needs its path adjusted by hand.
-  if grep -E '^\+.*\]\((\./)?[A-Za-z0-9_.-]+(/[^)]*)?\)' "${PATCH}" | grep -vE '\]\((https?:|#|mailto:)'; then
+  relative=$(grep '^+' "${PATCH}" | grep -oE '\]\([^)]+\)' | grep -vE '^\]\((https?:|#|mailto:)' || true)
+  if [[ -n "${relative}" ]]; then
+    echo "${relative}"
     echo "Check the relative links above in docs/guide.md: paths are now relative to docs/." >&2
   fi
 fi
 
 if git ls-files -u -- README.md | grep -q .; then
-  git checkout --ours README.md
-  git add README.md
-  echo "Kept the fork's README.md."
+  git checkout --ours README.md && git add README.md && echo "Kept the fork's README.md."
 fi
+
+# Both files carry the THIRD_PARTY attribution; an upstream change to it reaches only the guide,
+# so a mismatch has to be copied into README.md by hand.
+attribution() { sed -n '/^### THIRD_PARTY$/,$p' "$1"; }
+if ! diff -q <(attribution README.md) <(attribution docs/guide.md) >/dev/null; then
+  echo "THIRD_PARTY differs between README.md and docs/guide.md; copy Kit's change into README.md." >&2
+  status=1
+fi
+exit "${status}"

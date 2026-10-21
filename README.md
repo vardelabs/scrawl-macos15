@@ -6,14 +6,15 @@ show an agent a problem instead of describing it: press a shortcut, talk, click 
 packs the screen, your voice and your marks into a bundle an agent can read.
 
 **For what Scrawl is and how it works, read [Kit's README](https://github.com/kitlangton/scrawl#readme).**
-This page covers only what the fork adds. The full reference, with the fork's additions folded in,
-is in [`docs/guide.md`](docs/guide.md).
+This page covers only what the fork adds. [`docs/guide.md`](docs/guide.md) is Kit's README kept as
+the full reference, with the fork's settings added; its Install section describes Kit's own builds,
+so install the fork as below.
 
 ![A capture's contact sheet: numbered keyframes with the words spoken over each, ink and a pin](docs/images/fork/contact-sheet.png)
 
 ## What the fork adds
 
-- **Runs on macOS 15.** Kit's build needs macOS 26 for transcription. This one transcribes
+- **Runs on macOS 15.** Kit's app needs macOS 26. This one builds for macOS 15 and transcribes
   locally with [Parakeet](https://github.com/senstella/parakeet-mlx) through
   `scripts/scrawl-parakeet.py`. With `"transcribePrestart": true` it starts the model as the
   recording begins, so a transcript is ready about a second after you stop.
@@ -34,8 +35,9 @@ is in [`docs/guide.md`](docs/guide.md).
 
 ## Build and install
 
-There are no prebuilt releases of the fork. You need an Apple silicon Mac, Xcode 26 or later (for
-the macOS 26 SDK; the app itself targets macOS 15), its Metal toolchain, and Rust.
+There are no prebuilt releases of the fork. You need an Apple silicon Mac, Rust, and Xcode with
+the macOS 15 SDK or newer: the build leaves out the macOS 26-only code when the SDK lacks it. The
+fork is tested with Xcode 26.3, which needs its Metal toolchain downloaded once:
 
 ```bash
 xcodebuild -downloadComponent MetalToolchain
