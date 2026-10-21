@@ -115,7 +115,8 @@ impl Wave {
         self.idle.to(f32::from(u8::from(idle)), FADE);
     }
 
-    pub fn advance(&mut self, dt: f32) {
+    /// Under Reduce Motion the crests hold still; the height still follows the voice.
+    pub fn advance(&mut self, dt: f32, reduced: bool) {
         self.target = match self.db {
             Some(db) => {
                 self.noise_db = db.min(self.noise_db + NOISE_RISE_DB_PER_S * dt);
@@ -125,7 +126,9 @@ impl Wave {
         };
         let tau = if self.target > self.level { ATTACK_S } else { RELEASE_S };
         self.level += (self.target - self.level) * (1.0 - (-dt / tau).exp());
-        self.phase = (self.phase + dt * PHASE_SPEED) % std::f32::consts::TAU;
+        if !reduced {
+            self.phase = (self.phase + dt * PHASE_SPEED) % std::f32::consts::TAU;
+        }
         self.since_push += dt * PUSH_HZ;
         while self.since_push >= 1.0 {
             self.since_push -= 1.0;
@@ -138,13 +141,14 @@ impl Wave {
     }
 
     /// Something on the line would change on the next frame, so the pill keeps drawing; a flat
-    /// line in silence draws nothing new.
+    /// line in silence, or one no state shows, draws nothing new.
     pub fn is_moving(&self) -> bool {
         let fading = !(self.mic.is_resting() && self.listening.is_resting() && self.idle.is_resting());
+        let shown = self.mic.x > STILL && (self.listening.x > STILL || self.idle.x > STILL);
         let heard = self.target > STILL
             || self.level > STILL
             || self.history.iter().any(|&h| h > STILL);
-        fading || (heard && self.mic.x > STILL)
+        fading || (shown && heard)
     }
 
     /// The live level, then the history, newest first, for the shader.
@@ -208,7 +212,7 @@ mod tests {
 
     fn run(wave: &mut Wave, seconds: f32) {
         for _ in 0..(seconds * 120.0) as usize {
-            wave.advance(1.0 / 120.0);
+            wave.advance(1.0 / 120.0, false);
         }
     }
 
@@ -254,6 +258,7 @@ mod tests {
     #[test]
     fn older_levels_move_outward_and_silence_stops_the_redraws() {
         let mut wave = Wave::default();
+        wave.show(&Pres::Dictating { latched: false });
         wave.set_rms(Some(rms_of_height(1.0)));
         run(&mut wave, 0.2);
         wave.set_rms(Some(QUIET));
@@ -263,6 +268,15 @@ mod tests {
         assert!(wave.is_moving());
         run(&mut wave, 3.0);
         assert!(!wave.is_moving(), "a flat line in silence draws nothing new");
+    }
+
+    #[test]
+    fn a_line_no_state_shows_draws_nothing_new() {
+        let mut wave = Wave::default();
+        wave.show(&Pres::Hidden);
+        wave.set_rms(Some(SPEECH));
+        run(&mut wave, 0.5);
+        assert!(!wave.is_moving());
     }
 
     #[test]

@@ -1376,7 +1376,7 @@ impl PillModel {
             return;
         }
         self.t += dt;
-        self.wave.advance(dt);
+        self.wave.advance(dt, self.reduced);
         if self.geo_at <= self.t + 1e-3 && self.geo_pres != self.pres {
             self.apply_geometry();
         }

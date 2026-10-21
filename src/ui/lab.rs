@@ -319,9 +319,11 @@ fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
         let mut run = 0;
         loop {
             cx.background_executor().timer(real(LEAD_IN_S)).await;
-            // Stepped every frame, so the pretend mic level moves as a real one does.
+            // Stepped every frame, so the pretend mic level moves as a real one does; the scene's
+            // clock is the animation clock, so frames that run late don't stretch it.
             let mut steps = dictation_steps().into_iter().peekable();
             let end = LAB_MIC.iter().map(|&(_, to)| to).fold(0.0, f32::max);
+            let start = motion::now();
             let mut at = 0.0;
             while steps.peek().is_some() || at < end {
                 while let Some((_, pres)) = steps.next_if(|(when, _)| *when <= at) {
@@ -330,7 +332,7 @@ fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
                 }
                 let _ = cx.update(|_| pill.set_mic_rms(lab_mic_rms(at)));
                 cx.background_executor().timer(real(FRAME_S)).await;
-                at += FRAME_S;
+                at = motion::age(start);
             }
             cx.background_executor().timer(real(TAIL_S)).await;
             run += 1;
