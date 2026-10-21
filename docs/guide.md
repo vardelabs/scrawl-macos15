@@ -808,7 +808,8 @@ stays in the file):
   model while you talk. It runs with `SCRAWL_PRESTART=1` and `-` in place of `{audio}`, reads the
   WAV's path as one line on stdin when the recording finishes, and prints its JSON as usual.
   A cancelled recording kills it. If the prestarted run
-  fails, Scrawl runs the program again the usual way. `scripts/scrawl-parakeet.py` supports it:
+  fails, Scrawl runs the program again the usual way, except after a timeout, which goes straight
+  to Apple Speech. `scripts/scrawl-parakeet.py` supports it:
   its first pass in a process costs about 2 s, which this moves into the recording.
 
 `scripts/scrawl-parakeet.py` is a ready wrapper for NVIDIA's Parakeet TDT 0.6B v3
