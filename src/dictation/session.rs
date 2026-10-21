@@ -38,7 +38,7 @@ struct Settings {
     label: String,
     restore_clipboard: bool,
     pill: bool,
-    /// Match names on screen and put code in backticks (`dictationCodeFormatting`).
+    /// Match filenames on screen and put code in backticks (`dictationCodeFormatting`).
     code: bool,
 }
 
@@ -463,9 +463,15 @@ fn transcribe_and_paste(
     let _ = std::fs::remove_file(&wav);
     // The dictionary first, so a user's rule for "design dot md" still sees what was said.
     let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
-    let text = super::context::spoken_extensions(&text);
-    let terms = screen.and_then(|read| read.join().ok()).unwrap_or_default();
-    let text = super::context::apply(&text, &terms, backticks);
+    // With code formatting off, `screen` is `None` and the text is left as transcribed.
+    let text = match screen {
+        Some(read) => {
+            let text = super::context::spoken_extensions(&text);
+            let terms = read.join().unwrap_or_default();
+            super::context::apply(&text, &terms, backticks)
+        }
+        None => text,
+    };
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,

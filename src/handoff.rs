@@ -538,7 +538,7 @@ pub struct Config {
     /// Keeps the small dictation bar on screen while dictation is on (default on).
     #[serde(default)]
     pub dictation_pill: Option<bool>,
-    /// Reads names from the focused window to match dictated phrases against, and puts code in
+    /// Reads filenames from the focused window to match dictated ones against, and puts code in
     /// backticks outside prose apps (default on).
     #[serde(default)]
     pub dictation_code_formatting: Option<bool>,

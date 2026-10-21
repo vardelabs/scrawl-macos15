@@ -626,7 +626,7 @@ pub struct DictationView {
     pub restore_clipboard: bool,
     /// The small bar that stays on screen while dictation is on.
     pub pill: bool,
-    /// Names matched from the screen, and code in backticks.
+    /// Filenames matched from the screen, and code in backticks.
     pub code_formatting: bool,
     pub remove_fillers: bool,
     pub words: Vec<String>,
