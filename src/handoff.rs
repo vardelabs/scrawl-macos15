@@ -542,6 +542,9 @@ pub struct Config {
     /// backticks outside prose apps (default on).
     #[serde(default)]
     pub dictation_code_formatting: Option<bool>,
+    /// Adds names and terms the user types over pasted dictation to the dictionary (default on).
+    #[serde(default)]
+    pub dictation_learn: Option<bool>,
 }
 
 /// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
@@ -797,6 +800,7 @@ pub struct DictationConfig {
     pub restore_clipboard: bool,
     pub pill: bool,
     pub code: bool,
+    pub learn: bool,
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -808,6 +812,7 @@ pub fn dictation() -> DictationConfig {
         restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
         pill: config.dictation_pill.unwrap_or(true),
         code: config.dictation_code_formatting.unwrap_or(true),
+        learn: config.dictation_learn.unwrap_or(true),
     }
 }
 

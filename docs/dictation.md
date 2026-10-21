@@ -1,6 +1,6 @@
 # Dictation: voice only, pasted where you type
 
-Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `context.rs`, filenames and code), `src/dictionary.rs` or the dictation pill.
+Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `context.rs`, filenames and code; `learn.rs`, words learned from edits), `src/dictionary.rs` or the dictation pill.
 
 Dictation is the screenless sibling of a capture: a modifier-only chord records the microphone, the configured transcriber turns it into text, and Scrawl pastes the text into the app in front. It is off by default (`"dictation": true` turns it on, or Settings › Dictation).
 
@@ -21,7 +21,7 @@ Dictation shares Scrawl's one capsule with captures (`ScrawlCoordinator::tick_di
 - `Pres::DictationIdle`: a small see-through bar with a light rim (`FrameState::is_idle`), on while dictation and `dictationPill` (default on) both are. Hovered, it offers Dictate and Record.
 - Hovered, `Pres::Hint`: "Dictate ⌃⌥", which starts hands-free dictation (`Chord::latch`), and Record, which does what a tap of the record shortcut does.
 - `Pres::Dictating { latched }`: the dot and clock, with ✕ and ✓ when latched; `Pres::Processing` while it transcribes.
-- A notice, `Pres::Message` with a check, for 2.5 s: "Copied to the clipboard" when nothing was focused, "Didn't catch that" when nothing was heard. Automatic dictionary updates will use the same notice.
+- A notice, `Pres::Message` with a check, for 2.5 s: "Copied to the clipboard" when nothing was focused, "Didn't catch that" when nothing was heard, and "Added Klose to the dictionary" when a word was learned from an edit.
 
 Dictation's states, its Processing included, sit one window level under the Dock (`PillSnapshot::under_dock`), so a hidden Dock that pops up covers the pill; capture states stay above Scrawl's overlays. While a capture records, selects or processes, the capsule shows the capture and dictation's chord is ignored; recordings leave the capsule out because SCK excludes Scrawl's windows above layer 0, and both of the capsule's levels are. Element tiles are packed by width (`render_frame`), so a message wider than a chip isn't cut off. `scrawl lab pill dictation` plays these states.
 
@@ -35,19 +35,19 @@ Dictation's states, its Processing included, sit one window level under the Dock
 
 ```json
 {
-  "words": ["Corvus", "Varde Labs", "Parakeet"],
-  "replacements": { "corvis": "Corvus", "var de labs": "Varde Labs" }
+  "words": ["Ferris", "Varde Labs", "Parakeet"],
+  "replacements": { "feris": "Ferris", "var de labs": "Varde Labs" }
 }
 ```
 
 - `replacements` match whole words, ignoring case, longest first.
-- `words` fix casing and spacing (`varde labs`, `vardelabs` → `Varde Labs`) and near misses of words of 7 letters or more (one edit, two from 10 letters, same first letter). Shorter words have real neighbours (`corpus` and `Corvus`), so they need a replacement.
+- `words` fix casing and spacing (`varde labs`, `vardelabs` → `Varde Labs`) and near misses of words of 7 letters or more (one edit, two from 10 letters, same first letter). Shorter words have real neighbours (`ferries` and `Ferris`), so they need a replacement.
 
 Parakeet takes no vocabulary prompt, so the dictionary corrects after transcription.
 
 ## Filenames and code (`src/dictation/context.rs`)
 
-With **Format code and filenames** (`dictationCodeFormatting`, default on), the text goes through three pure steps after the dictionary, so a rule for "design dot md" still sees what was said. Prose is the common case, so every rule needs a spoken "dot" or a written `.` or `_`. Names (deSilva), brand names (iPhone, Node), camelCase, and phrasal verbs that match an identifier on screen ("sign in" beside `signIn`) all stay as spoken.
+With **Format code and filenames** (`dictationCodeFormatting`, default on), the text goes through three pure steps after the dictionary, so a rule for "design dot md" still sees what was said. Prose is the common case, so every rule needs a spoken "dot" or a written `.` or `_`. Names (diFranco), brand names (iPhone, Node), camelCase, and phrasal verbs that match an identifier on screen ("sign in" beside `signIn`) all stay as spoken.
 
 1. `spoken_extensions`: a lower-case spoken "dot" before a known extension joins the word before it, so "design dot MD" becomes "design.md". The name "Dot", "the", "a" or "an" before the "dot", and extensions that are everyday words or letters (`AMBIGUOUS`: go, c, h, sh, env, lock) are left as spoken.
 2. `apply` with screen filenames: when the chord is released, `ax::window_text` walks the focused window's Accessibility tree breadth first, on a thread of its own alongside transcription. It stops at `SCREEN_ELEMENTS` elements or `SCREEN_BUDGET`, and never reads a secure text field. The paste waits for it at most `SCREEN_WAIT` after the chord; an app slow to answer Accessibility gets its text without filenames. `terms` keeps the filenames it finds. A spoken run of up to `MAX_SPAN_WORDS` words that ends in a spoken "dot" and an extension, and equals a screen filename on letters and digits (a possessive "'s" or "s'" dropped from the words before the extension), is written as that filename. So "the product's design dot MD" with `PRODUCT-DESIGN.md` on screen becomes `PRODUCT-DESIGN.md`, while "note text" beside `note.txt` stays.
@@ -55,6 +55,17 @@ With **Format code and filenames** (`dictationCodeFormatting`, default on), the 
 
 With the setting off, none of this runs and nothing is read from the screen. Screen text is kept for one dictation only, and never stored or sent.
 
+## Learning from edits (`src/dictation/learn.rs`)
+
+With **Learn words from my edits** (`dictationLearn`, default on), a paste starts `watch_edits` on a thread of its own:
+
+1. `PASTE_SETTLE` after the paste, it holds the focused element (`ax::FocusedText`, never a secure text field, and never one over `MAX_FIELD_CHARS`, asked before its text is copied, with each read under the 0.1 s Accessibility timeout). It reads the element's `AXValue` and finds the paste in it (`learn::locate`, keeping `ANCHOR_CHARS` of text on each side, plus where the paste started, so a prefix that repeats is matched at the right copy). A paste it can't find is not watched.
+2. Every `LEARN_EVERY` it reads the span between the anchors again (`edited_span`) into a `learn::Settle`, which keeps the last span once reads agree on it: two in a row, or three when the watch ends with the span gone (a chat message sent), since a word finished and sent within one read was never read whole. However it ends, the watch reads the element once more, an interval after the last read. The watch ends when focus leaves the element, after `LEARN_FOR` (60 s), or once the span can't be found or is empty, as when a chat message is sent. It then uses the settled span.
+3. `learned` aligns the pasted and edited words (without case) and proposes short swaps that respell the old words: up to `MAX_HEARD_WORDS` words replaced by up to `MAX_TERM_WORDS`, spelled alike within `MAX_DISTANCE_RATIO`, with different letters (not just case), no digits and no `@`, and not a stretched word ("heyyy") or a vowel-dropped shortcut ("abt", "btwn"). A possessive "'s" comes off, and so does Markdown wrapping (`` ` ``, `*`, `_`, `~`), so backticking or bolding a word is no change; a `/` (a path) is never a term. The term is the run of new words that best matches what was heard, never more words than were heard, so text typed after a paste-final fix ("Pipedrive today") is left out. It proposes nothing when less than `MIN_KEPT` of the paste is kept or respelled, since that is a different text.
+4. On the UI thread, `take_learned` keeps only proposals with a word the system spell checker doesn't know in English or in its own language (`SPELL_LANGUAGES`, always explicit, since automatic identification calls "teh" correct), and that it doesn't correct to a word one edit or one swapped pair of letters away (`spell_checker_typo`: "calender", "recieved"). A correction back to the word that was pasted counts too (the user's slip, "schedule" retyped as "schedyle"), unless the user changed its first letter (`learn::chose_name_over`): "Klose" corrects to "Close", and the user chose Klose over the pasted "close". That is what separates a name or term (Klose, Pipedrive, Obsbot) from ordinary editing ("The" to "This", "follow up" to "follow-up", "Jon" to "John", "lets" to "let's"). Kept words go into `dictionary.json` with `Dictionary::learn_word`: into `words`, and into `learnedWords`, which Settings marks with ✨, at most `MAX_LEARNED` at a time. Removing a learned word in Settings records it in `learnedRejected`, and it is never learned again (adding it by hand still works). Turning the setting off drops words still on their way. `dictionary::edit_lock` keeps this and Settings from saving over each other, and a dictionary that doesn't parse is left alone. The pill then shows a notice.
+
+The field's text stays in memory for that one paste. Only learned words are written, to `dictionary.json` on this Mac; a `dictionary.json` symlinked into a dotfiles repository receives them too, so turn learning off if names from other people's messages shouldn't land there.
+
 ## Settings › Dictation
 
-The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Format code and filenames** (`dictationCodeFormatting`, default on), **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).
+The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Format code and filenames** (`dictationCodeFormatting`, default on), **Learn words from my edits** (`dictationLearn`, default on), **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).

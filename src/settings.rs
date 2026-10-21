@@ -629,8 +629,12 @@ pub struct DictationView {
     pub pill: bool,
     /// Filenames matched from the screen, and code in backticks.
     pub code_formatting: bool,
+    /// Words learned from edits to pasted text.
+    pub learn: bool,
     pub remove_fillers: bool,
     pub words: Vec<String>,
+    /// The `words` learned from edits, marked in the list.
+    pub learned: Vec<String>,
     pub replacements: Vec<ReplacementView>,
     /// Why the dictionary can't be shown or changed (a broken file, left as it is).
     pub error: Option<String>,
@@ -908,8 +912,10 @@ fn dictation_view(
         restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
         pill: config.dictation_pill.unwrap_or(true),
         code_formatting: config.dictation_code_formatting.unwrap_or(true),
+        learn: config.dictation_learn.unwrap_or(true),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
+        learned: dictionary.learned,
         replacements: dictionary
             .replacements
             .into_iter()
@@ -920,7 +926,7 @@ fn dictation_view(
     }
 }
 
-/// `/Users/kai/…` as `~/…`, to fit a caption.
+/// `/Users/you/…` as `~/…`, to fit a caption.
 fn home_relative(text: &str) -> String {
     match dirs::home_dir().and_then(|home| home.to_str().map(str::to_owned)) {
         Some(home) => text.replace(&home, "~"),
@@ -990,7 +996,7 @@ fn shortcut_view(
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
     /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures`,
-    /// `dictation`, `dictationRestoreClipboard`, `dictationPill`, `dictationCodeFormatting`,
+    /// `dictation`, `dictationRestoreClipboard`, `dictationPill`, `dictationCodeFormatting`, `dictationLearn`,
     /// `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
@@ -1197,6 +1203,7 @@ impl Panel {
         change: impl FnOnce(&mut crate::dictionary::Dictionary),
     ) -> Effect {
         let path = crate::dictionary::path_beside(&host.config_path());
+        let _editing = crate::dictionary::edit_lock();
         // A file that doesn't read is the view's `error`, not a failed save.
         let mut dictionary = match crate::dictionary::Dictionary::load_from(&path) {
             Ok(dictionary) => dictionary,
@@ -1269,7 +1276,7 @@ impl Panel {
             }
             (
                 "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures" | "dictation"
-                | "dictationRestoreClipboard" | "dictationPill" | "dictationCodeFormatting"
+                | "dictationRestoreClipboard" | "dictationPill" | "dictationCodeFormatting" | "dictationLearn"
                 | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => write(key, (*on).into()),
@@ -1929,17 +1936,17 @@ mod tests {
             panel.on(serde_json::from_str(json).unwrap(), host)
         };
         act(&mut panel, &mut host, r#"{"action":"add-word","word":" Varde  Labs "}"#);
-        act(&mut panel, &mut host, r#"{"action":"add-word","word":"Corvus"}"#);
-        act(&mut panel, &mut host, r#"{"action":"add-replacement","heard":"corvis","write":"Corvus"}"#);
-        act(&mut panel, &mut host, r#"{"action":"remove-word","word":"Corvus"}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-word","word":"Ferris"}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-replacement","heard":"feris","write":"Ferris"}"#);
+        act(&mut panel, &mut host, r#"{"action":"remove-word","word":"Ferris"}"#);
         let view = panel.view(&host).dictation;
         assert_eq!(view.words, ["Varde Labs"]);
         assert_eq!(
             view.replacements,
-            [ReplacementView { heard: "corvis".into(), write: "Corvus".into() }]
+            [ReplacementView { heard: "feris".into(), write: "Ferris".into() }]
         );
         assert_eq!(view.error, None);
-        act(&mut panel, &mut host, r#"{"action":"remove-replacement","heard":"corvis"}"#);
+        act(&mut panel, &mut host, r#"{"action":"remove-replacement","heard":"feris"}"#);
         assert!(panel.view(&host).dictation.replacements.is_empty());
         assert_eq!(
             act(&mut panel, &mut host, r#"{"action":"edit-dictionary"}"#),
@@ -1954,14 +1961,14 @@ mod tests {
         let path = dir.0.join("dictionary.json");
         std::fs::write(&path, "{ not json").unwrap();
         let mut panel = Panel::default();
-        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Ferris"}"#).unwrap(), &mut host);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
         let view = panel.view(&host).dictation;
         assert!(view.words.is_empty());
         assert!(view.error.is_some_and(|e| e.contains("isn't a valid dictionary")));
         // Fixed outside Scrawl: no stale message is left behind.
         assert_eq!(view.save_error, None);
-        std::fs::write(&path, r#"{"words": ["Vega"]}"#).unwrap();
+        std::fs::write(&path, r#"{"words": ["Nova"]}"#).unwrap();
         let view = panel.view(&host).dictation;
         assert_eq!((view.error, view.save_error), (None, None));
     }
@@ -1974,15 +1981,15 @@ mod tests {
         let mut host = fake(&dir);
         let mut panel = Panel::default();
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
-        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Ferris"}"#).unwrap(), &mut host);
         let view = panel.view(&host).dictation;
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(view.save_error.is_some_and(|e| e.starts_with("Couldn't save the dictionary")));
         // Only a broken file locks the editor; a failed save can be retried.
         assert_eq!(view.error, None);
-        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Ferris"}"#).unwrap(), &mut host);
         assert_eq!(panel.view(&host).dictation.save_error, None);
-        assert_eq!(panel.view(&host).dictation.words, ["Corvus"]);
+        assert_eq!(panel.view(&host).dictation.words, ["Ferris"]);
     }
 
     #[test]
@@ -1997,6 +2004,7 @@ mod tests {
         set(&mut panel, &mut host, "removeFillers", false.into());
         set(&mut panel, &mut host, "dictationPill", false.into());
         set(&mut panel, &mut host, "dictationCodeFormatting", false.into());
+        set(&mut panel, &mut host, "dictationLearn", false.into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥⌘".into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥".into());
         let view = panel.view(&host).dictation;
@@ -2004,6 +2012,7 @@ mod tests {
         assert!(!view.remove_fillers);
         assert!(!view.pill);
         assert!(!view.code_formatting);
+        assert!(!view.learn);
         assert_eq!(view.shortcut, "⌥⌘");
     }
 

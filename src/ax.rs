@@ -92,6 +92,53 @@ fn settable(element: AxElement, name: &'static str) -> bool {
     status == 0 && settable != 0
 }
 
+/// The focused text element, held after a paste so dictation can see how the user corrected it
+/// (`dictation::learn`). Never a secure text field.
+#[cfg(target_os = "macos")]
+pub struct FocusedText(Owned);
+
+// An AXUIElement is a reference to another process's element; it is used from one thread at a
+// time, and the Accessibility API takes calls from any thread.
+#[cfg(target_os = "macos")]
+unsafe impl Send for FocusedText {}
+
+#[cfg(target_os = "macos")]
+impl FocusedText {
+    pub fn current() -> Option<Self> {
+        let element = focused_element()?;
+        // The element is read for up to a minute; an app that stops answering must not hold the
+        // watcher past each read's timeout.
+        unsafe { AXUIElementSetMessagingTimeout(element.0, MESSAGE_TIMEOUT_S) };
+        let role = string_attribute(element.0, "AXRole").unwrap_or_default();
+        let subrole = string_attribute(element.0, "AXSubrole").unwrap_or_default();
+        (role != "AXSecureTextField" && subrole != "AXSecureTextField").then_some(Self(element))
+    }
+
+    /// The element's text, if it has any and is at most `max_chars` long. The length is asked
+    /// first (`AXNumberOfCharacters`), so a huge document is never copied.
+    pub fn value(&self, max_chars: usize) -> Option<String> {
+        let length = attribute(self.0.0, "AXNumberOfCharacters").and_then(|count| {
+            let count = unsafe { CFType::wrap_under_get_rule(count.0) };
+            count.downcast::<core_foundation::number::CFNumber>()?.to_i64()
+        });
+        if length.is_some_and(|n| n < 0 || n as usize > max_chars) {
+            return None;
+        }
+        string_attribute(self.0.0, "AXValue").filter(|text| text.chars().count() <= max_chars)
+    }
+
+    pub fn still_focused(&self) -> bool {
+        focused_element().is_some_and(|now| unsafe { core_foundation::base::CFEqual(now.0, self.0.0) } != 0)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn focused_element() -> Option<Owned> {
+    let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+    unsafe { AXUIElementSetMessagingTimeout(system.0, MESSAGE_TIMEOUT_S) };
+    element_attribute(system.0, "AXFocusedUIElement")
+}
+
 /// Longest text kept from one element (a whole chat or document is cut here).
 #[cfg(target_os = "macos")]
 const MAX_ELEMENT_TEXT: usize = 20_000;

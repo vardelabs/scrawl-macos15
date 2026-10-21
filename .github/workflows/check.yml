@@ -13,10 +13,19 @@ concurrency:
 jobs:
   macos:
     name: macOS
-    runs-on: macos-26
+    # macos-26 runners are scarce enough that jobs sat queued until GitHub cancelled them.
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+      # build.rs compiles the helper's macOS 26 code (SpeechAnalyzer, glass) only with the macOS 26
+      # SDK; without it CI would pass without building that code.
+      - name: Use Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$xcode" ]; then echo "::error::No Xcode 26 on this runner image"; exit 1; fi
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

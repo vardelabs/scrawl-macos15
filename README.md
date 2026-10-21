@@ -19,8 +19,8 @@ so install the fork as below.
   `scripts/scrawl-parakeet.py`. With `"transcribePrestart": true` it starts the model as the
   recording begins, so a transcript is ready about a second after you stop.
 - **Dictation.** Hold `⌃⌥` and talk, and the text is pasted where you type; double tap for
-  hands-free. A dictionary of words and replacements, filler words ("um", "uh") removed, and
-  spoken filenames written as `` `README.md` ``.
+  hands-free. A dictionary of words and replacements, filler words ("um", "uh") removed,
+  spoken filenames written as `` `README.md` ``, and names learned when you correct a paste.
 - **Pause and resume.** A with the record shortcut's modifiers (`⌥⇧A`, or `⌃⇧A` if you record
   with `⌃⇧S`), or Pause in the capsule, holds a capture while you look around
   or think; the pause is cut from the movie, audio and transcript.

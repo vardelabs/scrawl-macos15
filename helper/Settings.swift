@@ -130,8 +130,10 @@ struct SettingsDictation: Decodable, Equatable {
   var restoreClipboard = true
   var pill = true
   var codeFormatting = true
+  var learn = true
   var removeFillers = true
   var words: [String] = []
+  var learned: [String] = []
   var replacements: [SettingsReplacement] = []
   var error: String?
   var saveError: String?
@@ -1028,14 +1030,18 @@ struct SettingsView: View {
         SettingsRow(title: "Format code and filenames") {
           SettingsSwitch(on: d.codeFormatting) { model.set("dictationCodeFormatting", $0) }
         }
+        SettingsSeparator()
+        SettingsRow(title: "Learn words from my edits") {
+          SettingsSwitch(on: d.learn) { model.set("dictationLearn", $0) }
+        }
       }
-      SettingsCaption(text: "Filenames on screen are written as they appear there (“product design dot md” becomes PRODUCT-DESIGN.md), and filenames and snake_case go in backticks except in Mail, Messages, Notes, Pages, Word and Outlook. Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
+      SettingsCaption(text: "Filenames on screen are written as they appear there (“product design dot md” becomes PRODUCT-DESIGN.md), and filenames and snake_case go in backticks except in Mail, Messages, Notes, Pages, Word and Outlook. A name you type over pasted text (“close” to “Klose”) is added to Words, marked ✨, and the pill says so. Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
       SettingsGroup {
         ForEach(Array(d.words.enumerated()), id: \.offset) { _, word in
-          DictionaryEntryRow(title: word) { model.act("remove-word", ["word": word]) }
+          DictionaryEntryRow(title: d.learned.contains(word) ? "\(word) ✨" : word) { model.act("remove-word", ["word": word]) }
           SettingsSeparator()
         }
         DictionaryAddRow(placeholder: "Add a word or phrase", enabled: d.error == nil) { model.act("add-word", ["word": $0]) }
@@ -1644,9 +1650,10 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     micNotAllowed.microphone.meter = nil
     var dictating = base
     dictating.dictation.on = true
-    dictating.dictation.words = ["Corvus", "Varde Labs", "Parakeet"]
+    dictating.dictation.words = ["Ferris", "Varde Labs", "Parakeet", "Klose"]
+    dictating.dictation.learned = ["Klose"]
     dictating.dictation.replacements = [
-      SettingsReplacement(heard: "corvis", write: "Corvus"),
+      SettingsReplacement(heard: "feris", write: "Ferris"),
       SettingsReplacement(heard: "var de labs", write: "Varde Labs"),
     ]
     var replacementsOnly = dictating
