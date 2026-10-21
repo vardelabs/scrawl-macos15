@@ -365,7 +365,7 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.as_mut() {
                     recorder.prestart_transcriber();
                 }
-                self.playback = self.playback.take().or_else(crate::playback::Guard::start);
+                self.playback = self.playback.take().or_else(crate::playback::Guard::start_quick);
                 self.started = Some(Instant::now());
                 self.notice = None;
             }

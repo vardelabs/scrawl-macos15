@@ -35,7 +35,9 @@ pub const IDLE_W: f32 = 96.0;
 pub const IDLE_H: f32 = 24.0;
 /// The always-on dictation bar (`Pres::DictationIdle`).
 pub const DICTATION_IDLE_W: f32 = 44.0;
-pub const DICTATION_IDLE_H: f32 = 10.0;
+pub const DICTATION_IDLE_H: f32 = 7.0;
+/// The shortest the drawn shell gets, so the dictation bar is drawn at its own height.
+const MIN_SHELL_H: f32 = DICTATION_IDLE_H;
 /// A notice's text starts right after its check's chip-wide slot, and ends this far from the
 /// element's edge, so the space after the text matches the space before the check (13.5 pt from
 /// the capsule's edge on both sides).
@@ -1209,7 +1211,7 @@ impl PillModel {
             return false;
         }
         let (lay, _) = layout_of(&self.pres, &self.clock, self.completed_label_w, &self.metrics);
-        let y = y - self.anchor_dy(TOP + (lay.b - TOP).max(IDLE_H * 0.5));
+        let y = y - self.anchor_dy(TOP + (lay.b - TOP).max(MIN_SHELL_H));
         let slop = 6.0;
         x >= lay.l - slop && x <= lay.r + slop && y >= lay.t - slop && y <= lay.b + slop
     }
@@ -1265,7 +1267,7 @@ impl PillModel {
             scale.clamp(ENTRY_EXIT_SCALE * 0.9, 1.05)
         };
         let base_w = (r - l).max(IDLE_W * 0.5);
-        let base_h = (b - TOP).max(IDLE_H * 0.5);
+        let base_h = (b - TOP).max(MIN_SHELL_H);
         let mid = CX + ((l + r) * 0.5 - CX) * k_shell;
         let w = base_w * k_shell;
         let h = base_h * k_shell;
