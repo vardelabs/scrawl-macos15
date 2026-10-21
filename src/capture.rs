@@ -256,7 +256,6 @@ pub fn modifier_symbols(carbon_modifiers: u32) -> String {
     .collect()
 }
 
-/// A shortcut as this platform writes it: `⌥⇧S` on macOS, `Alt+Shift+S` on Windows.
 /// Pause sits beside record, one hand, no reach: A with the record shortcut's own modifiers
 /// (⌥⇧A for the default ⌥⇧S). `None` when that would be the record shortcut itself or a bare key.
 pub fn pause_combo(record: &ShortcutConfig, a_code: u32) -> Option<(u32, u32)> {
@@ -264,6 +263,7 @@ pub fn pause_combo(record: &ShortcutConfig, a_code: u32) -> Option<(u32, u32)> {
     (mods != 0 && record.key_code != a_code).then_some((a_code, mods))
 }
 
+/// A shortcut as this platform writes it: `⌥⇧S` on macOS, `Alt+Shift+S` on Windows.
 pub fn shortcut_label(carbon_modifiers: u32, key: &str) -> String {
     let held = |bit: u32| carbon_modifiers & bit != 0;
     if cfg!(target_os = "windows") {
@@ -722,8 +722,9 @@ impl ScreenCaptureSession {
 
 /// One movie from a session's segments (`crate::pause::join_plan`) at `target` (the session's
 /// movie path), with its `videoOffsetMs`. A capture that was never paused has one segment there,
-/// which is used as it is. `None` when there was no movie. A failed join leaves the movie out
-/// (the candidate frames stand in) and keeps only the first segment.
+/// which is used as it is. `None` when there was no movie. A failed join removes the segments
+/// and leaves the movie out, so the candidate frames stand in and nothing falls back to a movie
+/// that stops at the first pause.
 fn join_segments(
     segments: Vec<crate::pause::Segment>,
     target: Option<&Path>,
@@ -742,7 +743,8 @@ fn join_segments(
     let joined = target.with_file_name("recording-joined.mp4");
     let result = crate::helper::join_movies(&joined, &plan.parts)
         .and_then(|()| std::fs::rename(&joined, &target).map_err(Into::into));
-    for segment in written.iter().filter(|s| s.path != target) {
+    let failed = result.is_err();
+    for segment in written.iter().filter(|s| failed || s.path != target) {
         let _ = std::fs::remove_file(&segment.path);
     }
     if let Err(error) = result {
