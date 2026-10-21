@@ -522,6 +522,28 @@ fn register_shortcuts(
     failed.map_or(Ok(()), Err)
 }
 
+/// The pause hotkey pressed: it's Scrawl's own control, not something the person did on screen.
+fn is_pause_key(
+    telemetry: &SharedCaptureTelemetry,
+    keycode: u16,
+    cmd: bool,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+) -> bool {
+    let a_code = u32::from(key_code_for_char('a').unwrap_or(KEY_A));
+    let mods = [
+        (cmd, CARBON_CMD_KEY),
+        (ctrl, CARBON_CONTROL_KEY),
+        (alt, CARBON_OPTION_KEY),
+        (shift, CARBON_SHIFT_KEY),
+    ]
+    .into_iter()
+    .filter(|(held, _)| *held)
+    .fold(0, |mask, (_, bit)| mask | bit);
+    pause_combo(&telemetry.shortcuts().0, a_code) == Some((u32::from(keycode), mods))
+}
+
 /// Registers the pause hotkey (`pause_combo` of `record`) while a screen capture runs, so the
 /// combo stays free for other apps the rest of the time; `None` releases it.
 pub fn set_pause_hotkey(record: Option<&ShortcutConfig>) {
@@ -1740,7 +1762,7 @@ unsafe extern "C" fn key_tap_callback(
     if keycode == KEY_ESCAPE && !cmd && !ctrl {
         telemetry.escape_pressed.store(true, Ordering::Release);
     }
-    if !telemetry.capturing() {
+    if !telemetry.capturing() || is_pause_key(telemetry, keycode, cmd, ctrl, alt, shift) {
         return event;
     }
 
