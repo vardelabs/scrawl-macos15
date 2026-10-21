@@ -492,7 +492,7 @@ fn has_exited(pid: libc::pid_t) -> std::io::Result<bool> {
 #[cfg(unix)]
 /// The child is the group leader, so a negative pid reaches everything it started. Called only
 /// while the leader is alive or still unreaped, when the group id is still its own.
-fn kill_group(pid: libc::pid_t) {
+pub(crate) fn kill_group(pid: libc::pid_t) {
     // SAFETY: a plain signal to a process group this process created and still holds.
     unsafe {
         libc::kill(-pid, libc::SIGKILL);

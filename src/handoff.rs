@@ -542,6 +542,12 @@ pub struct Config {
     /// backticks outside prose apps (default on).
     #[serde(default)]
     pub dictation_code_formatting: Option<bool>,
+    /// Lays long dictations out in paragraphs and lists with `formatCommand` (default on).
+    #[serde(default)]
+    pub dictation_formatting: Option<bool>,
+    /// The local formatter model's argv, first entry an absolute path (`scripts/scrawl-format.py`).
+    #[serde(default)]
+    pub format_command: Option<Vec<String>>,
 }
 
 /// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
@@ -797,17 +803,27 @@ pub struct DictationConfig {
     pub restore_clipboard: bool,
     pub pill: bool,
     pub code: bool,
+    /// The formatter to run, when formatting is on and `formatCommand` is usable.
+    pub format: Option<Vec<String>>,
+}
+
+/// `formatCommand` when it can run: an argv whose first entry is an absolute path, as the app
+/// runs without the user's shell `PATH`.
+pub fn format_command_in(config: &Config) -> Option<Vec<String>> {
+    config.format_command.clone().filter(|argv| argv.first().is_some_and(|program| program.starts_with('/')))
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn dictation() -> DictationConfig {
     let config = config();
+    let format = config.dictation_formatting.unwrap_or(true).then(|| format_command_in(&config)).flatten();
     DictationConfig {
         enabled: config.dictation.unwrap_or(false),
         shortcut: config.dictation_shortcut,
         restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
         pill: config.dictation_pill.unwrap_or(true),
         code: config.dictation_code_formatting.unwrap_or(true),
+        format,
     }
 }
 

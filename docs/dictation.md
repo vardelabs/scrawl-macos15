@@ -1,6 +1,6 @@
 # Dictation: voice only, pasted where you type
 
-Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `context.rs`, filenames and code), `src/dictionary.rs` or the dictation pill.
+Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `context.rs`, filenames and code; `format.rs` and `formatter.rs`, paragraphs and lists), `src/dictionary.rs` or the dictation pill.
 
 Dictation is the screenless sibling of a capture: a modifier-only chord records the microphone, the configured transcriber turns it into text, and Scrawl pastes the text into the app in front. It is off by default (`"dictation": true` turns it on, or Settings › Dictation).
 
@@ -55,6 +55,15 @@ With **Format code and filenames** (`dictationCodeFormatting`, default on), the 
 
 With the setting off, none of this runs and nothing is read from the screen. Screen text is kept for one dictation only, and never stored or sent.
 
+## Paragraphs and lists (`src/dictation/format.rs`, `formatter.rs`)
+
+A long dictation is laid out as Wispr Flow lays one out: paragraphs where the topic changes, and numbered or bulleted lists when the speaker lists things. A local model does the layout (`scripts/scrawl-format.py`, a 4-bit Qwen2.5 3B through mlx-lm, set up like Parakeet). Nothing leaves the Mac. It needs `"formatCommand": ["/Users/you/.local/share/uv/tools/mlx-lm/bin/python", "/path/to/scrawl-format.py"]`, and **Format paragraphs and lists** (`dictationFormatting`, default on).
+
+1. When the dictation shows, `formatter::Formatter::prestart` starts the formatter with `SCRAWL_PRESTART=1`, so its model loads while the user talks. A cancelled dictation drops it, which kills its process group.
+2. After filler removal, the dictionary and the filename and code pass, `format::worth_formatting` sends only dictations of `MIN_WORDS` words and `MIN_SENTENCES` sentences or more. Shorter ones drop the formatter unused.
+3. The request carries the text and `format::pause_hints`: the sentences after which Parakeet's word timings show a silence of `PARAGRAPH_PAUSE_MS` or more. The paste waits for the reply for `FORMAT_WAIT_BASE` plus `FORMAT_WAIT_PER_WORD` per word, at most `FORMAT_WAIT_MAX`. When the model laid out no paragraphs, `break_at_pauses` breaks at those pauses.
+4. `format::same_words` checks that the reply has the dictated words in order, ignoring case, punctuation, Markdown wrapping and line-leading list markers. A list may drop the "and" or "or" before its last item. Any other change, a timeout or a bad reply pastes the text as dictated. The log says which happened, never the text.
+
 ## Settings › Dictation
 
-The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Format code and filenames** (`dictationCodeFormatting`, default on), **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).
+The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Format code and filenames** (`dictationCodeFormatting`, default on), **Format paragraphs and lists** (`dictationFormatting`, default on; dimmed until `formatCommand` is set up), **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).

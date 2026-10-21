@@ -5,7 +5,11 @@
 pub mod chord;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod context;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod format;
 
+#[cfg(target_os = "macos")]
+mod formatter;
 #[cfg(target_os = "macos")]
 mod session;
 #[cfg(target_os = "macos")]

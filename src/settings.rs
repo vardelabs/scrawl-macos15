@@ -629,6 +629,9 @@ pub struct DictationView {
     pub pill: bool,
     /// Filenames matched from the screen, and code in backticks.
     pub code_formatting: bool,
+    /// Paragraphs and lists for long dictations, and whether `formatCommand` is set up.
+    pub formatting: bool,
+    pub formatting_available: bool,
     pub remove_fillers: bool,
     pub words: Vec<String>,
     pub replacements: Vec<ReplacementView>,
@@ -908,6 +911,8 @@ fn dictation_view(
         restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
         pill: config.dictation_pill.unwrap_or(true),
         code_formatting: config.dictation_code_formatting.unwrap_or(true),
+        formatting: config.dictation_formatting.unwrap_or(true),
+        formatting_available: crate::handoff::format_command_in(config).is_some(),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
         replacements: dictionary
@@ -1269,7 +1274,7 @@ impl Panel {
             }
             (
                 "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures" | "dictation"
-                | "dictationRestoreClipboard" | "dictationPill" | "dictationCodeFormatting"
+                | "dictationRestoreClipboard" | "dictationPill" | "dictationCodeFormatting" | "dictationFormatting"
                 | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => write(key, (*on).into()),
@@ -1997,6 +2002,7 @@ mod tests {
         set(&mut panel, &mut host, "removeFillers", false.into());
         set(&mut panel, &mut host, "dictationPill", false.into());
         set(&mut panel, &mut host, "dictationCodeFormatting", false.into());
+        set(&mut panel, &mut host, "dictationFormatting", false.into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥⌘".into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥".into());
         let view = panel.view(&host).dictation;
@@ -2004,6 +2010,7 @@ mod tests {
         assert!(!view.remove_fillers);
         assert!(!view.pill);
         assert!(!view.code_formatting);
+        assert!(!view.formatting && !view.formatting_available);
         assert_eq!(view.shortcut, "⌥⌘");
     }
 
