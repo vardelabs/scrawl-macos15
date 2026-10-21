@@ -2034,6 +2034,11 @@ impl ScrawlCoordinator {
             self.record_from_pill(cx);
         } else if free {
             self.show_dictation(pres);
+        } else if self.dictation.is_live()
+            && matches!(self.island_phase, IslandPhase::Completed { .. })
+        {
+            // Dictating over a finished capture's card: the card makes way for the listening pill.
+            self.dismiss_island(cx);
         } else {
             // The capture owns the capsule; dictation redraws in full once it's free again.
             self.dictation_shown = None;

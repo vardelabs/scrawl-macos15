@@ -81,6 +81,10 @@ impl Dictation {
     pub fn clock(&self) -> String {
         String::new()
     }
+
+    pub fn is_live(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

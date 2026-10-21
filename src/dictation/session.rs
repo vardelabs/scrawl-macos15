@@ -244,6 +244,11 @@ impl Dictation {
         })
     }
 
+    /// Listening or transcribing, so the pill should show it now.
+    pub fn is_live(&self) -> bool {
+        self.started.is_some() || self.working.is_some()
+    }
+
     /// The listening clock (`M:SS`) for the pill.
     pub fn clock(&self) -> String {
         crate::model::format_clock(self.started.map_or(0, |at| at.elapsed().as_millis() as u64))
