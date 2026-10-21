@@ -51,21 +51,27 @@ const LOOKUP_BUDGET: Duration = Duration::from_millis(250);
 /// How long finishing a capture waits for lookups still running.
 const DRAIN_WAIT: Duration = Duration::from_millis(400);
 
-/// Whether the focused element takes typed text: `Some(false)` when nothing is focused or it
-/// isn't a text input, `None` when the app doesn't answer. Blocking; call it off the main thread.
+/// `kAXErrorNoValue`: the attribute has no value, as `AXFocusedUIElement` with nothing focused.
+#[cfg(target_os = "macos")]
+const AX_ERROR_NO_VALUE: i32 = -25212;
+
+/// Whether the focused element takes typed text: `Some(true)` for a text input, `Some(false)`
+/// only when the system says nothing is focused, and `None` for everything else (an app that
+/// doesn't answer in time, or a role that may or may not take text). Blocking; call it off the
+/// main thread.
 #[cfg(target_os = "macos")]
 pub fn focused_takes_text() -> Option<bool> {
     let system = Owned(unsafe { AXUIElementCreateSystemWide() });
     unsafe { AXUIElementSetMessagingTimeout(system.0, MESSAGE_TIMEOUT_S) };
-    let Some(element) = element_attribute(system.0, "AXFocusedUIElement") else {
-        let app = element_attribute(system.0, "AXFocusedApplication");
-        // An app that answers with no focused element has nowhere to type; one that doesn't
-        // answer at all is unknown.
-        return app.map(|_| false);
+    let element = match attribute_status(system.0, "AXFocusedUIElement") {
+        Ok(element) => element,
+        Err(AX_ERROR_NO_VALUE) => return Some(false),
+        Err(_) => return None,
     };
-    let role = string_attribute(element.0, "AXRole").unwrap_or_default();
+    let role = string_attribute(element.0, "AXRole")?;
     let subrole = string_attribute(element.0, "AXSubrole").unwrap_or_default();
-    Some(is_input(&role, &subrole) || attribute(element.0, "AXSelectedTextRange").is_some())
+    let text = is_input(&role, &subrole) || attribute(element.0, "AXSelectedTextRange").is_some();
+    text.then_some(true)
 }
 
 /// The element under a point.
@@ -168,11 +174,21 @@ impl Drop for Owned {
 
 #[cfg(target_os = "macos")]
 fn attribute(element: AxElement, name: &'static str) -> Option<Owned> {
+    attribute_status(element, name).ok()
+}
+
+/// The attribute, or the `AXError` status that says why there is none.
+#[cfg(target_os = "macos")]
+fn attribute_status(element: AxElement, name: &'static str) -> Result<Owned, i32> {
     let key = CFString::from_static_string(name);
     let mut out: CFTypeRef = std::ptr::null();
     let status =
         unsafe { AXUIElementCopyAttributeValue(element, key.as_concrete_TypeRef(), &raw mut out) };
-    (status == 0 && !out.is_null()).then_some(Owned(out))
+    match status {
+        0 if !out.is_null() => Ok(Owned(out)),
+        0 => Err(AX_ERROR_NO_VALUE),
+        error => Err(error),
+    }
 }
 
 #[cfg(target_os = "macos")]
