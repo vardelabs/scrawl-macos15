@@ -22,7 +22,8 @@ jobs:
       - name: Use Xcode 26
         run: |
           xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "$xcode" ]; then sudo xcode-select -s "$xcode"; fi
+          if [ -z "$xcode" ]; then echo "::error::No Xcode 26 on this runner image"; exit 1; fi
+          sudo xcode-select -s "$xcode"
           xcodebuild -version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
