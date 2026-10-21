@@ -104,6 +104,11 @@ impl Wave {
             self.noise_db = QUIET_NOISE_DB;
         }
         self.db = rms.map(db_of_rms);
+        // The new height is known now, not on the next `advance`: after a silence the pill has
+        // stopped drawing, and only `is_moving` seeing the voice starts it again.
+        self.target = self
+            .db
+            .map_or(0.0, |db| height_of(db, self.noise_db.min(db)));
         self.mic.to(f32::from(u8::from(rms.is_some())), FADE);
     }
 
@@ -268,6 +273,17 @@ mod tests {
         assert!(wave.is_moving());
         run(&mut wave, 3.0);
         assert!(!wave.is_moving(), "a flat line in silence draws nothing new");
+    }
+
+    #[test]
+    fn speech_after_a_silence_wakes_the_line() {
+        let mut wave = Wave::default();
+        wave.show(&Pres::Dictating { latched: false });
+        wave.set_rms(Some(QUIET));
+        run(&mut wave, 3.0);
+        assert!(!wave.is_moving());
+        wave.set_rms(Some(SPEECH));
+        assert!(wave.is_moving(), "the voice restarts drawing before the next frame");
     }
 
     #[test]
