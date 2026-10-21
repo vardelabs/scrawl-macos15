@@ -63,8 +63,13 @@ uv tool install parakeet-mlx
 ## Staying in sync with Kit
 
 `main` mirrors `kitlangton/scrawl`; `macos-15` is the fork's default branch. Kit's changes are
-merged into `macos-15` as their own pull requests. Kit's README lives on as `docs/guide.md`, so git
-carries his README edits into the guide when they merge.
+merged into `macos-15` as their own pull requests. Kit's README lives on here as `docs/guide.md`.
+When a sync conflicts on `README.md`, keep this page and replay his README changes onto the guide
+(`OLD` is the last upstream commit already merged, `NEW` the one being merged):
+
+```bash
+git checkout --ours README.md && git diff OLD NEW -- README.md | sed 's#README.md#docs/guide.md#g' | git apply -3
+```
 
 ## License
 
