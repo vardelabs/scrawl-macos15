@@ -272,6 +272,10 @@ fn try_command(wav: &Path, audio: &RecordedAudio) -> Result<Option<TranscriptDat
     if let Some(prestarted) = audio.prestarted.take().filter(|p| p.runs(&program)) {
         match prestarted.finish(wav, audio.sample_count, &mut log) {
             Ok(transcript) => return Ok(Some(transcript)),
+            // Running it again after a timeout would wait the whole limit a second time.
+            Err(failure @ crate::command_transcriber::Failure::Timeout(_)) => {
+                return Err(failure.into());
+            }
             Err(failure) => crate::capture::scrawl_log(format!(
                 "Prestarted command transcriber failed, running it again: {failure}"
             )),

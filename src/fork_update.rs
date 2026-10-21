@@ -14,12 +14,13 @@ const REPO: &str = "vardelabs/scrawl-macos15";
 /// One updater window at a time: a second click while one is open does nothing.
 static OPEN: AtomicBool = AtomicBool::new(false);
 
-/// Whether this copy can update itself: only an installed Scrawl.app, which the release's
-/// installer replaces.
+/// Whether this copy can update itself: only `~/Applications/Scrawl.app`, the copy the release's
+/// installer replaces (it quits every Scrawl by name, so another copy would close, not update).
 pub fn available() -> bool {
-    cfg!(target_os = "macos")
-        && std::env::current_exe()
-            .is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"))
+    let installed = std::env::var_os("HOME")
+        .map(|home| std::path::Path::new(&home).join("Applications/Scrawl.app/Contents/MacOS"));
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize);
+    matches!((installed, exe), (Some(dir), Ok(exe)) if exe.parent() == Some(dir.as_path()))
         && crate::helper::path().is_ok()
 }
 

@@ -31,7 +31,7 @@ struct ForkRelease: Equatable {
     let assets = rawAssets.compactMap { asset -> ForkAsset? in
       guard let name = asset["name"] as? String,
             let link = asset["browser_download_url"] as? String,
-            let url = URL(string: link), url.scheme == "https"
+            let url = URL(string: link), url.scheme == "https", url.host == "github.com"
       else { return nil }
       return ForkAsset(name: name, url: url)
     }
@@ -69,13 +69,14 @@ enum ForkVersion {
   static func selfTest() {
     let release = """
       {"tag_name":"fork-abc1234","name":"Scrawl fork abc1234","body":"Notes","assets":[
-        {"name":"Scrawl-Fork-abc1234.zip","browser_download_url":"https://example.com/z.zip"},
-        {"name":"Scrawl-Fork-abc1234.zip.sha256","browser_download_url":"https://example.com/z.sha256"}]}
+        {"name":"Scrawl-Fork-abc1234.zip","browser_download_url":"https://github.com/o/r/releases/download/t/z.zip"},
+        {"name":"Scrawl-Fork-abc1234.zip.sha256","browser_download_url":"https://github.com/o/r/releases/download/t/z.sha256"}]}
       """
     let parsed = ForkRelease.parse(Data(release.utf8))
     precondition(parsed?.zip.name == "Scrawl-Fork-abc1234.zip" && parsed?.checksum.url.lastPathComponent == "z.sha256")
     precondition(ForkRelease.parse(Data(release.replacingOccurrences(of: ".zip.sha256", with: ".txt").utf8)) == nil)
     precondition(ForkRelease.parse(Data(release.replacingOccurrences(of: "https://", with: "http://").utf8)) == nil)
+    precondition(ForkRelease.parse(Data(release.replacingOccurrences(of: "github.com", with: "example.com").utf8)) == nil)
     let digest = String(repeating: "ab", count: 32)
     precondition(self.digest(inChecksum: "\(digest)  Scrawl-Fork-abc1234.zip\n", for: "Scrawl-Fork-abc1234.zip") == digest)
     precondition(self.digest(inChecksum: "\(digest.uppercased()) *Scrawl-Fork-abc1234.zip", for: "Scrawl-Fork-abc1234.zip") == digest)
@@ -103,7 +104,14 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
   /// GitHub's compare status of this build against the offered release, when it has one.
   @Published var relation: String?
   let repo: String
-  let current = Bundle.main.object(forInfoDictionaryKey: "ScrawlForkCommit") as? String
+  /// The enclosing Scrawl.app's `ScrawlForkCommit`: this helper embeds an Info.plist of its own,
+  /// so it reads the app's file rather than trusting `Bundle.main` to find it.
+  let current: String? = {
+    let contents = URL(filePath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+      .deletingLastPathComponent().deletingLastPathComponent()
+    let plist = NSDictionary(contentsOf: contents.appending(path: "Info.plist"))
+    return plist?["ScrawlForkCommit"] as? String
+  }()
   private var download: URLSessionDownloadTask?
   private var downloaded: CheckedContinuation<URL, Error>?
 
@@ -133,8 +141,12 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
       var compare: String?
       if let current {
         let (body, status) = try await fetch(api("compare/\(current)...\(release.tag)"))
+        // 404 means GitHub doesn't have this build's commit; any other failure (a rate limit)
+        // must not read as "can't tell", which would offer a possibly older release.
         if status == 200, let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
           compare = object["status"] as? String
+        } else if status != 404 {
+          throw HelperError("GitHub answered \(status) when comparing this build with \(release.tag).")
         }
       }
       emit(["event": "checked", "tag": release.tag, "compare": compare ?? "unknown"])
@@ -146,23 +158,25 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
   }
 
   func install(_ release: ForkRelease) async {
+    guard case .available = phase else { return }
+    phase = .downloading(0)
+    let work = FileManager.default.temporaryDirectory.appending(path: "scrawl-update-\(UUID().uuidString)")
     do {
-      let work = FileManager.default.temporaryDirectory.appending(path: "scrawl-update-\(UUID().uuidString)")
       try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
       let (checksumData, status) = try await fetch(URLRequest(url: release.checksum.url))
       guard status == 200, let expected = ForkVersion.digest(
         inChecksum: String(decoding: checksumData, as: UTF8.self), for: release.zip.name)
       else { throw HelperError("The release's checksum file doesn't name \(release.zip.name).") }
 
-      phase = .downloading(0)
       let zip = work.appending(path: release.zip.name)
       try FileManager.default.moveItem(at: try await fetchFile(release.zip.url), to: zip)
 
       phase = .verifying
-      guard try sha256(of: zip) == expected else {
+      let digest = try await Task.detached { try ForkUpdater.sha256(of: zip) }.value
+      guard digest == expected else {
         throw HelperError("The download doesn't match the release's checksum, so it wasn't installed.")
       }
-      try run("/usr/bin/ditto", ["-x", "-k", zip.path, work.path])
+      try await Task.detached { try ForkUpdater.run("/usr/bin/ditto", ["-x", "-k", zip.path, work.path]) }.value
       let installer = work.appending(path: (release.zip.name as NSString).deletingPathExtension).appending(path: "install.sh")
       guard FileManager.default.fileExists(atPath: installer.path) else {
         throw HelperError("The release zip has no install.sh.")
@@ -172,6 +186,7 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
       emit(["event": "installing", "tag": release.tag])
       phase = .installing(log: log.path)
     } catch {
+      try? FileManager.default.removeItem(at: work)
       fail(error)
     }
   }
@@ -223,7 +238,7 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
     }
   }
 
-  private func sha256(of file: URL) throws -> String {
+  nonisolated private static func sha256(of file: URL) throws -> String {
     let handle = try FileHandle(forReadingFrom: file)
     defer { try? handle.close() }
     var hasher = SHA256()
@@ -231,7 +246,7 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
   }
 
-  private func run(_ tool: String, _ arguments: [String]) throws {
+  nonisolated private static func run(_ tool: String, _ arguments: [String]) throws {
     let process = Process()
     process.executableURL = URL(filePath: tool)
     process.arguments = arguments
@@ -240,13 +255,17 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
     guard process.terminationStatus == 0 else { throw HelperError("\(tool) failed while unpacking the release.") }
   }
 
-  /// Starts `install.sh` in its own session, so it outlives this helper and Scrawl, which it quits.
+  /// Starts `install.sh` in the background under `nohup`, so it outlives this helper and Scrawl,
+  /// which it quits by name. A GUI app's PATH has no Homebrew, which the installer needs.
   private func launchDetached(_ installer: URL, log: URL) throws {
     try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
     let process = Process()
     process.executableURL = URL(filePath: "/bin/sh")
     process.arguments = ["-c", "exec /usr/bin/nohup /bin/bash \"$1\" >\"$2\" 2>&1 </dev/null &", "sh", installer.path, log.path]
     process.currentDirectoryURL = installer.deletingLastPathComponent()
+    var environment = ProcessInfo.processInfo.environment
+    environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+    process.environment = environment
     try process.run()
     process.waitUntilExit()
   }
