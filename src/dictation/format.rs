@@ -62,9 +62,11 @@ pub fn pause_hints(words: &[WordTiming]) -> Vec<usize> {
 }
 
 /// `text` with a paragraph break after each sentence in `pauses` (numbered from 1), for when the
-/// model laid out no paragraphs of its own: a long pause at a sentence's end is the speaker's.
+/// model returned the text unchanged: a long pause at a sentence's end is the speaker's. Any line
+/// break means the model laid the text out, and may have moved sentence ends ("trip." to
+/// "trip:"), so the dictated sentence numbers no longer apply.
 pub fn break_at_pauses(text: &str, pauses: &[usize]) -> String {
-    if text.contains("\n\n") {
+    if text.contains('\n') {
         return text.to_owned();
     }
     let ends = sentence_ends(text);
@@ -84,8 +86,9 @@ pub fn break_at_pauses(text: &str, pauses: &[usize]) -> String {
 }
 
 /// Whether `formatted` has the words of `dictated`, in order: compared without case, and
-/// without the punctuation layout may change around a word (`,` `.` `:` `;`, quotes, brackets,
-/// Markdown wrapping) or the list markers ("1.", "-", "•") that start a line. Characters inside a
+/// without the punctuation layout may change around a word (`,` `.` `:` `;`, quotes, brackets)
+/// or the list markers ("1.", "-", "•") that start a line. Markdown the model adds (`**`, `_`,
+/// backticks, a fence) counts as a change. Characters inside a
 /// word (`1.5`, `$50`, `We're`, `C++`) and a word's `?` or `!` must match. A dictated "and" or
 /// "or" may be missing only right before a list's last item.
 pub fn same_words(dictated: &str, formatted: &str) -> bool {
@@ -115,8 +118,8 @@ fn tokens(text: &str) -> Vec<(String, bool)> {
         let mut item = is_item(line) && !lines.get(n + 1).is_some_and(|next| is_item(next));
         for word in content.split_whitespace() {
             let word = word
-                .trim_start_matches(|c: char| "\"'([“‘`*_".contains(c))
-                .trim_end_matches(|c: char| ",.;:\"')]”’`*_…".contains(c))
+                .trim_start_matches(|c: char| "\"'([“‘".contains(c))
+                .trim_end_matches(|c: char| ",.;:\"')]”’…".contains(c))
                 .to_lowercase();
             if !word.is_empty() {
                 out.push((word, item));
@@ -169,7 +172,7 @@ mod tests {
             Separately, the shed roof needs new shingles before the rain starts, so I will call the roofer on Monday.";
         assert!(same_words(LONG, formatted));
         let bullets = "Bring:\n- tents\n* stoves\n• `trail-map.pdf`";
-        assert!(same_words("Bring tents, stoves, trail-map.pdf.", bullets));
+        assert!(same_words("Bring tents, stoves, `trail-map.pdf`.", bullets));
         let list = "We need a few things:\n\n1. The venue needs a deposit.\n2. Catering wants a headcount.\n3. Someone has to book the bus.";
         assert!(same_words("We need a few things. The venue needs a deposit, catering wants a headcount, and someone has to book the bus.", list));
     }
@@ -195,6 +198,8 @@ mod tests {
             ("Learn C++ first.", "Learn C first."),
             ("Should we ship it?", "Should we ship it."),
             ("Open `snake_case.rs` now.", "Open snake-case.rs now."),
+            ("The venue needs a deposit.", "The **venue** needs a deposit."),
+            ("The venue needs a deposit.", "```\nThe venue needs a deposit.\n```"),
         ] {
             assert!(!same_words(dictated, formatted), "{dictated:?} -> {formatted:?}");
         }
@@ -207,6 +212,8 @@ mod tests {
         assert_eq!(break_at_pauses(text, &[4, 9]), text, "no break after the last sentence or past the end");
         let laid_out = "Intro:\n\n1. One.\n2. Two.";
         assert_eq!(break_at_pauses(laid_out, &[1]), laid_out);
+        let single_newline_list = "Intro one. We need things:\n1. Deposit.\n2. Headcount.\n3. Bus.\nNext topic here.";
+        assert_eq!(break_at_pauses(single_newline_list, &[3]), single_newline_list);
         // A list's "1." is no sentence end, so a pause after the intro breaks after it.
         let list = "Intro here. Then:\n1. One thing.\n2. Two things.";
         assert_eq!(sentence_ends(list).len(), 3);

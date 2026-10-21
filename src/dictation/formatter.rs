@@ -1,5 +1,5 @@
-//! The local formatter model (`formatCommand`, `scripts/scrawl-format.py`), started when a
-//! dictation shows so its model loads while the user talks. `format` hands it the text and waits
+//! The local formatter model (`formatCommand`, `scripts/scrawl-format.py`), started once a
+//! dictation has run a few seconds so its model loads while the user talks. `format` hands it the text and waits
 //! a short while; dropping it unused (a short or cancelled dictation) kills its process group.
 //! Like the command transcriber, its stderr is discarded and its stdout never logged.
 

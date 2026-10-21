@@ -15,8 +15,8 @@ the first dictation, as `SCRAWL_PRESTART=1 python scrawl-format.py` and then an 
 downloads the model (about 1.8 GB) from Hugging Face. Once the model is in the hub cache it runs
 offline. SCRAWL_FORMAT_MODEL picks another mlx-lm model repo.
 
-Scrawl starts this when a dictation begins, with SCRAWL_PRESTART=1, so the model loads while the
-user talks. It then reads one JSON line on stdin, {"text": ..., "pauses": [sentence numbers]},
+Scrawl starts this once a dictation has run 5 seconds, with SCRAWL_PRESTART=1, so the model
+loads while the user talks. It then reads one JSON line on stdin, {"text": ..., "pauses": [sentence numbers]},
 and prints {"version": 1, "text": ...}. Empty stdin means the dictation was cancelled or too short
 to format. Scrawl checks that the words came back unchanged and pastes the plain text otherwise.
 """
