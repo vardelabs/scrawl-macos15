@@ -47,8 +47,10 @@ impl Dictionary {
         }
     }
 
-    /// Writes a temp file and renames it over `path`, so a crash never leaves half a file.
+    /// Writes a temp file and renames it over `path`, so a crash never leaves half a file. A
+    /// symlinked dictionary (dotfiles) is written through to its target, with its permissions.
     pub fn save_to(&self, path: &Path) -> Result<()> {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -56,7 +58,10 @@ impl Dictionary {
         let mut json = serde_json::to_vec_pretty(self)?;
         json.push(b'\n');
         std::fs::write(&temp, json)?;
-        std::fs::rename(&temp, path).with_context(|| format!("Could not save {}", path.display()))
+        if let Ok(meta) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&temp, meta.permissions())?;
+        }
+        std::fs::rename(&temp, &path).with_context(|| format!("Could not save {}", path.display()))
     }
 
     /// Adds a word or phrase unless it's empty or already there (ignoring case and spacing).
@@ -291,6 +296,19 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["words"], serde_json::json!(["Corvus", "Vega"]));
         assert_eq!(saved["learned"], serde_json::json!({"corvis": 1}));
+
+        #[cfg(unix)]
+        {
+            let real = dir.join("dotfiles.json");
+            std::fs::rename(&path, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &path).unwrap();
+            let mut d = Dictionary::load_from(&path).unwrap();
+            d.add_word("North");
+            d.save_to(&path).unwrap();
+            assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+            assert_eq!(Dictionary::load_from(&real).unwrap().words, ["Corvus", "Vega", "North"]);
+            std::fs::remove_file(&path).unwrap();
+        }
 
         std::fs::write(&path, "{ not json").unwrap();
         assert!(Dictionary::load_from(&path).is_err());

@@ -556,11 +556,15 @@ fn edit_dictionary(path: &Path) {
         return;
     }
     #[cfg(target_os = "macos")]
-    let opened = std::process::Command::new("open").arg("-t").arg(path).status();
+    let opened = match std::process::Command::new("open").arg("-t").arg(path).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(anyhow::anyhow!("open -t exited with {status}")),
+        Err(error) => Err(error.into()),
+    };
     #[cfg(not(target_os = "macos"))]
-    let opened = crate::handoff::open_path(path).map_err(std::io::Error::other);
+    let opened = crate::handoff::open_path(path);
     if let Err(error) = opened {
-        crate::capture::scrawl_log(format!("Opening {}: {error}", path.display()));
+        crate::capture::scrawl_log(format!("Opening {}: {error:#}", path.display()));
     }
 }
 
@@ -866,7 +870,11 @@ pub struct PermissionView {
     pub relaunch: bool,
 }
 
-fn dictation_view(config: &crate::handoff::Config, config_path: &Path) -> DictationView {
+fn dictation_view(
+    config: &crate::handoff::Config,
+    config_path: &Path,
+    save_error: Option<&str>,
+) -> DictationView {
     let shortcut = config
         .dictation_shortcut
         .clone()
@@ -896,7 +904,7 @@ fn dictation_view(config: &crate::handoff::Config, config_path: &Path) -> Dictat
             .into_iter()
             .map(|(heard, write)| ReplacementView { heard, write })
             .collect(),
-        error,
+        error: error.or_else(|| save_error.map(str::to_owned)),
     }
 }
 
@@ -970,7 +978,7 @@ fn shortcut_view(
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
     /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures`,
-    /// `dictation`, `dictationRestoreClipboard` (bool), `dictationShortcut` (a chord), `microphone`
+    /// `dictation`, `dictationRestoreClipboard`, `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
     Set {
@@ -1068,6 +1076,8 @@ pub struct Panel {
     captures_size: Option<u64>,
     /// The connected microphones, once listed (`mic::Watch` keeps them fresh).
     inputs: Option<crate::mic::Inputs>,
+    /// Why the last dictionary edit wasn't saved, until one is.
+    dictionary_error: Option<String>,
 }
 
 impl Panel {
@@ -1177,9 +1187,10 @@ impl Panel {
             change(&mut dictionary);
             dictionary.save_to(&path)
         });
-        if let Err(error) = saved {
+        self.dictionary_error = saved.err().map(|error| {
             crate::capture::scrawl_log(format!("Dictionary: {error:#}"));
-        }
+            format!("Couldn't save the dictionary: {}.", home_relative(&format!("{error:#}")))
+        });
         Effect::None
     }
 
@@ -1394,7 +1405,7 @@ impl Panel {
             video_export: config.video_export.unwrap_or(false),
             tap_chooses: config.tap_chooses.unwrap_or(false),
             crop_window_captures: config.crop_window_captures.unwrap_or(true),
-            dictation: dictation_view(&config, &host.config_path()),
+            dictation: dictation_view(&config, &host.config_path(), self.dictionary_error.as_deref()),
             retention: RetentionView {
                 preset: policy.preset().map(preset_id),
                 options: crate::retention::Preset::ALL
@@ -1895,6 +1906,23 @@ mod tests {
         let view = panel.view(&host).dictation;
         assert!(view.words.is_empty());
         assert!(view.error.is_some_and(|e| e.contains("isn't a valid dictionary")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dictionary_that_cant_be_saved_says_so_in_the_pane() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("dictionary-readonly");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        let error = panel.view(&host).dictation.error;
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(error.is_some_and(|e| e.starts_with("Couldn't save the dictionary")));
+        panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
+        assert_eq!(panel.view(&host).dictation.error, None);
+        assert_eq!(panel.view(&host).dictation.words, ["Corvus"]);
     }
 
     #[test]

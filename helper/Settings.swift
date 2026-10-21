@@ -1014,7 +1014,7 @@ struct SettingsView: View {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
       SettingsGroup {
-        ForEach(d.words, id: \.self) { word in
+        ForEach(Array(d.words.enumerated()), id: \.offset) { _, word in
           DictionaryEntryRow(title: word) { model.act("remove-word", ["word": word]) }
           SettingsSeparator()
         }
