@@ -20,8 +20,7 @@ use super::{
     CANDIDATE_EDGE, CANDIDATE_EDGE_NO_VIDEO, CARBON_CMD_KEY, CARBON_CONTROL_KEY, CARBON_OPTION_KEY,
     CARBON_SHIFT_KEY, FRAME_SAMPLE_INTERVAL, LiveOverlayEvent, Sampler, SharedCaptureTelemetry,
     ShortcutConfig, ShortcutKind, capture_size, clean_label, hotkey_combos, pause_combo,
-    pick_display,
-    poll_clicks, scrawl_log, track_shift_ink,
+    pick_display, poll_clicks, scrawl_log, track_shift_ink,
 };
 use crate::model::{CaptureMode, InteractionEvent, RgbaFrame, TargetInfo};
 
@@ -381,9 +380,10 @@ unsafe extern "C" fn carbon_hotkey_handler(
                     .ui_sender
                     .try_send(LiveOverlayEvent::CancelCapture);
             }
-            HOTKEY_ID_PAUSE => {
+            HOTKEY_ID_PAUSE if !telemetry.shortcuts_paused.load(Ordering::Acquire) => {
                 let _ = telemetry.ui_sender.try_send(LiveOverlayEvent::TogglePause);
             }
+            HOTKEY_ID_PAUSE => {}
             id if id >= HOTKEY_ID_PASTE_BASE => {
                 telemetry.emit_paste_shortcut();
             }
@@ -1135,7 +1135,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 done.end_ms = Some(clock.ms());
                 segments.push(done);
             }
-            if clock.clock.take_resume_request() {
+            if clock.clock.resume_requested() {
                 let next = first_path
                     .as_deref()
                     .map(|first| crate::pause::segment_path(first, segments.len()));
@@ -1144,25 +1144,37 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 let gone = sampler_target
                     .window_id
                     .is_some_and(|id| sck_lists_windows(&[id]).is_empty());
-                let (next_stream, next_output, next_path, next_filter, next_started) = if gone {
+                let (next_stream, next_output, next_path, next_filter, _) = if gone {
                     scrawl_log("The captured window closed while paused");
                     (None, None, None, None, None)
                 } else {
                     setup_sck_capture(&sampler_target, next, &cur_excluded)
                 };
-                let resumed = next_started.unwrap_or_else(Instant::now);
-                clock.clock.resume_at(resumed);
-                (stream, recording_output) = (next_stream, next_output);
-                segment = next_path.map(|path| crate::pause::Segment {
-                    path,
-                    start_ms: clock.ms_at(resumed),
-                    end_ms: None,
-                });
-                if let Some(filter) = next_filter {
-                    filter_and_config = Some((filter, sck_config(&sampler_target, shot_edge)));
+                // The microphone and the input taps come back now, so active time resumes now
+                // too: the new segment shows the screen a few tens of ms late, never more, where
+                // resuming at the movie's own start would shift the audio by that much per pause.
+                let resumed = Instant::now();
+                if clock.clock.finish_resume(resumed) {
+                    (stream, recording_output) = (next_stream, next_output);
+                    segment = next_path.map(|path| crate::pause::Segment {
+                        path,
+                        start_ms: clock.ms_at(resumed),
+                        end_ms: None,
+                    });
+                    if let Some(filter) = next_filter {
+                        filter_and_config = Some((filter, sck_config(&sampler_target, shot_edge)));
+                    }
+                    scrawl_log(format!("Capture resumed at {} ms", clock.ms()));
+                    thread_urgent.store(true, Ordering::Release);
+                } else {
+                    // Paused again while the stream was starting.
+                    if let Some(next_stream) = next_stream {
+                        stop_stream(&next_stream, next_output.as_ref());
+                    }
+                    if let Some(path) = next_path {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
-                scrawl_log(format!("Capture resumed at {} ms", clock.ms()));
-                thread_urgent.store(true, Ordering::Release);
             } else {
                 thread::park_timeout(Duration::from_millis(30));
             }

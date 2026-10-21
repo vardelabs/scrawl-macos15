@@ -4,8 +4,8 @@
 //!
 //! The screen stream is torn down on pause and started again on resume, each run writing its own
 //! movie segment; `join_plan` says how the segments are put back together at the end. Resuming
-//! takes effect when the new stream is running (`PauseClock::resume_at`), so the next segment
-//! starts exactly where the last one stopped on the active timeline.
+//! takes effect when the new stream is running (`PauseClock::finish_resume`), so the next segment
+//! starts where the last one stopped on the active timeline.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,6 +48,16 @@ impl Timeline {
             .sum::<u64>()
             + self.open.map_or(0, |start| overlap(start, u64::MAX));
         wall_ms.saturating_sub(paused)
+    }
+
+    /// The active time at `wall_ms`, or `None` when that moment was paused.
+    pub fn active_at(&self, wall_ms: u64) -> Option<u64> {
+        let paused = self
+            .closed
+            .iter()
+            .any(|&(start, end)| (start..end).contains(&wall_ms))
+            || self.open.is_some_and(|start| wall_ms >= start);
+        (!paused).then(|| self.active_ms(wall_ms))
     }
 
     pub fn paused_spans(&self) -> &[(u64, u64)] {
@@ -127,16 +137,26 @@ impl PauseClock {
         self.is_paused() && !self.resume_wanted.swap(true, Ordering::AcqRel)
     }
 
-    pub fn take_resume_request(&self) -> bool {
-        self.resume_wanted.swap(false, Ordering::AcqRel)
+    /// A resume is asked for and not yet cancelled; the sampler starts the stream on it.
+    pub fn resume_requested(&self) -> bool {
+        self.is_paused() && self.resume_wanted.load(Ordering::Acquire)
     }
 
-    /// Capture goes on from `at`, when the screen stream started again.
-    pub fn resume_at(&self, at: Instant) {
+    /// Capture goes on from `at`, when the screen stream started again. Returns false when a
+    /// pause cancelled the resume while the stream was starting: capture stays paused.
+    pub fn finish_resume(&self, at: Instant) -> bool {
         let mut timeline = self.timeline();
-        if timeline.resume(self.wall_ms(at)) {
-            self.paused.store(false, Ordering::Release);
+        if !self.resume_wanted.swap(false, Ordering::AcqRel) {
+            return false;
         }
+        timeline.resume(self.wall_ms(at));
+        self.paused.store(false, Ordering::Release);
+        true
+    }
+
+    /// The active time at `at`, or `None` when that moment was paused.
+    pub fn active_at(&self, at: Instant) -> Option<u64> {
+        self.timeline().active_at(self.wall_ms(at))
     }
 
     pub fn paused_spans(&self) -> Vec<(u64, u64)> {
@@ -322,12 +342,44 @@ mod tests {
             "but the pill already shows recording"
         );
         assert!(clock.pause(), "pausing again cancels the pending resume");
-        assert!(!clock.take_resume_request());
+        assert!(!clock.resume_requested());
         assert!(clock.request_resume());
-        assert!(clock.take_resume_request());
-        clock.resume_at(Instant::now());
+        assert!(clock.resume_requested());
+        assert!(clock.finish_resume(Instant::now()));
         assert!(!clock.is_paused());
         assert_eq!(clock.paused_spans().len(), 1);
+    }
+
+    #[test]
+    fn a_pause_while_the_stream_restarts_cancels_the_resume_and_the_next_pause_still_pauses() {
+        let clock = PauseClock::new();
+        clock.pause();
+        clock.request_resume();
+        // The sampler has seen the request and is starting the stream; the pill shows recording.
+        assert!(clock.resume_requested() && !clock.wants_paused());
+        assert!(clock.pause(), "the press cancels the pending resume");
+        assert!(clock.wants_paused());
+        assert!(
+            !clock.finish_resume(Instant::now()),
+            "the stream came up too late"
+        );
+        assert!(clock.is_paused());
+        assert!(clock.request_resume());
+        assert!(clock.finish_resume(Instant::now()));
+        assert!(clock.pause() && clock.is_paused(), "the next pause pauses");
+    }
+
+    #[test]
+    fn moments_inside_a_pause_have_no_active_time() {
+        let mut t = Timeline::default();
+        t.pause(1_000);
+        t.resume(3_000);
+        t.pause(5_000);
+        assert_eq!(t.active_at(500), Some(500));
+        assert_eq!(t.active_at(2_000), None);
+        assert_eq!(t.active_at(3_000), Some(1_000));
+        assert_eq!(t.active_at(4_000), Some(2_000));
+        assert_eq!(t.active_at(6_000), None, "an open pause runs to now");
     }
 
     fn seg(name: &str, start_ms: u64, end_ms: Option<u64>) -> Segment {

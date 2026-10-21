@@ -596,6 +596,8 @@ pub(crate) struct Sampler {
 /// and Media Foundation on Windows).
 pub struct ScreenCaptureSession {
     clock: crate::pause::SessionClock,
+    /// Where the movie goes, so segments are joined back under its name.
+    video_output_path: Option<PathBuf>,
     stopping: Arc<AtomicBool>,
     urgent_snapshot: Arc<AtomicBool>,
     frames: Arc<Mutex<CandidateBuffer>>,
@@ -634,6 +636,7 @@ impl ScreenCaptureSession {
         let thread_frames = Arc::clone(&frames);
         let thread_offset = Arc::clone(&video_offset_ms);
         let thread_clock = clock.clone();
+        let session_video_path = video_output_path.clone();
         let sampler_target = target;
         let sampler_thread = thread::Builder::new()
             .name("scrawl-frame-sampler".into())
@@ -654,6 +657,7 @@ impl ScreenCaptureSession {
 
         Self {
             clock,
+            video_output_path: session_video_path,
             stopping,
             urgent_snapshot,
             frames,
@@ -721,7 +725,8 @@ impl ScreenCaptureSession {
             })
             .unwrap_or_default();
         let (video_path, video_offset_ms) =
-            join_segments(segments).unwrap_or((None, self.video_offset_ms.load(Ordering::Acquire)));
+            join_segments(segments, self.video_output_path.as_deref())
+                .unwrap_or((None, self.video_offset_ms.load(Ordering::Acquire)));
         let buffer = std::mem::replace(
             &mut *self
                 .frames
@@ -744,35 +749,38 @@ impl ScreenCaptureSession {
     }
 }
 
-/// One movie from a session's segments (`crate::pause::join_plan`), with its `videoOffsetMs`.
-/// A capture that was never paused has one segment, which is used as it is. `None` when there
-/// was no movie; a failed join keeps the segments on disk and leaves the movie out (the candidate
-/// frames stand in).
-fn join_segments(segments: Vec<crate::pause::Segment>) -> Option<(Option<PathBuf>, u64)> {
+/// One movie from a session's segments (`crate::pause::join_plan`) at `target` (the session's
+/// movie path), with its `videoOffsetMs`. A capture that was never paused has one segment there,
+/// which is used as it is. `None` when there was no movie. A failed join leaves the movie out
+/// (the candidate frames stand in) and keeps only the first segment.
+fn join_segments(
+    segments: Vec<crate::pause::Segment>,
+    target: Option<&Path>,
+) -> Option<(Option<PathBuf>, u64)> {
     let written: Vec<_> = segments
         .into_iter()
         .filter(|s| s.path.metadata().is_ok_and(|m| m.len() > 0))
         .collect();
     let plan = crate::pause::join_plan(&written)?;
-    let first = written.first()?.path.clone();
+    let target = target.map_or_else(|| written[0].path.clone(), Path::to_path_buf);
     if let [(path, 0, None)] = plan.parts[..]
-        && path == first
+        && path == target
     {
-        return Some((Some(first), plan.video_offset_ms));
+        return Some((Some(target), plan.video_offset_ms));
     }
-    let joined = first.with_file_name("recording-joined.mp4");
+    let joined = target.with_file_name("recording-joined.mp4");
     let result = crate::helper::join_movies(&joined, &plan.parts)
-        .and_then(|()| std::fs::rename(&joined, &first).map_err(Into::into));
+        .and_then(|()| std::fs::rename(&joined, &target).map_err(Into::into));
+    for segment in written.iter().filter(|s| s.path != target) {
+        let _ = std::fs::remove_file(&segment.path);
+    }
     if let Err(error) = result {
         scrawl_log(format!("Joining the recording segments failed: {error:#}"));
         let _ = std::fs::remove_file(&joined);
         return Some((None, plan.video_offset_ms));
     }
-    for segment in &written[1..] {
-        let _ = std::fs::remove_file(&segment.path);
-    }
     scrawl_log(format!("Joined {} recording segments", plan.parts.len()));
-    Some((Some(first), plan.video_offset_ms))
+    Some((Some(target), plan.video_offset_ms))
 }
 
 impl Drop for ScreenCaptureSession {
@@ -1378,10 +1386,19 @@ impl SharedCaptureTelemetry {
             let hits = crate::ax::Prober::shared().finish();
             crate::ax::apply(&hits, &mut events, &mut strokes);
             if self.capture_mode.load(Ordering::Acquire) != 3 {
+                let clock = self.clock();
                 let end = crate::now_epoch_ms();
-                let wall_ms = self.clock().started_at().elapsed().as_millis() as u64;
-                let start = end.saturating_sub(wall_ms);
-                let page = crate::page::between(start, end);
+                let start = end.saturating_sub(clock.started_at().elapsed().as_millis() as u64);
+                // Page times move onto active time like everything else; paused ones go.
+                let page: Vec<_> = crate::page::between(start, end)
+                    .into_iter()
+                    .filter_map(|mut event| {
+                        let at = clock.started_at()
+                            + Duration::from_millis(event.t.saturating_sub(start));
+                        event.t = start + clock.active_at(at)?;
+                        Some(event)
+                    })
+                    .collect();
                 crate::page::apply(&page, start, &mut events, &mut strokes);
             }
         }
@@ -1673,6 +1690,7 @@ mod tests {
             clock: crate::pause::SessionClock::starting_now(Arc::new(
                 crate::pause::PauseClock::new(),
             )),
+            video_output_path: Some(path.clone()),
             stopping,
             urgent_snapshot: Arc::new(AtomicBool::new(false)),
             frames,
