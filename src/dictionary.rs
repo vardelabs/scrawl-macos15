@@ -12,9 +12,23 @@ use serde::{Deserialize, Serialize};
 pub struct Dictionary {
     pub words: Vec<String>,
     pub replacements: BTreeMap<String, String>,
+    /// Words learned from the user's edits to pasted dictation (`dictation::learn`), also in
+    /// `words`; Settings marks them.
+    #[serde(rename = "learnedWords", skip_serializing_if = "Vec::is_empty")]
+    pub learned: Vec<String>,
+    /// Learned words the user removed, never learned again.
+    #[serde(rename = "learnedRejected", skip_serializing_if = "Vec::is_empty")]
+    pub rejected: Vec<String>,
     /// Keys Scrawl doesn't know (a later version's), kept when Settings saves the file.
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Settings and the edit watcher each load, change and save the file; holding this keeps one from
+/// saving over the other's change.
+pub fn edit_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub fn default_path() -> PathBuf {
@@ -54,7 +68,9 @@ impl Dictionary {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let temp = path.with_extension("json.tmp");
+        static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let save = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = path.with_extension(format!("json.{}-{save}.tmp", std::process::id()));
         let mut json = serde_json::to_vec_pretty(self)?;
         json.push(b'\n');
         // Owner-only like config.json, since entries can be private names, from the moment the
@@ -68,7 +84,9 @@ impl Dictionary {
         if let Ok(meta) = std::fs::metadata(&path) {
             std::fs::set_permissions(&temp, meta.permissions())?;
         }
-        std::fs::rename(&temp, &path).with_context(|| format!("Could not save {}", path.display()))
+        std::fs::rename(&temp, &path).with_context(|| format!("Could not save {}", path.display())).inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp);
+        })
     }
 
     /// Adds a word or phrase unless it's empty or already there (ignoring case and spacing).
@@ -83,6 +101,25 @@ impl Dictionary {
 
     pub fn remove_word(&mut self, word: &str) {
         self.words.retain(|w| w != word);
+        if self.learned.iter().any(|w| w == word) {
+            self.learned.retain(|w| w != word);
+            self.rejected.push(word.to_owned());
+        }
+    }
+
+    /// Adds a word learned from an edit, unless the dictionary already has it or the user
+    /// removed it after it was learned.
+    pub fn learn_word(&mut self, word: &str) -> bool {
+        if self.rejected.iter().any(|w| same(w, word)) {
+            return false;
+        }
+        let added = self.add_word(word);
+        if added && let Some(word) = self.words.last().cloned()
+            && !self.learned.contains(&word)
+        {
+            self.learned.push(word);
+        }
+        added
     }
 
     /// Writes `write` wherever `heard` is heard, replacing an entry for the same heard words.
@@ -212,7 +249,7 @@ fn near(heard: &str, word: &str) -> bool {
     heard.chars().count().abs_diff(len) <= allowed && edit_distance(heard, word) <= allowed
 }
 
-fn edit_distance(a: &str, b: &str) -> usize {
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.chars().enumerate() {
@@ -238,8 +275,23 @@ mod tests {
                 .iter()
                 .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
                 .collect(),
-            other: serde_json::Map::new(),
+            ..Dictionary::default()
         }
+    }
+
+    #[test]
+    fn learned_words_are_marked_saved_and_removed_with_their_word() {
+        let mut d = Dictionary::default();
+        assert!(d.learn_word("Klose"));
+        assert!(!d.learn_word("klose"));
+        assert_eq!((d.words.clone(), d.learned.clone()), (vec!["Klose".to_owned()], vec!["Klose".to_owned()]));
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("\"learnedWords\":[\"Klose\"]"));
+        assert!(!serde_json::to_string(&Dictionary::default()).unwrap().contains("learnedWords"));
+        d.remove_word("Klose");
+        assert!(d.words.is_empty() && d.learned.is_empty());
+        assert!(!d.learn_word("Klose"), "a removed learned word is not learned again");
+        assert!(d.add_word("Klose"), "but can still be added by hand");
     }
 
     #[test]
@@ -314,13 +366,13 @@ mod tests {
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
 
-        std::fs::write(&path, r#"{"words": ["Ferris"], "learned": {"feris": 1}}"#).unwrap();
+        std::fs::write(&path, r#"{"words": ["Ferris"], "later": {"feris": 1}}"#).unwrap();
         let mut d = Dictionary::load_from(&path).unwrap();
         d.add_word("Nova");
         d.save_to(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["words"], serde_json::json!(["Ferris", "Nova"]));
-        assert_eq!(saved["learned"], serde_json::json!({"feris": 1}));
+        assert_eq!(saved["later"], serde_json::json!({"feris": 1}));
 
         #[cfg(unix)]
         {
