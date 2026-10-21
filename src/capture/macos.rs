@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -83,6 +83,9 @@ const HOTKEY_SIG: u32 = u32::from_be_bytes(*b"SCRW");
 const HOTKEY_ID_TOGGLE: u32 = 1;
 const HOTKEY_ID_ESCAPE: u32 = 2;
 const HOTKEY_ID_ALT1: u32 = 3;
+const HOTKEY_ID_PAUSE: u32 = 50;
+/// The P key on the ANSI layout (`kVK_ANSI_P`).
+const KEY_P: u16 = 35;
 const HOTKEY_ID_PASTE_BASE: u32 = 100;
 
 #[repr(C, packed(2))]
@@ -333,6 +336,8 @@ pub fn layout_v_keycode() -> u16 {
 /// The registered Carbon hotkeys, so a change can replace all of them.
 struct CarbonHotKeyState {
     refs: Vec<usize>,
+    /// ⌥⇧P, held only while a capture runs (`set_pause_hotkey_enabled`).
+    pause: Option<usize>,
 }
 
 static CARBON_HOTKEYS: std::sync::OnceLock<Mutex<CarbonHotKeyState>> = std::sync::OnceLock::new();
@@ -375,6 +380,9 @@ unsafe extern "C" fn carbon_hotkey_handler(
                 let _ = telemetry
                     .ui_sender
                     .try_send(LiveOverlayEvent::CancelCapture);
+            }
+            HOTKEY_ID_PAUSE => {
+                let _ = telemetry.ui_sender.try_send(LiveOverlayEvent::TogglePause);
             }
             id if id >= HOTKEY_ID_PASTE_BASE => {
                 telemetry.emit_paste_shortcut();
@@ -435,7 +443,10 @@ pub fn install_global_hotkeys(telemetry: &Arc<SharedCaptureTelemetry>) {
                 ));
             }
         }
-        Mutex::new(CarbonHotKeyState { refs: Vec::new() })
+        Mutex::new(CarbonHotKeyState {
+            refs: Vec::new(),
+            pause: None,
+        })
     });
     let (record, paste) = telemetry.shortcuts();
     if let Err(kind) = register_shortcuts(state_mutex, &record, &paste) {
@@ -508,6 +519,45 @@ fn register_shortcuts(
         }
     }
     failed.map_or(Ok(()), Err)
+}
+
+/// Registers ⌥⇧P (pause and resume) while a screen capture runs, so the combo stays free for
+/// other apps the rest of the time.
+pub fn set_pause_hotkey_enabled(enabled: bool) {
+    let Some(state) = CARBON_HOTKEYS.get() else {
+        return;
+    };
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(r) = state.pause.take() {
+        unsafe { UnregisterEventHotKey(r as *mut c_void) };
+    }
+    if !enabled {
+        return;
+    }
+    let code = u32::from(key_code_for_char('p').unwrap_or(KEY_P));
+    let mut r: *mut c_void = ptr::null_mut();
+    let rc = unsafe {
+        RegisterEventHotKey(
+            code,
+            CARBON_OPTION_KEY | CARBON_SHIFT_KEY,
+            EventHotKeyID {
+                signature: HOTKEY_SIG,
+                id: HOTKEY_ID_PAUSE,
+            },
+            hotkey_target(),
+            0,
+            &raw mut r,
+        )
+    };
+    if rc == 0 && !r.is_null() {
+        state.pause = Some(r as usize);
+    } else {
+        scrawl_log(format!(
+            "Pause shortcut ⌥⇧P could not be registered (rc={rc})"
+        ));
+    }
 }
 
 /// Sets both shortcuts and registers them. If macOS refuses either, the old ones are put back
@@ -1016,12 +1066,16 @@ pub fn frontmost_app_info() -> Option<(i32, String, Option<String>)> {
 
 /// The ScreenCaptureKit sampler: the recording stream writes `recording.mp4` while candidate
 /// screenshots are taken every `buffer.interval()` (or at once when urgent).
-pub(super) fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
+/// Pausing tears the stream down (`crate::pause`).
+pub const PAUSE_SUPPORTED: bool = true;
+
+pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
     let Sampler {
         target: sampler_target,
         video_output_path,
         excluded_window_ids,
         started_at,
+        clock,
         stopping: thread_stopping,
         urgent: thread_urgent,
         frames: thread_frames,
@@ -1033,14 +1087,19 @@ pub(super) fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
         .clone();
     // Keep SCK initialization, capture and teardown on the owning worker.
     // stop() joins even if it arrives while setup is still in progress.
-    let (stream, recording_output, video_path, filter) = setup_sck_capture(
-        &sampler_target,
-        video_output_path,
-        &initial_excluded,
-        started_at,
-        &thread_offset,
-    );
+    let first_path = video_output_path.clone();
+    let (mut stream, mut recording_output, video_path, filter, movie_started) =
+        setup_sck_capture(&sampler_target, video_output_path, &initial_excluded);
+    if let Some(at) = movie_started {
+        thread_offset.store(clock.ms_at(at), Ordering::Release);
+    }
     crate::ui::start_metric("sck_ready_ms", started_at);
+    let mut segments = Vec::new();
+    let mut segment = video_path.clone().map(|path| crate::pause::Segment {
+        path,
+        start_ms: thread_offset.load(Ordering::Acquire),
+        end_ms: None,
+    });
     let shot_edge = if video_path.is_some() {
         CANDIDATE_EDGE
     } else {
@@ -1059,7 +1118,49 @@ pub(super) fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        if prompts.check(started_at) {
+        if clock.clock.is_paused() {
+            // The sampler owns the stream, so it stops it here and starts the next segment.
+            if let Some(stream) = stream.take() {
+                stop_stream(&stream, recording_output.take().as_ref());
+            }
+            if let Some(mut done) = segment.take() {
+                done.end_ms = Some(clock.ms());
+                segments.push(done);
+            }
+            if clock.clock.take_resume_request() {
+                let next = first_path
+                    .as_deref()
+                    .map(|first| crate::pause::segment_path(first, segments.len()));
+                // A window closed while paused records nothing, as one closed while recording
+                // does, rather than its display (the filter's fallback).
+                let gone = sampler_target
+                    .window_id
+                    .is_some_and(|id| sck_lists_windows(&[id]).is_empty());
+                let (next_stream, next_output, next_path, next_filter, next_started) = if gone {
+                    scrawl_log("The captured window closed while paused");
+                    (None, None, None, None, None)
+                } else {
+                    setup_sck_capture(&sampler_target, next, &cur_excluded)
+                };
+                let resumed = next_started.unwrap_or_else(Instant::now);
+                clock.clock.resume_at(resumed);
+                (stream, recording_output) = (next_stream, next_output);
+                segment = next_path.map(|path| crate::pause::Segment {
+                    path,
+                    start_ms: clock.ms_at(resumed),
+                    end_ms: None,
+                });
+                if let Some(filter) = next_filter {
+                    filter_and_config = Some((filter, sck_config(&sampler_target, shot_edge)));
+                }
+                scrawl_log(format!("Capture resumed at {} ms", clock.ms()));
+                thread_urgent.store(true, Ordering::Release);
+            } else {
+                thread::park_timeout(Duration::from_millis(30));
+            }
+            continue;
+        }
+        if prompts.check(started_at, clock.ms()) {
             // Frames since the last look may show the prompt.
             thread_frames
                 .lock()
@@ -1096,7 +1197,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
         }
         if urgent || last_sample.elapsed() >= interval {
             last_sample = Instant::now();
-            let t_ms = started_at.elapsed().as_millis() as u64;
+            let t_ms = clock.ms();
             if urgent {
                 phase = phase.saturating_add(1);
             }
@@ -1115,12 +1216,18 @@ pub(super) fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
         thread::park_timeout(Duration::from_millis(30));
     }
     if let Some(stream) = stream {
-        let _ = stream.stop_capture();
-        if let Some(ref output) = recording_output {
-            let _ = stream.remove_recording_output(output);
-        }
+        stop_stream(&stream, recording_output.as_ref());
     }
-    video_path
+    segments.extend(segment);
+    segments
+}
+
+/// Stopping before removing the output lets the recording finish writing its movie.
+fn stop_stream(stream: &SCStream, recording_output: Option<&SCRecordingOutput>) {
+    let _ = stream.stop_capture();
+    if let Some(output) = recording_output {
+        let _ = stream.remove_recording_output(output);
+    }
 }
 
 fn build_sck_filter_and_config(
@@ -1213,22 +1320,21 @@ fn sck_config(target: &TargetInfo, long_edge: f64) -> SCStreamConfiguration {
     config
 }
 
-/// Starts the recording stream; returns it with the filter for candidate screenshots. Stores
-/// when the recording started (ms since `started_at`) into `video_offset_ms`.
+/// Starts the recording stream; returns it with the filter for candidate screenshots and when
+/// the movie started.
 fn setup_sck_capture(
     target: &TargetInfo,
     video_output_path: Option<PathBuf>,
     excluded_window_ids: &[u32],
-    started_at: Instant,
-    video_offset_ms: &AtomicU64,
 ) -> (
     Option<SCStream>,
     Option<SCRecordingOutput>,
     Option<PathBuf>,
     Option<SCContentFilter>,
+    Option<Instant>,
 ) {
     let Some((filter, config)) = build_sck_filter_and_config(target, excluded_window_ids) else {
-        return (None, None, None, None);
+        return (None, None, None, None, None);
     };
 
     if let Some(video_path) = video_output_path {
@@ -1243,21 +1349,21 @@ fn setup_sck_capture(
         {
             // The movie's clock starts while `start_capture` runs; its midpoint is the closest
             // estimate this side of the recording delegate.
-            let before = started_at.elapsed();
+            let before = Instant::now();
             if stream.start_capture().is_ok() {
-                let after = started_at.elapsed();
-                video_offset_ms.store(((before + after) / 2).as_millis() as u64, Ordering::Release);
+                let started = before + before.elapsed() / 2;
                 return (
                     Some(stream),
                     Some(rec_output),
                     Some(video_path),
                     Some(filter),
+                    Some(started),
                 );
             }
         }
     }
 
-    (None, None, None, Some(filter))
+    (None, None, None, Some(filter), None)
 }
 
 fn capture_sck_frame(
@@ -1306,7 +1412,7 @@ impl SystemPrompts {
 
     /// Looks again (four times a second for the first 10 s, then every second). Returns whether
     /// a prompt appeared since the last look.
-    fn check(&mut self, started_at: Instant) -> bool {
+    fn check(&mut self, started_at: Instant, now_ms: u64) -> bool {
         let Some(frame) = self.frame else {
             return false;
         };
@@ -1326,7 +1432,7 @@ impl SystemPrompts {
         if appeared {
             scrawl_log(format!("system prompt over the capture: windows {ids:?}"));
         } else {
-            self.clear_until_ms = elapsed.as_millis() as u64;
+            self.clear_until_ms = now_ms;
         }
         self.ids = ids;
         appeared
@@ -1465,7 +1571,7 @@ fn install_mouse_monitor(telemetry: Arc<SharedCaptureTelemetry>) -> bool {
 
 /// A mouse button or scroll in another app, from the mouse monitor (main thread).
 fn mouse_event(telemetry: &SharedCaptureTelemetry, event: EventRef) {
-    if !telemetry.active.load(Ordering::Acquire) {
+    if !telemetry.capturing() {
         return;
     }
     let event_type = unsafe { CGEventGetType(event) };
@@ -1632,7 +1738,7 @@ unsafe extern "C" fn key_tap_callback(
     if keycode == KEY_ESCAPE && !cmd && !ctrl {
         telemetry.escape_pressed.store(true, Ordering::Release);
     }
-    if !telemetry.active.load(Ordering::Acquire) {
+    if !telemetry.capturing() {
         return event;
     }
 
@@ -1792,7 +1898,7 @@ fn run_global_hid_poller(telemetry: Arc<SharedCaptureTelemetry>) {
                 CGEventSourceButtonState(1, 1) || CGEventSourceButtonState(0, 1),
             ]
         };
-        if !telemetry.active.load(Ordering::Acquire) {
+        if !telemetry.capturing() {
             prev_shift_ink = false;
             prev_buttons = buttons;
             continue;

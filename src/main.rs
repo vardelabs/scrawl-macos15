@@ -36,6 +36,7 @@ mod native;
 mod onboarding;
 mod onboarding_window;
 mod page;
+mod pause;
 mod phone;
 mod render;
 mod retention;

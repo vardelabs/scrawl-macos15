@@ -856,6 +856,7 @@ impl PillRuntimeState {
             ElemId::Undo => PillAction::Undo,
             ElemId::Cancel => PillAction::Cancel,
             ElemId::Finish => PillAction::Finish,
+            ElemId::Pause => PillAction::TogglePause,
             ElemId::Close => {
                 if matches!(self.model.pres, Pres::Completed { .. }) {
                     PillAction::DismissCompleted
@@ -937,6 +938,7 @@ impl PillRuntimeState {
                 elem,
                 [tile_rect[0] + TILE_PAD_PT, tile_rect[1] + TILE_PAD_PT],
                 frame.t,
+                frame.is_paused,
                 &mut prims,
             );
 
@@ -1171,6 +1173,7 @@ impl PillRuntimeState {
         elem: &model::FrameElem,
         [ox, oy]: [f32; 2],
         t: f32,
+        paused: bool,
         out: &mut Vec<TilePrim>,
     ) {
         let atlas = &self.pipelines.atlas;
@@ -1268,6 +1271,41 @@ impl PillRuntimeState {
                 push_shape(out, [ox, oy, bw, bh], bh * 0.5, [r, g, b, 1.0]);
                 push_sprite(out, center_text(tx), tx.uv, [0.95, 0.95, 0.96, 1.0]);
             }
+            ElemId::Lead if paused => {
+                if is_glass {
+                    push_shape(out, [ox, oy, bw, bh], bh * 0.5, [0.06, 0.07, 0.10, 0.24]);
+                }
+                // Two still amber bars where the red dot breathes.
+                let amber = [0.988, 0.722, 0.235, 1.0];
+                for x in [11.0, 17.0] {
+                    push_shape(out, [ox + x, oy + 10.0, 4.0, 12.0], 1.5, amber);
+                }
+                let label = atlas.label("Paused");
+                let x = ox + CHIP_H - 2.0;
+                push_sprite(
+                    out,
+                    [
+                        x,
+                        oy + (CHIP_H - label.size_pt[1]) * 0.5,
+                        label.size_pt[0],
+                        label.size_pt[1],
+                    ],
+                    label.uv,
+                    amber,
+                );
+                let tx = atlas.clock_sprite;
+                push_sprite(
+                    out,
+                    [
+                        x + label.size_pt[0] + model::PAUSED_GAP,
+                        oy + (CHIP_H - tx.size_pt[1]) * 0.5,
+                        tx.size_pt[0],
+                        tx.size_pt[1],
+                    ],
+                    tx.uv,
+                    [0.72, 0.72, 0.74, 1.0],
+                );
+            }
             ElemId::Lead => {
                 if is_glass {
                     push_shape(out, [ox, oy, bw, bh], bh * 0.5, [0.06, 0.07, 0.10, 0.24]);
@@ -1307,11 +1345,13 @@ impl PillRuntimeState {
                     [0.961, 0.961, 0.969, 1.0],
                 );
             }
-            ElemId::Undo | ElemId::Cancel | ElemId::Inspect => {
+            ElemId::Undo | ElemId::Cancel | ElemId::Inspect | ElemId::Pause => {
                 let label = match elem.id {
                     ElemId::Undo => "Undo",
                     ElemId::Cancel => "Cancel",
                     ElemId::Inspect => "Inspect",
+                    ElemId::Pause if paused => "Resume",
+                    ElemId::Pause => "Pause",
                     _ => unreachable!(),
                 };
                 if is_glass {

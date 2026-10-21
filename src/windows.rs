@@ -538,12 +538,22 @@ pub struct WindowLogger {
 impl WindowLogger {
     /// Call on the main thread, so the Dock's strip can be read from `NSScreen`.
     pub fn start(frame: TargetFrame, started_at: Instant, request: Arc<AtomicBool>) -> Self {
+        let clock = Arc::new(crate::pause::PauseClock::since(started_at));
+        Self::start_pausable(frame, crate::pause::SessionClock::whole(clock), request)
+    }
+
+    /// Logs on the capture's active time, and nothing while it's paused.
+    pub fn start_pausable(
+        frame: TargetFrame,
+        clock: crate::pause::SessionClock,
+        request: Arc<AtomicBool>,
+    ) -> Self {
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
         let dock = dock_rect(frame);
         let worker = thread::Builder::new()
             .name("scrawl-window-log".into())
-            .spawn(move || run(frame, dock, started_at, &request, &stop))
+            .spawn(move || run(frame, dock, &clock, &request, &stop))
             .ok();
         Self { stopping, worker }
     }
@@ -583,7 +593,7 @@ impl Drop for WindowLogger {
 fn run(
     frame: TargetFrame,
     dock: Option<[f64; 4]>,
-    started_at: Instant,
+    clock: &crate::pause::SessionClock,
     request: &AtomicBool,
     stopping: &AtomicBool,
 ) -> ActivityLog {
@@ -601,7 +611,13 @@ fn run(
     };
     loop {
         let finishing = stopping.load(Ordering::Acquire);
-        let t = started_at.elapsed().as_millis() as u64;
+        if clock.clock.is_paused() && !finishing {
+            // The screen may look nothing alike after the pause: snapshot again on resume.
+            last_snapshot = None;
+            thread::park_timeout(TICK);
+            continue;
+        }
+        let t = clock.ms();
         let cursor = crate::capture::current_mouse_screen();
         if let Some([x, y]) = cursor {
             log.push_cursor(t, f64::from(x) - frame.x, f64::from(y) - frame.y, frame);

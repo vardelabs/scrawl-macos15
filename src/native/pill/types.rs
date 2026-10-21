@@ -53,6 +53,7 @@ pub enum PillAction {
     Undo,
     Cancel,
     Finish,
+    TogglePause,
     Paste(Option<[f32; 2]>),
     Inspect,
     DismissCompleted,

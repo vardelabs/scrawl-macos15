@@ -529,6 +529,41 @@ enum Media {
     ]
   }
 
+  /// A paused capture's segments as one movie, without re-encoding: each part's video goes in at
+  /// `at` ms, cut to its first `keep` ms, so the joined movie runs on the capture's active time.
+  static func join(parts: [(at: Int, keep: Int?, movie: URL)], out: URL) async throws -> [String: Any] {
+    let started = Date()
+    let composition = AVMutableComposition()
+    guard let track = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+      throw HelperError("Could not make a video track")
+    }
+    let scale: CMTimeScale = 600
+    for (index, part) in parts.enumerated() {
+      let asset = AVURLAsset(url: part.movie)
+      guard let source = try await asset.loadTracks(withMediaType: .video).first else { continue }
+      let (range, transform) = try await source.load(.timeRange, .preferredTransform)
+      if index == 0 { track.preferredTransform = transform }
+      var duration = range.duration
+      if let keep = part.keep { duration = CMTimeMinimum(duration, CMTime(value: CMTimeValue(keep), timescale: 1000)) }
+      guard duration > .zero else { continue }
+      let at = CMTime(value: CMTimeValue(part.at), timescale: 1000).convertScale(scale, method: .default)
+      let end = composition.duration
+      if at > end { track.insertEmptyTimeRange(CMTimeRange(start: end, end: at)) }
+      try track.insertTimeRange(CMTimeRange(start: range.start, duration: duration), of: source, at: CMTimeMaximum(at, end))
+    }
+    guard composition.duration > .zero else { throw HelperError("No video to join") }
+    try? FileManager.default.removeItem(at: out)
+    guard let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
+      throw HelperError("Could not export the joined movie")
+    }
+    try await export.export(to: out, as: .mp4)
+    return [
+      "durationMs": Int((composition.duration.seconds * 1000).rounded()),
+      "parts": parts.count,
+      "ms": Int(Date().timeIntervalSince(started) * 1000),
+    ]
+  }
+
   /// Every audio track mixed to 16 kHz mono 16-bit PCM, padded so sample 0 is the movie's start.
   static func exportAudio(movie: URL, wav: URL) async throws -> [String: Any] {
     let asset = AVURLAsset(url: movie)
