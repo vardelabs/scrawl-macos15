@@ -5,9 +5,16 @@
 set -euo pipefail
 
 NAME="Scrawl Local Signing"
+# `find-identity -v` hides an untrusted self-signed identity, so expiry is checked separately, as
+# install-app.sh does.
 if security find-identity -p codesigning 2>/dev/null | grep -q "\"${NAME}\""; then
-  echo "${NAME} already exists in the keychain."
-  exit 0
+  if security find-certificate -c "${NAME}" -p 2>/dev/null |
+    /usr/bin/openssl x509 -noout -checkend 0 >/dev/null 2>&1; then
+    echo "${NAME} already exists in the keychain."
+    exit 0
+  fi
+  echo "${NAME} has expired. Delete it in Keychain Access (login keychain), then run this again." >&2
+  exit 1
 fi
 
 WORK="$(mktemp -d)"

@@ -15,8 +15,8 @@ is in [`docs/guide.md`](docs/guide.md).
 
 - **Runs on macOS 15.** Kit's build needs macOS 26 for transcription. This one transcribes
   locally with [Parakeet](https://github.com/senstella/parakeet-mlx) through
-  `scripts/scrawl-parakeet.py`, and starts the model as the recording begins, so a transcript is
-  ready about a second after you stop.
+  `scripts/scrawl-parakeet.py`. With `"transcribePrestart": true` it starts the model as the
+  recording begins, so a transcript is ready about a second after you stop.
 - **Dictation.** Hold `⌃⌥` and talk, and the text is pasted where you type; double tap for
   hands-free. A dictionary of words and replacements, filler words ("um", "uh") removed, and
   spoken filenames written as `` `README.md` ``.
@@ -53,22 +53,25 @@ xcodebuild -downloadComponent MetalToolchain
 keychain, once. `install-app.sh` builds Scrawl, signs it with that identity and installs it as
 `~/Applications/Scrawl.app`.
 
-For transcription on macOS 15, install Parakeet and point Scrawl at it, as
-[`docs/guide.md`](docs/guide.md#your-own-model-command) describes:
+For transcription on macOS 15, set up Parakeet:
 
-```bash
-uv tool install parakeet-mlx
-```
+1. Install the tools: `brew install uv ffmpeg`, then `uv tool install parakeet-mlx`.
+2. Run `scripts/scrawl-parakeet.py` once by hand on any WAV, with the tool's Python
+   (`~/.local/share/uv/tools/parakeet-mlx/bin/python`). That first run downloads the model, about
+   1.2 GB.
+3. In `~/.config/scrawl/config.json`, set `"transcriber": "command"`, `"transcribeCommand"` and
+   `"transcribePrestart": true`, as
+   [`docs/guide.md`](docs/guide.md#your-own-model-command) shows.
 
 ## Staying in sync with Kit
 
 `main` mirrors `kitlangton/scrawl`; `macos-15` is the fork's default branch. Kit's changes are
 merged into `macos-15` as their own pull requests. Kit's README lives on here as `docs/guide.md`.
-When a sync conflicts on `README.md`, keep this page and replay his README changes onto the guide
-(`OLD` is the last upstream commit already merged, `NEW` the one being merged):
+During every such merge, conflict or not, replay his README changes onto the guide and keep this
+page (`OLD` is the last upstream commit already merged, `NEW` the one being merged):
 
 ```bash
-git checkout --ours README.md && git diff OLD NEW -- README.md | sed 's#README.md#docs/guide.md#g' | git apply -3
+scripts/sync-upstream-readme.sh OLD NEW
 ```
 
 ## License
