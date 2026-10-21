@@ -167,6 +167,16 @@ impl Chord {
         if self.is_active() { self.end(Action::Discard) } else { Action::None }
     }
 
+    /// Straight to hands-free, as a click on the idle pill starts it. False if already active.
+    pub fn latch(&mut self, now_ms: u64) -> bool {
+        if self.is_active() {
+            return false;
+        }
+        self.started_ms = now_ms;
+        self.state = State::Latched;
+        true
+    }
+
     /// ✓ on the pill.
     pub fn confirm(&mut self) -> Action {
         if self.is_active() { self.end(Action::Finish) } else { Action::None }
@@ -271,6 +281,17 @@ mod tests {
         c.tick(1_000, Exact, 0);
         c.tick(1_050, Up, 0);
         assert_eq!(c.tick(1_100, Up, 1), Action::Discard);
+    }
+
+    #[test]
+    fn a_click_latches_and_the_chord_then_confirms() {
+        let mut c = Chord::default();
+        assert!(c.latch(0));
+        assert!(c.is_latched());
+        assert!(!c.latch(10));
+        assert_eq!(c.tick(500, Exact, 0), Action::None);
+        assert_eq!(c.tick(560, Up, 0), Action::Finish);
+        assert!(!c.is_active());
     }
 
     #[test]

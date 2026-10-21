@@ -34,6 +34,11 @@ unsafe extern "C" {
         out: *mut CFTypeRef,
     ) -> i32;
     fn AXUIElementSetMessagingTimeout(element: AxElement, seconds: f32) -> i32;
+    fn AXUIElementIsAttributeSettable(
+        element: AxElement,
+        attribute: CFStringRef,
+        settable: *mut u8,
+    ) -> i32;
     fn AXUIElementGetPid(element: AxElement, pid: *mut i32) -> i32;
     fn AXUIElementGetTypeID() -> usize;
 }
@@ -50,6 +55,41 @@ const LOOKUP_BUDGET: Duration = Duration::from_millis(250);
 
 /// How long finishing a capture waits for lookups still running.
 const DRAIN_WAIT: Duration = Duration::from_millis(400);
+
+/// `kAXErrorNoValue`: the attribute has no value, as `AXFocusedUIElement` with nothing focused.
+#[cfg(target_os = "macos")]
+const AX_ERROR_NO_VALUE: i32 = -25212;
+
+/// Whether the focused element takes typed text: `Some(true)` for a text input, `Some(false)`
+/// only when the system says nothing is focused, and `None` for everything else (an app that
+/// doesn't answer in time, or a role that may or may not take text). Blocking; call it off the
+/// main thread.
+#[cfg(target_os = "macos")]
+pub fn focused_takes_text() -> Option<bool> {
+    let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+    unsafe { AXUIElementSetMessagingTimeout(system.0, MESSAGE_TIMEOUT_S) };
+    let element = match attribute_status(system.0, "AXFocusedUIElement") {
+        Ok(element) => element,
+        Err(AX_ERROR_NO_VALUE) => return Some(false),
+        Err(_) => return None,
+    };
+    let role = string_attribute(element.0, "AXRole")?;
+    let subrole = string_attribute(element.0, "AXSubrole").unwrap_or_default();
+    // Read-only selectable text has a selection too; only a value that can be set takes text.
+    let text = is_input(&role, &subrole)
+        || attribute(element.0, "AXSelectedTextRange").is_some() && settable(element.0, "AXValue");
+    text.then_some(true)
+}
+
+#[cfg(target_os = "macos")]
+fn settable(element: AxElement, name: &'static str) -> bool {
+    let key = CFString::from_static_string(name);
+    let mut settable = 0_u8;
+    let status = unsafe {
+        AXUIElementIsAttributeSettable(element, key.as_concrete_TypeRef(), &raw mut settable)
+    };
+    status == 0 && settable != 0
+}
 
 /// The element under a point.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -151,11 +191,21 @@ impl Drop for Owned {
 
 #[cfg(target_os = "macos")]
 fn attribute(element: AxElement, name: &'static str) -> Option<Owned> {
+    attribute_status(element, name).ok()
+}
+
+/// The attribute, or the `AXError` status that says why there is none.
+#[cfg(target_os = "macos")]
+fn attribute_status(element: AxElement, name: &'static str) -> Result<Owned, i32> {
     let key = CFString::from_static_string(name);
     let mut out: CFTypeRef = std::ptr::null();
     let status =
         unsafe { AXUIElementCopyAttributeValue(element, key.as_concrete_TypeRef(), &raw mut out) };
-    (status == 0 && !out.is_null()).then_some(Owned(out))
+    match status {
+        0 if !out.is_null() => Ok(Owned(out)),
+        0 => Err(AX_ERROR_NO_VALUE),
+        error => Err(error),
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -625,6 +625,8 @@ pub struct DictationView {
     pub shortcut: String,
     pub shortcuts: &'static [&'static str],
     pub restore_clipboard: bool,
+    /// The small bar that stays on screen while dictation is on.
+    pub pill: bool,
     pub remove_fillers: bool,
     pub words: Vec<String>,
     pub replacements: Vec<ReplacementView>,
@@ -902,6 +904,7 @@ fn dictation_view(
         shortcut,
         shortcuts: DICTATION_SHORTCUTS,
         restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
+        pill: config.dictation_pill.unwrap_or(true),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
         replacements: dictionary
@@ -984,7 +987,7 @@ fn shortcut_view(
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
     /// A toggle or popup: `launchAtLogin`, `autoSend`, `videoExport`, `tapChooses`, `cropWindowCaptures`,
-    /// `dictation`, `dictationRestoreClipboard`, `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
+    /// `dictation`, `dictationRestoreClipboard`, `dictationPill`, `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
     /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
     /// `retention` (a preset id).
     Set {
@@ -1262,7 +1265,7 @@ impl Panel {
             }
             (
                 "autoSend" | "videoExport" | "tapChooses" | "cropWindowCaptures" | "dictation"
-                | "dictationRestoreClipboard" | "removeFillers",
+                | "dictationRestoreClipboard" | "dictationPill" | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => write(key, (*on).into()),
             ("dictationShortcut", serde_json::Value::String(chord))
@@ -1987,11 +1990,13 @@ mod tests {
         };
         set(&mut panel, &mut host, "dictation", true.into());
         set(&mut panel, &mut host, "removeFillers", false.into());
+        set(&mut panel, &mut host, "dictationPill", false.into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥⌘".into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥".into());
         let view = panel.view(&host).dictation;
         assert!(view.on);
         assert!(!view.remove_fillers);
+        assert!(!view.pill);
         assert_eq!(view.shortcut, "⌥⌘");
     }
 

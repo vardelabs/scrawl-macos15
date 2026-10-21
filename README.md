@@ -806,12 +806,16 @@ Scrawl can also type for you, with no screen recorded. Turn on Settings › **Di
 (or `"dictation": true` in `~/.config/scrawl/config.json`), then:
 
 - **Hold `⌃⌥`** and talk; let go and the text is pasted where you type.
-- **Double tap `⌃⌥`** for hands-free: a pill with ✕ and ✓ shows at the bottom of the screen.
-  `⌃⌥` again or ✓ pastes; Esc or ✕ discards.
+- **Double tap `⌃⌥`**, or click the pill, for hands-free: the pill shows ✕ and ✓. `⌃⌥` again or ✓
+  pastes; Esc or ✕ discards.
+
+A small pill stays at the bottom of the screen while dictation is on, as Wispr Flow's does.
+Unless a text field had focus, the text also stays on the clipboard to paste by hand, and with
+nothing focused the pill says so.
 
 `⌃⌥` followed by another key (`⌃⌥←`) stays an ordinary shortcut. `"dictationShortcut"` picks
-another chord (`"⌃⌘"`, `"⌥⌘"`, `"⌃⇧"`), and `"dictationRestoreClipboard": false` leaves the text
-on the clipboard. Dictation uses the transcriber set for recordings and needs Accessibility to
+another chord (`"⌃⌘"`, `"⌥⌘"`, `"⌃⇧"`), `"dictationPill": false` hides the idle pill, and `"dictationRestoreClipboard": false` keeps
+pasted text on the clipboard too. Dictation uses the transcriber set for recordings and needs Accessibility to
 paste. Words it gets wrong go in the Dictation pane's **Words** and **Replacements** lists, which
 live in `~/.config/scrawl/dictionary.json` (**Edit as Text…** opens it):
 

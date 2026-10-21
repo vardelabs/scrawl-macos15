@@ -510,7 +510,7 @@ impl NativePill {
                 st.model.set_clock(&snapshot.clock);
                 st.dirty = true;
             }
-            if let Pres::Completed { ref label } = snapshot.pres {
+            if let Pres::Completed { ref label } | Pres::Message { ref label, .. } = snapshot.pres {
                 let sp = st.pipelines.atlas.update_completed(label);
                 st.model.set_completed_label(label.clone(), sp.size_pt[0]);
             }
@@ -836,6 +836,7 @@ impl PillRuntimeState {
             ElemId::Paste => PillAction::Paste(None),
             ElemId::Inspect => PillAction::Inspect,
             ElemId::Confirm => PillAction::Finish,
+            ElemId::Message => PillAction::MessageClicked,
             _ => return,
         };
         let _ = self.action_tx.try_send(action);
@@ -889,16 +890,22 @@ impl PillRuntimeState {
         let mut blur_boxes: Vec<BlurBox> = Vec::with_capacity(frame.elems.len());
         let mut comp_elems: Vec<CompositeElem> = Vec::with_capacity(frame.elems.len());
 
-        for (i, elem) in frame.elems.iter().take(16).enumerate() {
-            let slot_x = (i % 5) as f32 * 192.0 + 4.0;
-            let slot_y = (i / 5) as f32 * 112.0 + 4.0;
-            let tile_w = (elem.base_size[0] + 2.0 * TILE_PAD_PT).min(184.0);
+        // Tiles are packed by width, so a wide element (a dictation message) gets a tile as wide
+        // as it is instead of being cut off at a fixed slot.
+        let (mut slot_x, mut slot_y) = (4.0_f32, 4.0_f32);
+        for elem in frame.elems.iter().take(16) {
+            let tile_w = (elem.base_size[0] + 2.0 * TILE_PAD_PT).min(OFFSCREEN_W_PT - 8.0);
             let tile_h = (elem.base_size[1] + 2.0 * TILE_PAD_PT).min(104.0);
+            if slot_x + tile_w > OFFSCREEN_W_PT - 4.0 {
+                slot_x = 4.0;
+                slot_y += 112.0;
+            }
             let tile_rect = [slot_x, slot_y, tile_w, tile_h];
+            slot_x += tile_w + 8.0;
 
             self.emit_elem_prims(
                 elem,
-                [slot_x + TILE_PAD_PT, slot_y + TILE_PAD_PT],
+                [tile_rect[0] + TILE_PAD_PT, tile_rect[1] + TILE_PAD_PT],
                 frame.t,
                 &mut prims,
             );
@@ -1326,6 +1333,30 @@ impl PillRuntimeState {
                     [ox + (CHIP_H - 12.0) * 0.5, oy + (CHIP_H - 12.0) * 0.5, 12.0, 12.0],
                     ic.uv,
                     [fg, fg, fg, 1.0],
+                );
+            }
+            ElemId::Message => {
+                let notice = matches!(self.model.pres, Pres::Message { notice: true, .. });
+                if elem.hover > 0.01 {
+                    push_shape(out, [ox, oy, bw, bh], bh * 0.5, [1.0, 1.0, 1.0, 0.06 * elem.hover]);
+                }
+                let tx = atlas.completed_sprite;
+                let mut text_x = ox + CHIP_PX;
+                if notice {
+                    let ic = atlas.icon(IconKind::Check);
+                    push_sprite(
+                        out,
+                        [ox + (CHIP_H - 13.0) * 0.5, oy + (CHIP_H - 13.0) * 0.5, 13.0, 13.0],
+                        ic.uv,
+                        [0.412, 0.847, 0.624, 1.0],
+                    );
+                    text_x = ox + CHIP_H + 4.0;
+                }
+                push_sprite(
+                    out,
+                    [text_x, oy + (CHIP_H - tx.size_pt[1]) * 0.5, tx.size_pt[0], tx.size_pt[1]],
+                    tx.uv,
+                    [0.961, 0.961, 0.969, 1.0],
                 );
             }
             ElemId::Confirm => {

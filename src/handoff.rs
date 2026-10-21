@@ -531,9 +531,13 @@ pub struct Config {
     /// That chord: two or more of `⌃⌥⇧⌘` (default `⌃⌥`).
     #[serde(default)]
     pub dictation_shortcut: Option<String>,
-    /// Puts the clipboard back after pasting dictated text (default on).
+    /// Puts the clipboard back once dictated text is pasted (default on). Text that couldn't be
+    /// pasted always stays on the clipboard.
     #[serde(default)]
     pub dictation_restore_clipboard: Option<bool>,
+    /// Keeps the small dictation bar on screen while dictation is on (default on).
+    #[serde(default)]
+    pub dictation_pill: Option<bool>,
 }
 
 /// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
@@ -780,16 +784,25 @@ pub fn video_export() -> bool {
     config().video_export.unwrap_or(false)
 }
 
-/// The dictation settings: whether it's on, its chord as written, and whether the clipboard is
-/// restored after a paste.
+/// The dictation settings from `config.json`.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn dictation() -> (bool, Option<String>, bool) {
+pub struct DictationConfig {
+    pub enabled: bool,
+    /// The chord as written, unvalidated.
+    pub shortcut: Option<String>,
+    pub restore_clipboard: bool,
+    pub pill: bool,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn dictation() -> DictationConfig {
     let config = config();
-    (
-        config.dictation.unwrap_or(false),
-        config.dictation_shortcut,
-        config.dictation_restore_clipboard.unwrap_or(true),
-    )
+    DictationConfig {
+        enabled: config.dictation.unwrap_or(false),
+        shortcut: config.dictation_shortcut,
+        restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
+        pill: config.dictation_pill.unwrap_or(true),
+    }
 }
 
 /// Whether a capture in `mode` gets keyframe crops: full-screen ones always, window ones unless

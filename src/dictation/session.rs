@@ -14,21 +14,28 @@ use crate::native::pill::{NativePill, PillAction, PillSnapshot, PillStyle, model
 const MIN_AUDIO_MS: u64 = 300;
 /// Settings are read from `config.json` this often, not on every tick.
 const SETTINGS_EVERY: Duration = Duration::from_millis(500);
+/// How long a notice ("Copied to the clipboard") stays in the pill.
+const NOTICE_FOR: Duration = Duration::from_millis(2_500);
+/// A click this soon after a notice goes was aimed at the notice, not the hint that replaced it.
+const CLICK_GRACE: Duration = Duration::from_millis(700);
 
 struct Settings {
     enabled: bool,
     mask: u64,
+    /// The chord as the hint shows it (`⌃⌥`).
+    label: String,
     restore_clipboard: bool,
+    pill: bool,
 }
 
 impl Settings {
     fn load() -> Self {
-        let (enabled, shortcut, restore_clipboard) = crate::handoff::dictation();
-        let mods = shortcut
-            .as_deref()
-            .and_then(super::parse_shortcut)
-            .or_else(|| super::parse_shortcut(super::DEFAULT_SHORTCUT))
-            .expect("the default dictation chord parses");
+        let config = crate::handoff::dictation();
+        let label = config
+            .shortcut
+            .filter(|chord| super::parse_shortcut(chord).is_some())
+            .unwrap_or_else(|| super::DEFAULT_SHORTCUT.to_owned());
+        let mods = super::parse_shortcut(&label).expect("the chord was just checked");
         let mask = [
             (mods.control, FLAG_CONTROL),
             (mods.option, FLAG_ALTERNATE),
@@ -39,9 +46,11 @@ impl Settings {
         .filter(|(on, _)| *on)
         .fold(0, |mask, (_, flag)| mask | flag);
         Self {
-            enabled,
+            enabled: config.enabled,
             mask,
-            restore_clipboard,
+            label,
+            restore_clipboard: config.restore_clipboard,
+            pill: config.pill,
         }
     }
 
@@ -56,6 +65,93 @@ impl Settings {
     }
 }
 
+/// How a finished dictation ended, for the pill's notice.
+enum Outcome {
+    Pasted,
+    /// Nowhere to paste: the text is on the clipboard.
+    Copied,
+    NoSpeech,
+    /// Too short to be speech, or it failed (logged): nothing to say.
+    Quiet,
+}
+
+impl Outcome {
+    fn notice(&self) -> Option<&'static str> {
+        match self {
+            Self::Copied => Some("Copied to the clipboard"),
+            Self::NoSpeech => Some("Didn't catch that"),
+            Self::Pasted | Self::Quiet => None,
+        }
+    }
+}
+
+struct Notice {
+    text: &'static str,
+    until: Instant,
+}
+
+/// What the pill's presentation depends on, so the choice can be tested without a pill.
+struct PillState<'a> {
+    working: bool,
+    /// Listening, and whether latched.
+    dictating: Option<bool>,
+    capture_busy: bool,
+    notice: Option<&'static str>,
+    enabled: bool,
+    pill: bool,
+    hovered: bool,
+    chord: &'a str,
+}
+
+/// What the pill shows, most pressing first.
+fn presentation(state: &PillState) -> Pres {
+    if state.working {
+        return Pres::Processing;
+    }
+    if let Some(latched) = state.dictating {
+        return Pres::Dictating { latched };
+    }
+    if state.capture_busy {
+        return Pres::Hidden;
+    }
+    if let Some(text) = state.notice {
+        return Pres::Message {
+            label: text.to_owned(),
+            notice: true,
+        };
+    }
+    if !state.enabled || !state.pill {
+        return Pres::Hidden;
+    }
+    if state.hovered {
+        return Pres::Message {
+            label: format!("Click or hold {} to dictate", state.chord),
+            notice: false,
+        };
+    }
+    Pres::DictationIdle
+}
+
+/// How dictated text reaches the app, from whether the focused element takes text. Every route
+/// pastes: an app with its Accessibility tree off can report nothing focused over a real field.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// A text field: paste, then put the clipboard back.
+    Paste,
+    /// Nothing focused: paste anyway, keep the text on the clipboard, and say so.
+    Copy,
+    /// The app didn't say: paste, and keep the text on the clipboard so nothing is lost.
+    PasteAndKeep,
+}
+
+fn route(takes_text: Option<bool>) -> Route {
+    match takes_text {
+        Some(true) => Route::Paste,
+        Some(false) => Route::Copy,
+        None => Route::PasteAndKeep,
+    }
+}
+
 pub struct Dictation {
     chord: Chord,
     clock: Instant,
@@ -67,7 +163,12 @@ pub struct Dictation {
     pill: Option<NativePill>,
     shown: Option<PillSnapshot>,
     /// Transcribing and pasting on a worker; the next dictation waits for it.
-    working: Option<flume::Receiver<()>>,
+    working: Option<flume::Receiver<Outcome>>,
+    notice: Option<Notice>,
+    /// When the last notice went, for `CLICK_GRACE`.
+    notice_gone: Option<Instant>,
+    /// When opening the pill last failed; it is tried again at the settings cadence, not per tick.
+    pill_failed: Option<Instant>,
 }
 
 impl Default for Dictation {
@@ -83,6 +184,9 @@ impl Default for Dictation {
             pill: None,
             shown: None,
             working: None,
+            notice: None,
+            notice_gone: None,
+            pill_failed: None,
         }
     }
 }
@@ -103,19 +207,55 @@ impl Dictation {
         }
     }
 
-    /// `capture_busy`: a capture is recording, selecting or processing, so the chord is ignored.
+    /// `capture_busy`: a capture is recording, selecting or processing, so the chord is ignored
+    /// and the idle bar hides (it would be in the recording).
     pub fn tick(&mut self, telemetry: &SharedCaptureTelemetry, capture_busy: bool) {
         if !self.chord.is_active() && self.settings_read.elapsed() >= SETTINGS_EVERY {
             self.settings = Settings::load();
             self.settings_read = Instant::now();
+            self.follow_pointer();
+            self.keep_out_of_captures(telemetry);
         }
-        if self.working.as_ref().is_some_and(|rx| !rx.is_empty() || rx.is_disconnected()) {
-            self.working = None;
-            self.show(Pres::Hidden);
+        self.take_outcome();
+        if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
+            self.dismiss_notice();
         }
-        if !self.settings.enabled {
-            return;
+        // Clicks are taken every tick, so one made while dictation was off can't start it later.
+        let clicks = self.pill.as_ref().map(NativePill::drain_actions).unwrap_or_default();
+        if self.settings.enabled {
+            self.listen(telemetry, capture_busy, clicks);
+        } else if clicks.iter().any(|c| matches!(c, PillAction::MessageClicked)) {
+            // Off, the pill can still show the last dictation's notice; a click dismisses it.
+            self.dismiss_notice();
         }
+        let pres = presentation(&PillState {
+            working: self.working.is_some(),
+            dictating: self.started.map(|_| self.chord.is_latched()),
+            capture_busy,
+            notice: self.notice.as_ref().map(|n| n.text),
+            enabled: self.settings.enabled,
+            pill: self.settings.pill,
+            hovered: self.pill.as_ref().is_some_and(NativePill::pointer_on_pill),
+            chord: &self.settings.label,
+        });
+        if pres != Pres::Hidden {
+            self.ensure_pill(telemetry);
+        }
+        self.show(pres);
+    }
+
+    fn dismiss_notice(&mut self) {
+        if self.notice.take().is_some() {
+            self.notice_gone = Some(Instant::now());
+        }
+    }
+
+    fn listen(
+        &mut self,
+        telemetry: &SharedCaptureTelemetry,
+        capture_busy: bool,
+        clicks: Vec<PillAction>,
+    ) {
         let key_tap_live = telemetry.key_tap_live() && !crate::capture::secure_input_on();
         let now_ms = self.clock.elapsed().as_millis() as u64;
         let mods = self.settings.mods(crate::capture::modifier_flags());
@@ -137,19 +277,56 @@ impl Dictation {
             let action = self.chord.cancel();
             self.apply(action, capture_busy, key_tap_live);
         }
-        for pill_action in self.pill.as_ref().map(NativePill::drain_actions).unwrap_or_default() {
-            let action = match pill_action {
+        for click in clicks {
+            let action = match click {
                 PillAction::Cancel => self.chord.cancel(),
                 PillAction::Finish => self.chord.confirm(),
+                PillAction::MessageClicked => {
+                    self.message_clicked(capture_busy, key_tap_live);
+                    Action::None
+                }
                 _ => Action::None,
             };
             self.apply(action, capture_busy, key_tap_live);
         }
-        if self.started.is_some() && self.chord.is_latched() {
-            self.show(Pres::Dictating { latched: true });
-        } else if self.started.is_some() {
-            self.show(Pres::Dictating { latched: false });
+    }
+
+    /// A click on a notice dismisses it; a click on the hint starts hands-free dictation, unless
+    /// it lands just after a notice went (the press was meant for the notice).
+    fn message_clicked(&mut self, capture_busy: bool, key_tap_live: bool) {
+        if self.notice.is_some() {
+            self.dismiss_notice();
+        } else if self.notice_gone.is_none_or(|at| at.elapsed() >= CLICK_GRACE) {
+            self.start_hands_free(capture_busy, key_tap_live);
         }
+    }
+
+    /// A click on the idle bar's hint: hands-free dictation, as a double tap starts it.
+    fn start_hands_free(&mut self, capture_busy: bool, key_tap_live: bool) {
+        let now_ms = self.clock.elapsed().as_millis() as u64;
+        if self.working.is_some() || !self.chord.latch(now_ms) {
+            return;
+        }
+        self.apply(Action::Start, capture_busy, key_tap_live);
+        if self.chord.is_active() {
+            self.apply(Action::Show { latched: true }, capture_busy, key_tap_live);
+        }
+    }
+
+    fn take_outcome(&mut self) {
+        let Some(rx) = &self.working else {
+            return;
+        };
+        let text = match rx.try_recv() {
+            Err(flume::TryRecvError::Empty) => return,
+            Ok(outcome) => outcome.notice(),
+            Err(flume::TryRecvError::Disconnected) => None,
+        };
+        self.working = None;
+        self.notice = text.map(|text| Notice {
+            text,
+            until: Instant::now() + NOTICE_FOR,
+        });
     }
 
     fn apply(&mut self, action: Action, capture_busy: bool, key_tap_live: bool) {
@@ -180,7 +357,8 @@ impl Dictation {
                 }
                 self.playback = self.playback.take().or_else(crate::playback::Guard::start);
                 self.started = Some(Instant::now());
-                self.place_pill();
+                self.notice = None;
+                self.follow_pointer();
             }
             Action::Finish => self.finish(),
             // Dropping the recorder stops the microphone without encoding what it heard. The drop
@@ -189,55 +367,82 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.take() {
                     std::thread::spawn(move || drop(recorder));
                 }
-                self.stop_listening(Pres::Hidden);
+                self.stop_listening();
             }
         }
     }
 
-    /// Stops ducking playback and shows `pres` in place of the listening pill.
-    fn stop_listening(&mut self, pres: Pres) {
+    fn stop_listening(&mut self) {
         self.started = None;
         self.playback = None;
-        self.show(pres);
     }
 
     /// Stopping the recorder joins its worker (which may still be opening the device) and encodes
     /// the WAV, so it happens on the worker with the transcription, not on the UI thread.
     fn finish(&mut self) {
+        self.stop_listening();
         let Some(recorder) = self.recorder.take() else {
-            self.stop_listening(Pres::Hidden);
             return;
         };
-        self.stop_listening(Pres::Processing);
         let restore = self.settings.restore_clipboard;
         let (done, working) = flume::bounded(1);
         self.working = Some(working);
         let spawned = std::thread::Builder::new()
             .name("scrawl-dictation".into())
             .spawn(move || {
-                match recorder.stop() {
+                let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore);
+                        transcribe_and_paste(&audio, restore)
                     }
-                    Ok(_) => {}
-                    Err(error) => scrawl_log(format!("Dictation: {error:#}")),
-                }
-                let _ = done.send(());
+                    Ok(_) => Outcome::Quiet,
+                    Err(error) => {
+                        scrawl_log(format!("Dictation: {error:#}"));
+                        Outcome::Quiet
+                    }
+                };
+                let _ = done.send(outcome);
             });
         if let Err(error) = spawned {
             scrawl_log(format!("Dictation: could not start transcribing: {error}"));
             self.working = None;
-            self.show(Pres::Hidden);
         }
     }
 
-    fn place_pill(&mut self) {
-        if self.pill.is_none() {
-            match NativePill::open() {
-                Ok(pill) => self.pill = Some(pill),
-                Err(error) => scrawl_log(format!("Dictation pill: {error}")),
+    /// Opens the pill the first time it has something to show, and keeps it out of captures.
+    fn ensure_pill(&mut self, telemetry: &SharedCaptureTelemetry) {
+        if self.pill.is_some() || self.pill_failed.is_some_and(|at| at.elapsed() < SETTINGS_EVERY) {
+            return;
+        }
+        match NativePill::open() {
+            Ok(pill) => {
+                self.pill = Some(pill);
+                self.keep_out_of_captures(telemetry);
+                self.follow_pointer();
+            }
+            Err(error) => {
+                scrawl_log(format!("Dictation pill: {error}"));
+                self.pill_failed = Some(Instant::now());
             }
         }
+    }
+
+    /// Each recording starts with a fresh exclusion list (`reset_for_session`), so the pill's
+    /// window is put back on it rather than added once.
+    fn keep_out_of_captures(&self, telemetry: &SharedCaptureTelemetry) {
+        let Some(id) = self.pill.as_ref().map(NativePill::window_number) else {
+            return;
+        };
+        let mut excluded = telemetry
+            .excluded_window_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !excluded.contains(&id) {
+            excluded.push(id);
+        }
+    }
+
+    /// Keeps the pill on the display under the pointer, as Wispr's follows the active screen.
+    fn follow_pointer(&self) {
         if let (Some(pill), Some([x, y])) = (&self.pill, crate::capture::current_mouse_screen()) {
             pill.place_at_bottom([f64::from(x), f64::from(y)]);
         }
@@ -261,12 +466,12 @@ impl Dictation {
     }
 }
 
-fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) {
+fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
     if let Err(error) = std::fs::write(&wav, &audio.wav_bytes) {
         scrawl_log(format!("Dictation: could not write {}: {error}", wav.display()));
-        return;
+        return Outcome::Quiet;
     }
     let transcript = crate::transcribe::transcribe(Some(&wav), Some(audio));
     let _ = std::fs::remove_file(&wav);
@@ -280,9 +485,78 @@ fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) {
     ));
     // Silence can come back as a lone full stop.
     if !text.chars().any(char::is_alphanumeric) {
-        return;
+        return Outcome::NoSpeech;
     }
-    if let Err(error) = crate::handoff::paste_text(&text, restore_clipboard) {
+    deliver(&text, restore_clipboard)
+}
+
+/// Pastes where a text field has focus and then puts the clipboard back; with nowhere to paste,
+/// the text stays on the clipboard to paste by hand. An app that doesn't say gets the paste and
+/// keeps the text on the clipboard too, so nothing is lost.
+fn deliver(text: &str, restore_clipboard: bool) -> Outcome {
+    let delivered = match route(crate::ax::focused_takes_text()) {
+        Route::Paste => crate::handoff::paste_text(text, restore_clipboard).map(|()| Outcome::Pasted),
+        Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
+        Route::PasteAndKeep => crate::handoff::paste_text(text, false).map(|()| Outcome::Pasted),
+    };
+    delivered.unwrap_or_else(|error| {
         scrawl_log(format!("Dictation: paste failed: {error:#}"));
+        Outcome::Quiet
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn idle() -> PillState<'static> {
+        PillState {
+            working: false,
+            dictating: None,
+            capture_busy: false,
+            notice: None,
+            enabled: true,
+            pill: true,
+            hovered: false,
+            chord: "⌃⌥",
+        }
+    }
+
+    #[test]
+    fn the_pill_shows_the_most_pressing_state() {
+        assert_eq!(presentation(&idle()), Pres::DictationIdle);
+        let hint = Pres::Message {
+            label: "Click or hold ⌃⌥ to dictate".into(),
+            notice: false,
+        };
+        assert_eq!(presentation(&PillState { hovered: true, ..idle() }), hint);
+        let copied = PillState { notice: Some("Copied to the clipboard"), hovered: true, ..idle() };
+        assert!(matches!(presentation(&copied), Pres::Message { notice: true, .. }));
+        let listening = PillState { dictating: Some(true), notice: Some("x"), ..idle() };
+        assert_eq!(presentation(&listening), Pres::Dictating { latched: true });
+        let both = PillState { working: true, dictating: Some(false), ..idle() };
+        assert_eq!(presentation(&both), Pres::Processing);
+    }
+
+    #[test]
+    fn the_idle_pill_hides_for_captures_and_when_off() {
+        let capture = PillState { capture_busy: true, notice: Some("x"), ..idle() };
+        assert_eq!(presentation(&capture), Pres::Hidden);
+        assert_eq!(presentation(&PillState { pill: false, ..idle() }), Pres::Hidden);
+        assert_eq!(presentation(&PillState { enabled: false, ..idle() }), Pres::Hidden);
+        // A notice still shows with the idle pill off: it reports a dictation that just ran.
+        let notice = PillState { pill: false, notice: Some("x"), ..idle() };
+        assert!(matches!(presentation(&notice), Pres::Message { notice: true, .. }));
+    }
+
+    #[test]
+    fn only_a_definite_no_keeps_the_text_off_the_app() {
+        assert_eq!(route(Some(true)), Route::Paste);
+        assert_eq!(route(Some(false)), Route::Copy);
+        assert_eq!(route(None), Route::PasteAndKeep);
+        assert_eq!(Outcome::Copied.notice(), Some("Copied to the clipboard"));
+        assert_eq!(Outcome::NoSpeech.notice(), Some("Didn't catch that"));
+        assert_eq!(Outcome::Pasted.notice(), None);
+        assert_eq!(Outcome::Quiet.notice(), None);
     }
 }
