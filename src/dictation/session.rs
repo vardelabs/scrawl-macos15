@@ -17,6 +17,9 @@ const SETTINGS_EVERY: Duration = Duration::from_millis(500);
 /// The focused window's text is read up to this many elements or this long, for filenames.
 const SCREEN_ELEMENTS: usize = 1_500;
 const SCREEN_BUDGET: Duration = Duration::from_millis(150);
+/// The paste waits at most this long after the chord for the screen read, which can overrun its
+/// budget in an app slow to answer Accessibility; past it, the text goes in without filenames.
+const SCREEN_WAIT: Duration = Duration::from_millis(400);
 /// Apps where text is prose, so code-like words don't go in backticks.
 const PROSE_APPS: &[&str] = &[
     "com.apple.mail",
@@ -412,11 +415,15 @@ impl Dictation {
         // The screen is read alongside transcription, while the target window still has focus,
         // and only with code formatting on.
         let screen = self.settings.code.then(|| {
-            std::thread::Builder::new().name("scrawl-dictation-screen".into()).spawn(|| {
-                super::context::terms(&crate::ax::window_text(SCREEN_ELEMENTS, SCREEN_BUDGET))
-            })
+            let (found, screen) = flume::bounded(1);
+            let spawned = std::thread::Builder::new().name("scrawl-dictation-screen".into()).spawn(move || {
+                let _ = found.send(super::context::terms(&crate::ax::window_text(SCREEN_ELEMENTS, SCREEN_BUDGET)));
+            });
+            if let Err(error) = spawned {
+                scrawl_log(format!("Dictation: screen read: {error}"));
+            }
+            (screen, Instant::now() + SCREEN_WAIT)
         });
-        let screen = screen.and_then(|spawned| spawned.inspect_err(|e| scrawl_log(format!("Dictation: screen read: {e}"))).ok());
         let (done, working) = flume::bounded(1);
         self.working = Some(working);
         let spawned = std::thread::Builder::new()
@@ -450,7 +457,7 @@ fn prose_app() -> bool {
 fn transcribe_and_paste(
     audio: &RecordedAudio,
     restore_clipboard: bool,
-    screen: Option<std::thread::JoinHandle<Vec<String>>>,
+    screen: Option<(flume::Receiver<Vec<String>>, Instant)>,
     backticks: bool,
 ) -> Outcome {
     let started = Instant::now();
@@ -465,9 +472,9 @@ fn transcribe_and_paste(
     let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
     // With code formatting off, `screen` is `None` and the text is left as transcribed.
     let text = match screen {
-        Some(read) => {
+        Some((read, deadline)) => {
             let text = super::context::spoken_extensions(&text);
-            let terms = read.join().unwrap_or_default();
+            let terms = read.recv_deadline(deadline).unwrap_or_default();
             super::context::apply(&text, &terms, backticks)
         }
         None => text,
