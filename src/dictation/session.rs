@@ -136,6 +136,9 @@ impl Dictation {
             self.follow_pointer();
         }
         self.take_outcome();
+        if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
+            self.notice = None;
+        }
         if self.settings.enabled {
             self.listen(telemetry, capture_busy);
         }
@@ -224,7 +227,7 @@ impl Dictation {
         if capture_busy {
             return Pres::Hidden;
         }
-        if let Some(notice) = self.notice.as_ref().filter(|n| n.until > Instant::now()) {
+        if let Some(notice) = &self.notice {
             return Pres::Message {
                 label: notice.text.to_owned(),
                 notice: true,
