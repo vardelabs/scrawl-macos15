@@ -29,6 +29,8 @@ const PROSE_APPS: &[&str] = &[
     "com.microsoft.Word",
     "com.microsoft.Outlook",
 ];
+/// A dictation this long starts the formatter; `format::MIN_WORDS` words take longer to say.
+const FORMAT_PRESTART_AFTER: Duration = Duration::from_secs(5);
 /// How long the paste waits for the formatter once the text is ready: its model has been loading
 /// since the dictation showed, and layout takes longer the more there is.
 const FORMAT_WAIT_BASE: Duration = Duration::from_secs(3);
@@ -185,6 +187,8 @@ pub struct Dictation {
     recorder: Option<AudioRecorder>,
     /// The formatter, loading its model while the user talks; dropped (killed) if unused.
     formatter: Option<super::formatter::Formatter>,
+    /// Whether this dictation already started (or failed to start) its formatter.
+    formatter_started: bool,
     started: Option<Instant>,
     playback: Option<crate::playback::Guard>,
     /// Transcribing and pasting on a worker; the next dictation waits for it.
@@ -210,6 +214,7 @@ impl Default for Dictation {
             settings_read: Instant::now(),
             recorder: None,
             formatter: None,
+            formatter_started: false,
             started: None,
             playback: None,
             working: None,
@@ -249,6 +254,7 @@ impl Dictation {
             self.settings_read = Instant::now();
         }
         self.take_outcome();
+        self.start_formatter_once_long();
         if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
             self.dismiss_notice();
         }
@@ -351,6 +357,22 @@ impl Dictation {
         }
     }
 
+    /// Starts the formatter once a dictation has run `FORMAT_PRESTART_AFTER`: a shorter one is too
+    /// short to lay out, so it never loads the model, and a long one still overlaps the load with
+    /// talking.
+    fn start_formatter_once_long(&mut self) {
+        let long = self.started.is_some_and(|at| at.elapsed() >= FORMAT_PRESTART_AFTER);
+        if !long || self.formatter_started {
+            return;
+        }
+        self.formatter_started = true;
+        self.formatter = self.settings.format.as_deref().and_then(|command| {
+            super::formatter::Formatter::prestart(command)
+                .inspect_err(|error| scrawl_log(format!("Dictation: {error:#}")))
+                .ok()
+        });
+    }
+
     fn take_outcome(&mut self) {
         let Some(rx) = &self.working else {
             return;
@@ -393,11 +415,8 @@ impl Dictation {
                 if let Some(recorder) = self.recorder.as_mut() {
                     recorder.prestart_transcriber();
                 }
-                self.formatter = self.settings.format.as_deref().and_then(|command| {
-                    super::formatter::Formatter::prestart(command)
-                        .inspect_err(|error| scrawl_log(format!("Dictation: {error:#}")))
-                        .ok()
-                });
+                self.formatter = None;
+                self.formatter_started = false;
                 self.playback = self.playback.take().or_else(crate::playback::Guard::start_quick);
                 self.started = Some(Instant::now());
                 self.notice = None;

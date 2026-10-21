@@ -22,11 +22,17 @@ pub fn worth_formatting(text: &str) -> bool {
 }
 
 /// Byte offsets just past each sentence's end: `.`, `!` or `?` followed by a space or the end,
-/// so `design.md` and `1.5` don't count.
+/// so `design.md` and `1.5` don't count, and neither does a list marker's "1." at a line's start.
 fn sentence_ends(text: &str) -> Vec<usize> {
     let bytes = text.as_bytes();
+    let list_marker = |i: usize| {
+        let line_start = text[..i].rfind('\n').map_or(0, |n| n + 1);
+        let before = text[line_start..i].trim_start();
+        (1..=3).contains(&before.len()) && before.bytes().all(|b| b.is_ascii_digit())
+    };
     (0..bytes.len())
         .filter(|&i| matches!(bytes[i], b'.' | b'!' | b'?') && bytes.get(i + 1).is_none_or(|b| b.is_ascii_whitespace()))
+        .filter(|&i| !list_marker(i))
         .map(|i| i + 1)
         .collect()
 }
@@ -70,33 +76,45 @@ pub fn break_at_pauses(text: &str, pauses: &[usize]) -> String {
     out
 }
 
-/// Whether `formatted` has the words of `dictated`, in order: compared without case,
-/// punctuation, Markdown wrapping or the list markers ("1.", "-", "•") that start a line. With a
-/// list in `formatted`, a dictated "and" or "or" may be missing (the one before the last item).
+/// Whether `formatted` has the words of `dictated`, in order: compared without case, and
+/// without the punctuation layout may change around a word (`,` `.` `:` `;`, quotes, brackets,
+/// Markdown wrapping) or the list markers ("1.", "-", "•") that start a line. Characters inside a
+/// word (`1.5`, `$50`, `We're`, `C++`) and a word's `?` or `!` must match. A dictated "and" or
+/// "or" may be missing only right before a list item (the one before a list's last item).
 pub fn same_words(dictated: &str, formatted: &str) -> bool {
     if formatted.trim().is_empty() {
         return false;
     }
-    let has_list = formatted.lines().any(|line| strip_list_marker(line).len() < line.trim_start().len());
-    let (spoken, laid_out) = (words(dictated), words(formatted));
-    let mut laid_out = laid_out.iter().peekable();
-    for word in &spoken {
-        if laid_out.peek() == Some(&word) {
+    let spoken = tokens(dictated);
+    let mut laid_out = tokens(formatted).into_iter().peekable();
+    for (word, _) in &spoken {
+        if laid_out.peek().is_some_and(|(next, _)| next == word) {
             laid_out.next();
-        } else if !(has_list && matches!(word.as_str(), "and" | "or")) {
+        } else if !(matches!(word.as_str(), "and" | "or") && laid_out.peek().is_some_and(|(_, item)| *item)) {
             return false;
         }
     }
     laid_out.next().is_none()
 }
 
-fn words(text: &str) -> Vec<String> {
-    text.lines()
-        .map(strip_list_marker)
-        .flat_map(str::split_whitespace)
-        .map(|word| word.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>())
-        .filter(|word| !word.is_empty())
-        .collect()
+/// Each word, lowercased and trimmed of layout punctuation, and whether it starts a list item.
+fn tokens(text: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let content = strip_list_marker(line);
+        let mut item = content.len() < line.trim_start().len();
+        for word in content.split_whitespace() {
+            let word = word
+                .trim_start_matches(|c: char| "\"'([“‘`*_".contains(c))
+                .trim_end_matches(|c: char| ",.;:\"')]”’`*_…".contains(c))
+                .to_lowercase();
+            if !word.is_empty() {
+                out.push((word, item));
+                item = false;
+            }
+        }
+    }
+    out
 }
 
 /// A line without its leading list marker: "1. ", "2) ", "- ", "* ", "• ".
@@ -154,8 +172,19 @@ mod tests {
         assert!(!same_words(LONG, ""));
         // A number the speaker said is a word, not a marker, when it isn't at a line's start.
         assert!(!same_words("We need 3 chairs.", "We need chairs."));
-        // "and" may go only from a list, not from prose.
+        // "and" may go only right before a list item, not from prose.
         assert!(!same_words("Salt and pepper.", "Salt pepper."));
+        assert!(!same_words("I can and will go. Bring tents.", "I can will go.\n- Bring tents."));
+        for (dictated, formatted) in [
+            ("Take 1.5 mg daily.", "Take 15 mg daily."),
+            ("It costs $50 now.", "It costs 50 now."),
+            ("We're shipping it.", "Were shipping it."),
+            ("Learn C++ first.", "Learn C first."),
+            ("Should we ship it?", "Should we ship it."),
+            ("Open `snake_case.rs` now.", "Open snake-case.rs now."),
+        ] {
+            assert!(!same_words(dictated, formatted), "{dictated:?} -> {formatted:?}");
+        }
     }
 
     #[test]
@@ -165,6 +194,9 @@ mod tests {
         assert_eq!(break_at_pauses(text, &[4, 9]), text, "no break after the last sentence or past the end");
         let laid_out = "Intro:\n\n1. One.\n2. Two.";
         assert_eq!(break_at_pauses(laid_out, &[1]), laid_out);
+        // A list's "1." is no sentence end, so a pause after the intro breaks after it.
+        let list = "Intro here. Then:\n1. One thing.\n2. Two things.";
+        assert_eq!(sentence_ends(list).len(), 3);
         assert!(same_words(text, &break_at_pauses(text, &[1, 3])));
     }
 
