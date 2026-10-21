@@ -1075,6 +1075,19 @@ fn run_key_poller(telemetry: Arc<SharedCaptureTelemetry>) {
 
 // MARK: Recording
 
-pub(super) fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
+/// Media Foundation writes one movie straight through, so a capture here can't pause.
+pub const PAUSE_SUPPORTED: bool = false;
+
+pub fn set_pause_hotkey(_record: Option<&ShortcutConfig>) {}
+
+pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
+    let offset = Arc::clone(&sampler.video_offset_ms);
     crate::win::media::run_sampler(sampler)
+        .map(|path| crate::pause::Segment {
+            path,
+            start_ms: offset.load(Ordering::Acquire),
+            end_ms: None,
+        })
+        .into_iter()
+        .collect()
 }

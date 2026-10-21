@@ -208,6 +208,7 @@ Preview every pane, dark and light, with the recorder listening and a combinatio
 - **Hold `⇧` (Shift) + move**: Draw a persistent red marker stroke (`#ff3b30`) on screen that fades out after release
 - **`⇧`-click**: Drop a numbered pin where you click (a press that moves under 12 pt and lets go within 1 s; longer is ink)
 - **`⌘Z`**: Undo the last stroke
+- **`⌥⇧A`** (A with the record shortcut's modifiers, so `⌃⇧A` if you record with `⌃⇧S`), or **Pause** in the island: Pause a screen capture, to look around or think, and again (or **Resume**) to carry on. Nothing is recorded while paused and the pause is cut out, so the movie, transcript and keyframes run on as if it never happened. Finish and Esc work as they do while recording
 - **`Esc`**: Cancel the active selection, or discard a running capture (`"escapeCancels": false` keeps captures running, for keyboards that send Esc on their own)
 
 While picking a target, the island shows the modes **Area**, **Window**, **Screen**, and **iPhone**

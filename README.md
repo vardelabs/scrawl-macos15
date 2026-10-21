@@ -21,6 +21,9 @@ so install the fork as below.
 - **Dictation.** Hold `⌃⌥` and talk, and the text is pasted where you type; double tap for
   hands-free. A dictionary of words and replacements, filler words ("um", "uh") removed,
   spoken filenames written as `` `README.md` ``, and names learned when you correct a paste.
+- **Pause and resume.** A with the record shortcut's modifiers (`⌥⇧A`, or `⌃⇧A` if you record
+  with `⌃⇧S`), or Pause in the capsule, holds a capture while you look around
+  or think; the pause is cut from the movie, audio and transcript.
 - **One keyframe per drawing.** Each mark you talk through gets its own screenshot and its own words.
 - **Zoom on window captures.** Keyframes of a large window crop to what you worked on, as
   full-screen captures already did.

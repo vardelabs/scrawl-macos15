@@ -125,6 +125,9 @@ pub enum LiveOverlayEvent {
     CaptureShortcut,
     PasteLatestShortcut,
     UndoStroke,
+    /// The pause hotkey during a screen capture (`set_pause_hotkey`).
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    TogglePause,
     /// macOS's Esc hotkey; Windows polls Esc while the switcher is held.
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     CancelCapture,
@@ -251,6 +254,13 @@ pub fn modifier_symbols(carbon_modifiers: u32) -> String {
     .filter(|(bit, _)| carbon_modifiers & bit != 0)
     .map(|(_, symbol)| symbol)
     .collect()
+}
+
+/// Pause sits beside record, one hand, no reach: A with the record shortcut's own modifiers
+/// (⌥⇧A for the default ⌥⇧S). `None` when that would be the record shortcut itself or a bare key.
+pub fn pause_combo(record: &ShortcutConfig, a_code: u32) -> Option<(u32, u32)> {
+    let mods = record.carbon_modifiers;
+    (mods != 0 && record.key_code != a_code).then_some((a_code, mods))
 }
 
 /// A shortcut as this platform writes it: `⌥⇧S` on macOS, `Alt+Shift+S` on Windows.
@@ -535,8 +545,9 @@ pub fn capture_size(target: &TargetInfo, long_edge: f64) -> (u32, u32) {
 }
 
 /// What the platform's sampler thread records into. It runs until `stopping`, pushes candidate
-/// frames (at once when `urgent`), stores when the movie started into `video_offset_ms`, and
-/// returns the movie it wrote.
+/// frames (at once when `urgent`) stamped on `clock`, stores when the movie started into
+/// `video_offset_ms`, and returns the movie it wrote: one segment per run between pauses
+/// (`crate::pause`), where the platform supports pausing (`PAUSE_SUPPORTED`).
 pub(crate) struct Sampler {
     pub target: TargetInfo,
     pub video_output_path: Option<PathBuf>,
@@ -544,6 +555,8 @@ pub(crate) struct Sampler {
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub excluded_window_ids: Arc<Mutex<Vec<u32>>>,
     pub started_at: Instant,
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    pub clock: crate::pause::SessionClock,
     pub stopping: Arc<AtomicBool>,
     pub urgent: Arc<AtomicBool>,
     pub frames: Arc<Mutex<CandidateBuffer>>,
@@ -553,12 +566,14 @@ pub(crate) struct Sampler {
 /// Active screen + optional MP4 recorder (ScreenCaptureKit on macOS, Windows.Graphics.Capture
 /// and Media Foundation on Windows).
 pub struct ScreenCaptureSession {
-    started_at: Instant,
+    clock: crate::pause::SessionClock,
+    /// Where the movie goes, so segments are joined back under its name.
+    video_output_path: Option<PathBuf>,
     stopping: Arc<AtomicBool>,
     urgent_snapshot: Arc<AtomicBool>,
     frames: Arc<Mutex<CandidateBuffer>>,
     video_offset_ms: Arc<AtomicU64>,
-    sampler_thread: Option<JoinHandle<Option<PathBuf>>>,
+    sampler_thread: Option<JoinHandle<Vec<crate::pause::Segment>>>,
     _recording: crate::retention::Recording,
 }
 
@@ -568,7 +583,20 @@ impl ScreenCaptureSession {
         video_output_path: Option<PathBuf>,
         excluded_window_ids: Arc<Mutex<Vec<u32>>>,
     ) -> Self {
+        let clock = Arc::new(crate::pause::PauseClock::new());
+        Self::start_pausable(target, video_output_path, excluded_window_ids, clock)
+    }
+
+    /// Records on `clock`, so `pause` holds this session together with the input and the
+    /// microphone sharing it.
+    pub fn start_pausable(
+        target: TargetInfo,
+        video_output_path: Option<PathBuf>,
+        excluded_window_ids: Arc<Mutex<Vec<u32>>>,
+        clock: Arc<crate::pause::PauseClock>,
+    ) -> Self {
         let started_at = Instant::now();
+        let clock = crate::pause::SessionClock::starting_now(clock);
         let stopping = Arc::new(AtomicBool::new(false));
         let urgent_snapshot = Arc::new(AtomicBool::new(true));
         let frames = Arc::new(Mutex::new(CandidateBuffer::new(CANDIDATE_BUDGET_BYTES)));
@@ -578,6 +606,8 @@ impl ScreenCaptureSession {
         let thread_urgent = Arc::clone(&urgent_snapshot);
         let thread_frames = Arc::clone(&frames);
         let thread_offset = Arc::clone(&video_offset_ms);
+        let thread_clock = clock.clone();
+        let session_video_path = video_output_path.clone();
         let sampler_target = target;
         let sampler_thread = thread::Builder::new()
             .name("scrawl-frame-sampler".into())
@@ -587,6 +617,7 @@ impl ScreenCaptureSession {
                     video_output_path,
                     excluded_window_ids,
                     started_at,
+                    clock: thread_clock,
                     stopping: thread_stopping,
                     urgent: thread_urgent,
                     frames: thread_frames,
@@ -596,7 +627,8 @@ impl ScreenCaptureSession {
             .ok();
 
         Self {
-            started_at,
+            clock,
+            video_output_path: session_video_path,
             stopping,
             urgent_snapshot,
             frames,
@@ -613,21 +645,59 @@ impl ScreenCaptureSession {
         }
     }
 
+    /// Active time: it stands still while paused.
     pub fn elapsed_ms(&self) -> u64 {
-        self.started_at.elapsed().as_millis() as u64
+        self.clock.ms()
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.clock.clock.wants_paused()
+    }
+
+    /// Stops capturing until `resume`. Returns whether anything changed.
+    pub fn pause(&self) -> bool {
+        if !PAUSE_SUPPORTED || !self.clock.clock.pause() {
+            return false;
+        }
+        self.wake_sampler();
+        true
+    }
+
+    pub fn resume(&self) -> bool {
+        if !self.clock.clock.request_resume() {
+            return false;
+        }
+        self.wake_sampler();
+        true
+    }
+
+    fn wake_sampler(&self) {
+        if let Some(ref handle) = self.sampler_thread {
+            handle.thread().unpark();
+        }
     }
 
     pub fn stop(mut self) -> ScreenRecording {
         let duration_ms = self.elapsed_ms();
+        let paused = self.clock.clock.paused_spans();
+        if !paused.is_empty() {
+            scrawl_log(format!(
+                "Capture paused {} times (wall ms {paused:?}); {duration_ms} ms recorded",
+                paused.len()
+            ));
+        }
         self.stopping.store(true, Ordering::Release);
-        let video_path = self
+        let segments = self
             .sampler_thread
             .take()
             .and_then(|handle| {
                 handle.thread().unpark();
                 handle.join().ok()
             })
-            .flatten();
+            .unwrap_or_default();
+        let (video_path, video_offset_ms) =
+            join_segments(segments, self.video_output_path.as_deref())
+                .unwrap_or((None, self.video_offset_ms.load(Ordering::Acquire)));
         let buffer = std::mem::replace(
             &mut *self
                 .frames
@@ -645,9 +715,45 @@ impl ScreenCaptureSession {
             frames: collected,
             video: valid_video,
             duration_ms: duration_ms.max(100),
-            video_offset_ms: self.video_offset_ms.load(Ordering::Acquire),
+            video_offset_ms,
         }
     }
+}
+
+/// One movie from a session's segments (`crate::pause::join_plan`) at `target` (the session's
+/// movie path), with its `videoOffsetMs`. A capture that was never paused has one segment there,
+/// which is used as it is. `None` when there was no movie. A failed join removes the segments
+/// and leaves the movie out, so the candidate frames stand in and nothing falls back to a movie
+/// that stops at the first pause.
+fn join_segments(
+    segments: Vec<crate::pause::Segment>,
+    target: Option<&Path>,
+) -> Option<(Option<PathBuf>, u64)> {
+    let written: Vec<_> = segments
+        .into_iter()
+        .filter(|s| s.path.metadata().is_ok_and(|m| m.len() > 0))
+        .collect();
+    let plan = crate::pause::join_plan(&written)?;
+    let target = target.map_or_else(|| written[0].path.clone(), Path::to_path_buf);
+    if let [(path, 0, None)] = plan.parts[..]
+        && path == target
+    {
+        return Some((Some(target), plan.video_offset_ms));
+    }
+    let joined = target.with_file_name("recording-joined.mp4");
+    let result = crate::helper::join_movies(&joined, &plan.parts)
+        .and_then(|()| std::fs::rename(&joined, &target).map_err(Into::into));
+    let failed = result.is_err();
+    for segment in written.iter().filter(|s| failed || s.path != target) {
+        let _ = std::fs::remove_file(&segment.path);
+    }
+    if let Err(error) = result {
+        scrawl_log(format!("Joining the recording segments failed: {error:#}"));
+        let _ = std::fs::remove_file(&joined);
+        return Some((None, plan.video_offset_ms));
+    }
+    scrawl_log(format!("Joined {} recording segments", plan.parts.len()));
+    Some((Some(target), plan.video_offset_ms))
 }
 
 impl Drop for ScreenCaptureSession {
@@ -672,6 +778,9 @@ pub struct SharedCaptureTelemetry {
     /// Settings is recording a new shortcut: none of Scrawl's fire (`pause_shortcuts`).
     pub shortcuts_paused: AtomicBool,
     pub started_at: Mutex<Instant>,
+    /// This capture's clock (`crate::pause`): event times are its active time, and nothing is
+    /// recorded while it's paused.
+    clock: Mutex<Arc<crate::pause::PauseClock>>,
     pub picker_started_at: Mutex<Instant>,
     pub picker_rect: Mutex<Option<([f32; 4], u8)>>,
     pub target_frame: Mutex<TargetFrame>,
@@ -735,6 +844,7 @@ impl SharedCaptureTelemetry {
             paste_shortcut: Mutex::new(shortcuts.paste),
             shortcuts_paused: AtomicBool::new(false),
             started_at: Mutex::new(Instant::now()),
+            clock: Mutex::new(Arc::new(crate::pause::PauseClock::new())),
             picker_started_at: Mutex::new(Instant::now()),
             picker_rect: Mutex::new(None),
             target_frame: Mutex::new(TargetFrame {
@@ -875,10 +985,15 @@ impl SharedCaptureTelemetry {
             .picker_rect
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let clock = Arc::new(crate::pause::PauseClock::new());
         *self
             .started_at
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = clock.started_at();
+        *self
+            .clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = clock;
         *self
             .target_frame
             .lock()
@@ -943,12 +1058,44 @@ impl SharedCaptureTelemetry {
         self.escape_pressed.swap(false, Ordering::AcqRel)
     }
 
+    pub fn clock(&self) -> Arc<crate::pause::PauseClock> {
+        Arc::clone(
+            &self
+                .clock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// The capture's active time: it stands still while paused.
     pub fn elapsed_ms(&self) -> u64 {
-        self.started_at
+        self.clock().active_ms()
+    }
+
+    /// A capture is running and not paused: input is recorded.
+    pub fn capturing(&self) -> bool {
+        self.active.load(Ordering::Acquire) && !self.clock().is_paused()
+    }
+
+    /// A pause began: a press, drag or ⇧-mark in progress is dropped rather than finished on
+    /// the other side of it.
+    pub fn drop_pending_input(&self) {
+        *self
+            .drag_start
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .elapsed()
-            .as_millis() as u64
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .shift_press
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .live_ink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .active_laser
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     pub fn contains_screen_point(&self, screen_x: f64, screen_y: f64) -> bool {
@@ -1219,9 +1366,19 @@ impl SharedCaptureTelemetry {
             let hits = crate::ax::Prober::shared().finish();
             crate::ax::apply(&hits, &mut events, &mut strokes);
             if self.capture_mode.load(Ordering::Acquire) != 3 {
+                let clock = self.clock();
                 let end = crate::now_epoch_ms();
-                let start = end.saturating_sub(self.elapsed_ms());
-                let page = crate::page::between(start, end);
+                let start = end.saturating_sub(clock.started_at().elapsed().as_millis() as u64);
+                // Page times move onto active time like everything else; paused ones go.
+                let page: Vec<_> = crate::page::between(start, end)
+                    .into_iter()
+                    .filter_map(|mut event| {
+                        let at = clock.started_at()
+                            + Duration::from_millis(event.t.saturating_sub(start));
+                        event.t = start + clock.active_at(at)?;
+                        Some(event)
+                    })
+                    .collect();
                 crate::page::apply(&page, start, &mut events, &mut strokes);
             }
         }
@@ -1465,6 +1622,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pause_is_a_beside_the_record_key_with_its_modifiers() {
+        let a = 0;
+        let record = ShortcutConfig::default_record();
+        assert_eq!(
+            pause_combo(&record, a),
+            Some((a, CARBON_OPTION_KEY | CARBON_SHIFT_KEY))
+        );
+        let ctrl_shift_s = ShortcutConfig {
+            carbon_modifiers: CARBON_CONTROL_KEY | CARBON_SHIFT_KEY,
+            ..record.clone()
+        };
+        assert_eq!(
+            pause_combo(&ctrl_shift_s, a),
+            Some((a, CARBON_CONTROL_KEY | CARBON_SHIFT_KEY))
+        );
+        let records_on_a = ShortcutConfig {
+            key_code: a,
+            ..record.clone()
+        };
+        assert_eq!(
+            pause_combo(&records_on_a, a),
+            None,
+            "never the record shortcut"
+        );
+        let bare_key = ShortcutConfig {
+            carbon_modifiers: 0,
+            ..record
+        };
+        assert_eq!(pause_combo(&bare_key, a), None);
+    }
+
+    #[test]
     fn screen_stop_joins_worker_before_collecting_its_final_media() {
         let stopping = Arc::new(AtomicBool::new(false));
         let frames = Arc::new(Mutex::new(CandidateBuffer::new(1 << 20)));
@@ -1483,10 +1672,17 @@ mod tests {
                 .unwrap()
                 .push(RgbaFrame::new(42, 1, 1, vec![1, 2, 3, 255]), false);
             std::fs::write(&worker_path, b"finalized media").unwrap();
-            Some(worker_path)
+            vec![crate::pause::Segment {
+                path: worker_path,
+                start_ms: 120,
+                end_ms: None,
+            }]
         });
         let session = ScreenCaptureSession {
-            started_at: Instant::now(),
+            clock: crate::pause::SessionClock::starting_now(Arc::new(
+                crate::pause::PauseClock::new(),
+            )),
+            video_output_path: Some(path.clone()),
             stopping,
             urgent_snapshot: Arc::new(AtomicBool::new(false)),
             frames,

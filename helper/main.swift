@@ -144,6 +144,19 @@ case "shrink":
   runAsync {
     emit(try await Media.shrink(movie: URL(filePath: arguments[1]), out: URL(filePath: out), maxEdge: maxEdge, bitRate: bitRate))
   }
+case "join":
+  // join OUT.mp4 --part AT_MS KEEP_MS MOVIE … (KEEP_MS -1: the whole movie)
+  guard arguments.count >= 2 else { fail("join needs OUT --part AT_MS KEEP_MS MOVIE …") }
+  var parts: [(at: Int, keep: Int?, movie: URL)] = []
+  var rest = arguments.dropFirst(2)
+  while let flag = rest.first, flag == "--part", rest.count >= 4 {
+    let fields = Array(rest.dropFirst().prefix(3))
+    guard let at = Int(fields[0]), let keep = Int(fields[1]) else { fail("join: bad --part \(fields)") }
+    parts.append((at, keep < 0 ? nil : keep, URL(filePath: fields[2])))
+    rest = rest.dropFirst(4)
+  }
+  guard !parts.isEmpty, rest.isEmpty else { fail("join needs OUT --part AT_MS KEEP_MS MOVIE …") }
+  runAsync { emit(try await Media.join(parts: parts, out: URL(filePath: arguments[1]))) }
 case "export":
   guard arguments.count >= 2 else { fail("export needs PLAN.json") }
   runAsync { try await Exporter.run(plan: URL(filePath: arguments[1])) }
@@ -169,5 +182,5 @@ case "qr":
   }
   emit(["qr": qr])
 default:
-  fail("usage: scrawl-helper devices|mirror|transcribe|transcribe-stream|speech-model|frames|audio|probe|export|shrink|permission-panel|permissions|sck-probe|onboarding|settings|qr …")
+  fail("usage: scrawl-helper devices|mirror|transcribe|transcribe-stream|speech-model|frames|audio|probe|export|join|shrink|permission-panel|permissions|sck-probe|onboarding|settings|qr …")
 }

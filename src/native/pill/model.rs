@@ -347,10 +347,12 @@ pub enum ElemId {
     Inspect = 15,
     Confirm = 16,
     Message = 17,
+    /// Pause while recording, Resume while paused.
+    Pause = 18,
 }
 
 impl ElemId {
-    pub const COUNT: usize = 18;
+    pub const COUNT: usize = 19;
     pub const ALL: [ElemId; Self::COUNT] = [
         Self::Lead,
         Self::DividerLead,
@@ -370,6 +372,7 @@ impl ElemId {
         Self::Inspect,
         Self::Confirm,
         Self::Message,
+        Self::Pause,
     ];
 
     pub const fn trace_key(self) -> &'static str {
@@ -392,6 +395,7 @@ impl ElemId {
             Self::Inspect => "inspect",
             Self::Confirm => "confirm",
             Self::Message => "message",
+            Self::Pause => "pause",
         }
     }
 
@@ -439,6 +443,7 @@ impl ElemId {
             Self::Inspect => "Inspect",
             Self::Confirm => "Paste dictation",
             Self::Message => "Dictation",
+            Self::Pause => "Pause or resume",
         }
     }
 
@@ -457,6 +462,12 @@ pub enum Pres {
     Recording {
         chips: bool,
         has_iphone: bool,
+        stroke_count: usize,
+        /// A screen capture, which can pause (an iPhone one can't).
+        pausable: bool,
+    },
+    /// A recording on hold: the clock stands still and Resume takes Pause's place.
+    Paused {
         stroke_count: usize,
     },
     Selecting {
@@ -489,19 +500,23 @@ impl Pres {
     /// like `stroke_count` or active mode highlight when `shows_record` doesn't change).
     pub fn same_layout(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Hidden, Self::Hidden) | (Self::Processing, Self::Processing) => true,
+            (Self::Hidden, Self::Hidden)
+            | (Self::Processing, Self::Processing)
+            | (Self::Paused { .. }, Self::Paused { .. }) => true,
             (
                 Self::Recording {
                     chips: a,
                     has_iphone: ia,
+                    pausable: pa,
                     ..
                 },
                 Self::Recording {
                     chips: b,
                     has_iphone: ib,
+                    pausable: pb,
                     ..
                 },
-            ) => a == b && (ia == ib || !*a),
+            ) => a == b && (ia == ib || !*a) && (pa == pb || *a),
             (
                 Self::Selecting {
                     mode: ma,
@@ -539,6 +554,9 @@ pub struct Metrics {
     pub undo: f32,
     pub cancel: f32,
     pub finish: f32,
+    pub pause: f32,
+    pub resume: f32,
+    pub paused: f32,
     pub processing: f32,
     pub paste: f32,
     pub inspect: f32,
@@ -557,6 +575,9 @@ impl Default for Metrics {
             undo: 34.0,
             cancel: 44.0,
             finish: 38.0,
+            pause: 38.0,
+            resume: 52.0,
+            paused: 47.0,
             processing: 78.0,
             paste: 36.0,
             inspect: 47.0,
@@ -631,6 +652,33 @@ impl Layout {
     }
 }
 
+/// Between "Paused" and the stopped clock in the paused Lead.
+pub const PAUSED_GAP: f32 = 6.0;
+
+/// A recording's controls: Pause (or Resume, `pause_label_w` wide) if it can pause, Undo
+/// (enabled once there's a stroke), Cancel, Finish.
+fn push_controls(
+    raw: &mut Vec<(ElemId, f32, f32, f32, bool)>,
+    pause_label_w: Option<f32>,
+    stroke_count: usize,
+    m: &Metrics,
+) {
+    let pause = pause_label_w.map(|w| (ElemId::Pause, w, true));
+    for (id, label_w, enabled) in pause.into_iter().chain([
+        (ElemId::Undo, m.undo, stroke_count > 0),
+        (ElemId::Cancel, m.cancel, true),
+        (ElemId::Finish, m.finish, true),
+    ]) {
+        raw.push((
+            id,
+            Metrics::chip_width(label_w),
+            CHIP_CORE_ROUND,
+            0.0,
+            enabled,
+        ));
+    }
+}
+
 /// Computes the resting capsule bounds and item boxes for `pres`.
 pub fn layout_of(
     pres: &Pres,
@@ -693,6 +741,7 @@ pub fn layout_of(
             chips,
             has_iphone,
             stroke_count,
+            pausable,
         } => {
             let clock_w = m.clock_width(clock);
             let lead_w = CHIP_H + clock_w + LEAD_TRAIL;
@@ -711,28 +760,14 @@ pub fn layout_of(
                 raw.push((ElemId::DividerClose, DIVIDER_W, 0.0, 0.0, false));
                 raw.push((ElemId::Close, CHIP_H, CHIP_CORE_ROUND, 0.0, true));
             } else {
-                raw.push((
-                    ElemId::Undo,
-                    Metrics::chip_width(m.undo),
-                    CHIP_CORE_ROUND,
-                    0.0,
-                    *stroke_count > 0,
-                ));
-                raw.push((
-                    ElemId::Cancel,
-                    Metrics::chip_width(m.cancel),
-                    CHIP_CORE_ROUND,
-                    0.0,
-                    true,
-                ));
-                raw.push((
-                    ElemId::Finish,
-                    Metrics::chip_width(m.finish),
-                    CHIP_CORE_ROUND,
-                    0.0,
-                    true,
-                ));
+                push_controls(&mut raw, pausable.then_some(m.pause), *stroke_count, m);
             }
+        }
+        Pres::Paused { stroke_count } => {
+            let lead_w = CHIP_H + m.paused + PAUSED_GAP + m.clock_width(clock) + LEAD_TRAIL;
+            raw.push((ElemId::Lead, lead_w, CHIP_CORE_ROUND, 0.0, true));
+            raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
+            push_controls(&mut raw, Some(m.resume), *stroke_count, m);
         }
         Pres::Dictating { latched } => {
             let lead_w = CHIP_H + m.clock_width(clock) + LEAD_TRAIL;
@@ -871,6 +906,7 @@ pub struct FrameState {
     pub shape: Silhouette,
     pub ghost: Option<Silhouette>,
     pub is_completed: bool,
+    pub is_paused: bool,
     /// The always-on dictation bar, drawn see-through with a light rim, as Wispr Flow's is.
     pub is_idle: bool,
     pub content_blur: f32,
@@ -1158,7 +1194,10 @@ impl PillModel {
         let new_w = self.metrics.clock_width(clock);
         self.clock.clear();
         self.clock.push_str(clock);
-        let has_clock = matches!(self.pres, Pres::Recording { .. } | Pres::Dictating { .. });
+        let has_clock = matches!(
+            self.pres,
+            Pres::Recording { .. } | Pres::Paused { .. } | Pres::Dictating { .. }
+        );
         if (old_w - new_w).abs() > 0.5 && has_clock {
             self.apply_geometry();
         }
@@ -1652,6 +1691,7 @@ impl PillModel {
             shape,
             ghost,
             is_completed: matches!(self.geo_pres, Pres::Completed { .. }),
+            is_paused: matches!(self.geo_pres, Pres::Paused { .. }),
             is_idle: matches!(self.geo_pres, Pres::DictationIdle),
             content_blur: max_blur,
             content_alpha: max_alpha,
@@ -1833,6 +1873,7 @@ mod tests {
                         chips: true,
                         has_iphone: false,
                         stroke_count: 0,
+                        pausable: true,
                     },
                 ),
                 (
@@ -1853,6 +1894,7 @@ mod tests {
                         chips: true,
                         has_iphone: false,
                         stroke_count: 0,
+                        pausable: true,
                     },
                 ),
                 (
@@ -1873,6 +1915,7 @@ mod tests {
                         chips: true,
                         has_iphone: false,
                         stroke_count: 0,
+                        pausable: true,
                     },
                 ),
                 (
@@ -1881,6 +1924,7 @@ mod tests {
                         chips: false,
                         has_iphone: false,
                         stroke_count: 1,
+                        pausable: true,
                     },
                 ),
                 (2.4, Pres::Hidden),
@@ -1925,6 +1969,7 @@ mod tests {
                         chips: false,
                         has_iphone: true,
                         stroke_count: 0,
+                        pausable: true,
                     },
                 ),
                 (3.6, Pres::Hidden),
@@ -1937,6 +1982,7 @@ mod tests {
                         chips: true,
                         has_iphone: false,
                         stroke_count: 0,
+                        pausable: true,
                     },
                 ),
                 (
@@ -1945,6 +1991,7 @@ mod tests {
                         chips: false,
                         has_iphone: false,
                         stroke_count: 0,
+                        pausable: true,
                     },
                 ),
                 (2.0, Pres::Processing),
@@ -1988,6 +2035,7 @@ mod tests {
             chips: true,
             has_iphone: false,
             stroke_count: 0,
+            pausable: true,
         });
         for _ in 0..8 {
             m.advance(FRAME_DT);
@@ -2017,11 +2065,13 @@ mod tests {
                 chips: true,
                 has_iphone: false,
                 stroke_count: 0,
+                pausable: true,
             },
             Pres::Recording {
                 chips: false,
                 has_iphone: false,
                 stroke_count: 2,
+                pausable: true,
             },
             Pres::Selecting {
                 mode: SelectionMode::Area,
@@ -2087,6 +2137,7 @@ mod tests {
             chips: true,
             has_iphone: false,
             stroke_count: 0,
+            pausable: true,
         });
         let mut saw_sharp_before_opaque = false;
         for _ in 0..120 {
@@ -2107,6 +2158,7 @@ mod tests {
             chips: false,
             has_iphone: false,
             stroke_count: 0,
+            pausable: true,
         });
         let mut peak_travel_blur = 0.0_f32;
         for _ in 0..120 {
@@ -2140,6 +2192,7 @@ mod tests {
             chips: true,
             has_iphone: false,
             stroke_count: 0,
+            pausable: true,
         });
         let target_w = m.r.target - m.l.target;
         m.advance(FRAME_DT);
@@ -2216,6 +2269,7 @@ mod tests {
             chips: true,
             has_iphone: false,
             stroke_count: 0,
+            pausable: true,
         });
         let target_w = m.r.target - m.l.target;
         let mut first: Vec<(ElemId, f32)> = Vec::new();
@@ -2252,6 +2306,7 @@ mod tests {
             chips: true,
             has_iphone: false,
             stroke_count: 0,
+            pausable: true,
         });
         for _ in 0..60 {
             m.advance(FRAME_DT);
@@ -2275,5 +2330,48 @@ mod tests {
             m.advance(FRAME_DT);
         }
         assert!(m.frame().ghost.is_none());
+    }
+
+    #[test]
+    fn a_paused_recording_keeps_its_controls_and_widens_its_lead_for_the_label() {
+        let m = Metrics::default();
+        let recording = Pres::Recording {
+            chips: false,
+            has_iphone: false,
+            stroke_count: 1,
+            pausable: true,
+        };
+        let (_, rec) = layout_of(&recording, "0:42", 0.0, &m);
+        let (_, paused) = layout_of(&Pres::Paused { stroke_count: 1 }, "0:42", 0.0, &m);
+        let ids = |items: &[LayoutItem]| items.iter().map(|i| i.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(&rec),
+            [
+                ElemId::Lead,
+                ElemId::DividerLead,
+                ElemId::Pause,
+                ElemId::Undo,
+                ElemId::Cancel,
+                ElemId::Finish
+            ]
+        );
+        assert_eq!(ids(&rec), ids(&paused), "Pause turns into Resume in place");
+        assert!((paused[0].rect[2] - rec[0].rect[2] - (m.paused + PAUSED_GAP)).abs() < 0.01);
+        assert!(
+            paused[2].rect[2] > rec[2].rect[2],
+            "Resume is wider than Pause"
+        );
+        assert!(!Pres::Paused { stroke_count: 1 }.same_layout(&recording));
+        let phone = Pres::Recording {
+            chips: false,
+            has_iphone: true,
+            stroke_count: 0,
+            pausable: false,
+        };
+        let (_, phone) = layout_of(&phone, "0:42", 0.0, &m);
+        assert!(
+            !ids(&phone).contains(&ElemId::Pause),
+            "an iPhone capture can't pause"
+        );
     }
 }
