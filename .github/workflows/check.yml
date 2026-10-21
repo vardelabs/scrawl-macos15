@@ -13,10 +13,17 @@ concurrency:
 jobs:
   macos:
     name: macOS
-    runs-on: macos-26
+    # macos-26 runners are scarce enough that jobs sat queued until GitHub cancelled them.
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+      # The helper uses macOS 26 APIs (SpeechAnalyzer), so it needs the macOS 26 SDK.
+      - name: Use Xcode 26
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$xcode" ]; then sudo xcode-select -s "$xcode"; fi
+          xcodebuild -version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
