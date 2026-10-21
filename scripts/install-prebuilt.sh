@@ -26,14 +26,6 @@ xattr -dr com.apple.quarantine "${APP_DIR}" 2>/dev/null || true
 # trust. Re-signing with a local identity made here keeps permission grants across updates.
 "${HERE}/create-local-signing.sh"
 IDENTITY="Scrawl Local Signing"
-SPARKLE_VER="${APP_DIR}/Contents/Frameworks/Sparkle.framework/Versions/B"
-if [[ -d "${SPARKLE_VER}" ]]; then
-  codesign --force --sign "${IDENTITY}" "${SPARKLE_VER}/XPCServices/Installer.xpc"
-  codesign --force --sign "${IDENTITY}" --preserve-metadata=entitlements "${SPARKLE_VER}/XPCServices/Downloader.xpc"
-  codesign --force --sign "${IDENTITY}" "${SPARKLE_VER}/Autoupdate"
-  codesign --force --sign "${IDENTITY}" "${SPARKLE_VER}/Updater.app"
-  codesign --force --sign "${IDENTITY}" "${APP_DIR}/Contents/Frameworks/Sparkle.framework"
-fi
 codesign --force --sign "${IDENTITY}" --identifier "dev.kitlangton.scrawl.helper" "${APP_DIR}/Contents/MacOS/scrawl-helper"
 codesign --force --sign "${IDENTITY}" --identifier "dev.kitlangton.scrawl" "${APP_DIR}"
 codesign --verify --deep --strict "${APP_DIR}"
