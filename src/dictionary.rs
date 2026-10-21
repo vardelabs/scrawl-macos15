@@ -57,18 +57,16 @@ impl Dictionary {
         let temp = path.with_extension("json.tmp");
         let mut json = serde_json::to_vec_pretty(self)?;
         json.push(b'\n');
-        std::fs::write(&temp, json)?;
-        // Owner-only like config.json, since entries can be private names; an existing file keeps
-        // the mode its owner gave it.
-        match std::fs::metadata(&path) {
-            Ok(meta) => std::fs::set_permissions(&temp, meta.permissions())?,
-            #[cfg(unix)]
-            Err(_) => {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
-            }
-            #[cfg(not(unix))]
-            Err(_) => {}
+        // Owner-only like config.json, since entries can be private names, from the moment the
+        // temp file exists. An existing dictionary keeps the mode its owner gave it.
+        let _ = std::fs::remove_file(&temp);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        std::io::Write::write_all(&mut options.open(&temp)?, &json)?;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&temp, meta.permissions())?;
         }
         std::fs::rename(&temp, &path).with_context(|| format!("Could not save {}", path.display()))
     }
