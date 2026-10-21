@@ -23,7 +23,7 @@ Dictation shares Scrawl's one capsule with captures (`ScrawlCoordinator::tick_di
 - `Pres::Dictating { latched }`: the dot and clock, with ✕ and ✓ when latched; `Pres::Processing` while it transcribes.
 - A notice, `Pres::Message` with a check, for 2.5 s: "Copied to the clipboard" when nothing was focused, "Didn't catch that" when nothing was heard. Automatic dictionary updates will use the same notice.
 
-Dictation's states, its Processing included, sit one window level under the Dock (`PillSnapshot::under_dock`), so a hidden Dock that pops up covers the pill; capture states stay above Scrawl's overlays. While a capture records, selects or processes, the capsule shows the capture and dictation's chord is ignored; the capsule's window is put back on the capture exclusion list every 500 ms (each recording starts a fresh list). Element tiles are packed by width (`render_frame`), so a message wider than a chip isn't cut off. `scrawl lab pill dictation` plays these states.
+Dictation's states, its Processing included, sit one window level under the Dock (`PillSnapshot::under_dock`), so a hidden Dock that pops up covers the pill; capture states stay above Scrawl's overlays. While a capture records, selects or processes, the capsule shows the capture and dictation's chord is ignored; recordings leave the capsule out because SCK excludes Scrawl's windows above layer 0, and both of the capsule's levels are. Element tiles are packed by width (`render_frame`), so a message wider than a chip isn't cut off. `scrawl lab pill dictation` plays these states.
 
 ## Transcription and paste
 

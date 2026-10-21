@@ -2080,16 +2080,6 @@ impl ScrawlCoordinator {
             if let Some(point) = crate::screens::active_point() {
                 pill.place_at_bottom(point);
             }
-            // Each recording starts with a fresh exclusion list (`reset_for_session`).
-            let id = pill.window_number();
-            let mut excluded = self
-                .telemetry
-                .excluded_window_ids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !excluded.contains(&id) {
-                excluded.push(id);
-            }
         }
         let snapshot = PillSnapshot {
             pres,
