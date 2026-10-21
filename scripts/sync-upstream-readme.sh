@@ -44,8 +44,10 @@ else
   fi
 fi
 
-if git ls-files -u -- README.md | grep -q .; then
-  git checkout --ours README.md && git add README.md && echo "Kept the fork's README.md."
+# A clean merge can bring Kit's edits into README.md as surely as a conflict can, so the fork's
+# page is restored from the pre-merge commit either way.
+if ! git diff --quiet HEAD -- README.md || git ls-files -u -- README.md | grep -q .; then
+  git checkout HEAD -- README.md && git add README.md && echo "Kept the fork's README.md."
 fi
 
 # Both files carry the THIRD_PARTY attribution; an upstream change to it reaches only the guide,
