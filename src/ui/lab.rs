@@ -20,9 +20,14 @@ pub(super) const PROCESSING_S: f32 = 0.8;
 const LEAD_IN_S: f32 = 0.85;
 /// Quiet time after the last step (and between repeats).
 const TAIL_S: f32 = 0.75;
-/// The backdrop: x offset from the display's centre line, top, width and height in points.
-/// The capsule window is 520 × 84 at y = 34, under the menu bar.
-pub const BACKDROP: [f32; 4] = [0.0, 38.0, 640.0, 76.0];
+/// The backdrop behind the capsule at the primary display's bottom centre (`bottom_origin`): from
+/// 4 pt under the panel's top down to the screen's bottom edge, in global points.
+fn backdrop(display: [f32; 2]) -> [f32; 4] {
+    let centre = [f64::from(display[0]) * 0.5, f64::from(display[1]) * 0.5];
+    let [x, y] = crate::native::pill::bottom_origin(centre).unwrap_or([(display[0] - 640.0) * 0.5, display[1] - 70.0]);
+    let top = y + 4.0;
+    [x, top, 640.0, (display[1] - top).clamp(1.0, 76.0)]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Scene {
@@ -117,21 +122,20 @@ impl Scene {
 /// The dictation pill's states at animation seconds, shown on a pill of its own.
 fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
     use crate::native::pill::model::Pres;
-    let message = |label: &str, notice| Pres::Message {
+    let message = |label: &str| Pres::Message {
         label: label.to_owned(),
-        notice,
     };
     vec![
         (0.0, Pres::DictationIdle),
         (
             1.2,
             Pres::Hint {
-                dictate: Some("Dictate ⌃⌥".to_owned()),
+                dictate: "Dictate ⌃⌥".to_owned(),
             },
         ),
         (2.4, Pres::Dictating { latched: true }),
         (4.0, Pres::Processing),
-        (4.8, message("Copied to the clipboard", true)),
+        (4.8, message("Copied to the clipboard")),
         (6.6, Pres::DictationIdle),
     ]
 }
@@ -142,7 +146,8 @@ fn show_dictation(pill: &crate::native::pill::NativePill, pres: crate::native::p
         clock: "0:03".to_owned(),
         reduced_motion: false,
         style: crate::native::pill::PillStyle::current(),
-        under_dock: true,
+        // Above the lab's backdrop window, which a Dock-level panel would sit under.
+        under_dock: false,
     });
 }
 
@@ -211,18 +216,19 @@ pub fn run(options: Options) {
             [f32::from(b.size.width), f32::from(b.size.height)]
         });
         motion::trace_open(&format!("pill.{}", options.scene.name()), display);
+        let rect = backdrop(display);
         if options.backdrop {
-            open_backdrop(display, cx);
+            open_backdrop(rect, cx);
         }
-        coordinator.update(cx, |coord, _| coord.ensure_native_pill());
+        let centre = [f64::from(display[0]) * 0.5, f64::from(display[1]) * 0.5];
+        coordinator.update(cx, |coord, _| {
+            coord.ensure_native_pill();
+            if let Some(pill) = &coord.native_pill {
+                pill.place_at_bottom(centre);
+            }
+        });
         // For screen recordings (`perf/pill/record.sh`): the backdrop's rect in screen points.
-        println!(
-            "region {},{},{},{}",
-            ((display[0] - BACKDROP[2]) * 0.5).round(),
-            BACKDROP[1],
-            BACKDROP[2],
-            BACKDROP[3]
-        );
+        println!("region {},{},{},{}", rect[0], rect[1], rect[2], rect[3]);
 
         // The app's frame loop, minus everything that isn't the capsule.
         let loop_coord = coordinator.clone();
@@ -245,7 +251,7 @@ pub fn run(options: Options) {
         let scene = options.scene;
         let repeat = options.repeat;
         if scene == Scene::Dictation {
-            run_dictation(repeat, cx);
+            run_dictation(repeat, centre, cx);
             return;
         }
         cx.spawn(async move |cx| {
@@ -278,9 +284,12 @@ pub fn run(options: Options) {
 }
 
 /// The dictation scene drives a pill of its own, as dictation does, not the capture capsule.
-fn run_dictation(repeat: u32, cx: &mut App) {
+fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
     let pill = match crate::native::pill::NativePill::open() {
-        Ok(pill) => pill,
+        Ok(pill) => {
+            pill.place_at_bottom(centre);
+            pill
+        }
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -392,15 +401,13 @@ impl Render for Backdrop {
 
 /// A plain light panel behind the capsule's window, so recordings don't show whatever is on the
 /// desktop. It takes no input.
-fn open_backdrop(display: [f32; 2], cx: &mut App) {
+fn open_backdrop([x, y, w, h]: [f32; 4], cx: &mut App) {
     let theme = std::env::var("SCRAWL_LAB_BACKDROP")
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    let w = BACKDROP[2];
-    let h = BACKDROP[3];
     let bounds = Bounds {
-        origin: point(px((display[0] - w) * 0.5), px(BACKDROP[1])),
+        origin: point(px(x), px(y)),
         size: size(px(w), px(h)),
     };
     let opened = cx.open_window(

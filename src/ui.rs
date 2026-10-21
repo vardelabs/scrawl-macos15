@@ -675,8 +675,9 @@ pub struct ScrawlCoordinator {
     native_pill: Option<crate::native::pill::NativePill>,
     /// What dictation last put on the capsule while no capture was on it (`tick_dictation`).
     dictation_shown: Option<crate::native::pill::PillSnapshot>,
-    /// When the capsule last followed the active screen while showing dictation.
-    dictation_placed: Instant,
+    /// When the capsule last followed the active screen while showing dictation; `None` places it
+    /// on the next tick (at launch, or when a capture gives the capsule back).
+    dictation_placed: Option<Instant>,
     iphone_preview: Option<PhoneSession>,
     island_phase: IslandPhase,
     island_prev_phase: IslandPhase,
@@ -789,7 +790,7 @@ impl ScrawlCoordinator {
             picker_metal_overlay: None,
             native_pill: None,
             dictation_shown: None,
-            dictation_placed: Instant::now(),
+            dictation_placed: None,
             iphone_preview: None,
             island_phase: IslandPhase::Hidden,
             island_prev_phase: IslandPhase::Hidden,
@@ -2043,6 +2044,7 @@ impl ScrawlCoordinator {
         } else {
             // The capture owns the capsule; dictation redraws in full once it's free again.
             self.dictation_shown = None;
+            self.dictation_placed = None;
         }
     }
 
@@ -2064,8 +2066,8 @@ impl ScrawlCoordinator {
         let Some(pill) = &self.native_pill else {
             return;
         };
-        if self.dictation_placed.elapsed() >= Duration::from_millis(500) {
-            self.dictation_placed = Instant::now();
+        if self.dictation_placed.is_none_or(|at| at.elapsed() >= Duration::from_millis(500)) {
+            self.dictation_placed = Some(Instant::now());
             if let Some(point) = crate::screens::active_point() {
                 pill.place_at_bottom(point);
             }

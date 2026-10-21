@@ -117,16 +117,15 @@ fn presentation(state: &PillState) -> Pres {
     if let Some(text) = state.notice {
         return Pres::Message {
             label: text.to_owned(),
-            notice: true,
         };
     }
-    // The bar stays on with dictation off too: it still starts recordings.
-    if !state.pill {
+    // With dictation off the bar stays away, so turning dictation on is what adds it to the screen.
+    if !state.pill || !state.enabled {
         return Pres::Hidden;
     }
     if state.hovered {
         return Pres::Hint {
-            dictate: state.enabled.then(|| format!("Dictate {}", state.chord)),
+            dictate: format!("Dictate {}", state.chord),
         };
     }
     Pres::DictationIdle
@@ -478,14 +477,11 @@ mod tests {
     fn the_pill_shows_the_most_pressing_state() {
         assert_eq!(presentation(&idle()), Pres::DictationIdle);
         let hint = Pres::Hint {
-            dictate: Some("Dictate ⌃⌥".into()),
+            dictate: "Dictate ⌃⌥".into(),
         };
         assert_eq!(presentation(&PillState { hovered: true, ..idle() }), hint);
-        // Dictation off: the hovered bar still offers Record.
-        let record_only = PillState { hovered: true, enabled: false, ..idle() };
-        assert_eq!(presentation(&record_only), Pres::Hint { dictate: None });
         let copied = PillState { notice: Some("Copied to the clipboard"), hovered: true, ..idle() };
-        assert!(matches!(presentation(&copied), Pres::Message { notice: true, .. }));
+        assert!(matches!(presentation(&copied), Pres::Message { .. }));
         let listening = PillState { dictating: Some(true), notice: Some("x"), ..idle() };
         assert_eq!(presentation(&listening), Pres::Dictating { latched: true });
         let both = PillState { working: true, dictating: Some(false), ..idle() };
@@ -497,10 +493,10 @@ mod tests {
         let capture = PillState { capture_busy: true, notice: Some("x"), ..idle() };
         assert_eq!(presentation(&capture), Pres::Hidden);
         assert_eq!(presentation(&PillState { pill: false, ..idle() }), Pres::Hidden);
-        assert_eq!(presentation(&PillState { enabled: false, ..idle() }), Pres::DictationIdle);
+        assert_eq!(presentation(&PillState { enabled: false, hovered: true, ..idle() }), Pres::Hidden);
         // A notice still shows with the idle pill off: it reports a dictation that just ran.
-        let notice = PillState { pill: false, notice: Some("x"), ..idle() };
-        assert!(matches!(presentation(&notice), Pres::Message { notice: true, .. }));
+        let notice = PillState { pill: false, enabled: false, notice: Some("x"), ..idle() };
+        assert!(matches!(presentation(&notice), Pres::Message { .. }));
     }
 
     #[test]

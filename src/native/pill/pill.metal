@@ -182,7 +182,7 @@ struct PillUniforms {
     float4 shape_meta;     // radius, alpha, blur, is_glass (1.0 = glass, 0.0 = black)
     float4 ghost_rect;     // l, t, r, b in panel points
     float4 ghost_meta;     // radius, alpha, 0, idle (1.0 = the see-through dictation bar)
-    float4 hint_rect;      // x, y, w, h of optional "Esc" badge below capsule (w == 0 when off)
+    float4 hint_rect;      // x, y, w, h of optional "Esc" badge above the capsule (w == 0 when off)
     float4 hint_uv;        // u0, v0, u1, v1 of "Esc" label in atlas
 };
 

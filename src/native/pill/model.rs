@@ -22,7 +22,8 @@ pub const PANEL_W: f32 = 640.0;
 pub const PANEL_H: f32 = 84.0;
 pub const PANEL_Y: f32 = 34.0;
 pub const CX: f32 = PANEL_W * 0.5;
-/// Top edge of the resting 40 pt capsule inside the 84 pt panel (vertical centre y = 42, screen y = 76).
+/// Top edge of the resting 40 pt capsule inside the 84 pt panel (vertical centre y = 42).
+/// With `anchor_bottom` the frame shifts so the drawn bottom rests at `ANCHOR_B` instead.
 pub const TOP: f32 = 22.0;
 /// With `PillModel::anchor_bottom`, the capsule's resting bottom edge: it grows upward from here,
 /// as a pill at the bottom of the screen should.
@@ -476,11 +477,10 @@ pub enum Pres {
     /// One line from dictation: a notice (with a check) such as "Copied to the clipboard".
     Message {
         label: String,
-        notice: bool,
     },
-    /// The idle bar hovered: "Dictate ⌃⌥" (when dictation is on) and Record.
+    /// The idle bar hovered: "Dictate ⌃⌥" and Record.
     Hint {
-        dictate: Option<String>,
+        dictate: String,
     },
 }
 
@@ -521,10 +521,7 @@ impl Pres {
             (Self::Completed { label: a }, Self::Completed { label: b }) => a == b,
             (Self::Dictating { latched: a }, Self::Dictating { latched: b }) => a == b,
             (Self::DictationIdle, Self::DictationIdle) => true,
-            (
-                Self::Message { label: a, notice: na },
-                Self::Message { label: b, notice: nb },
-            ) => a == b && na == nb,
+            (Self::Message { label: a }, Self::Message { label: b }) => a == b,
             (Self::Hint { dictate: a }, Self::Hint { dictate: b }) => a == b,
             _ => false,
         }
@@ -651,16 +648,13 @@ pub fn layout_of(
         Pres::DictationIdle => {
             return (Layout::centered(DICTATION_IDLE_W, DICTATION_IDLE_H), Vec::new());
         }
-        Pres::Message { notice, .. } => {
-            let (lead, trail) = if *notice { (CHIP_H, NOTICE_TRAIL) } else { (CHIP_PX, CHIP_PX) };
-            let w = lead + completed_label_w + trail;
+        Pres::Message { .. } => {
+            let w = CHIP_H + completed_label_w + NOTICE_TRAIL;
             raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
         }
-        Pres::Hint { dictate } => {
-            if dictate.is_some() {
-                let w = 2.0 * CHIP_PX + completed_label_w;
-                raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
-            }
+        Pres::Hint { .. } => {
+            let w = 2.0 * CHIP_PX + completed_label_w;
+            raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
             raw.push((
                 ElemId::Record,
                 Metrics::chip_width(m.record),
@@ -885,15 +879,14 @@ pub struct FrameState {
 }
 
 impl FrameState {
-    fn shift_down(&mut self, dy: f32) {
-        if dy == 0.0 {
-            return;
-        }
+    /// Moves the frame down by `dy`, and a Reduce Motion ghost by its own `ghost_dy`: the ghost
+    /// is the previous shape, so its bottom rests at the anchor by its own height.
+    fn shift_down(&mut self, dy: f32, ghost_dy: f32) {
         self.shape.t += dy;
         self.shape.b += dy;
         if let Some(ghost) = self.ghost.as_mut() {
-            ghost.t += dy;
-            ghost.b += dy;
+            ghost.t += ghost_dy;
+            ghost.b += ghost_dy;
         }
         for elem in &mut self.elems {
             elem.rect[1] += dy;
@@ -1664,7 +1657,8 @@ impl PillModel {
             content_alpha: max_alpha,
             elems,
         };
-        frame.shift_down(self.anchor_dy(frame.shape.b));
+        let ghost_dy = frame.ghost.as_ref().map_or(0.0, |g| self.anchor_dy(g.b));
+        frame.shift_down(self.anchor_dy(frame.shape.b), ghost_dy);
         frame
     }
 
@@ -1782,6 +1776,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_reduce_motion_ghost_rests_on_the_bottom_anchor_by_its_own_height() {
+        let mut m = PillModel::new(Metrics::default());
+        m.anchor_bottom = true;
+        m.reduced = true;
+        m.set_pres(Pres::DictationIdle);
+        for _ in 0..120 {
+            m.advance(FRAME_DT);
+        }
+        m.set_pres(Pres::Dictating { latched: true });
+        m.advance(FRAME_DT);
+        let ghost = m.frame().ghost.expect("a dissolving ghost");
+        assert!(ghost.height() < ISLAND_H * 0.5);
+        assert!((ghost.b - ANCHOR_B).abs() < 0.5, "ghost bottom {}", ghost.b);
     }
 
     #[test]

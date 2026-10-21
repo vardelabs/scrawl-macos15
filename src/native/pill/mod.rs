@@ -1,7 +1,7 @@
 //! Native AppKit `NSPanel` + `CAMetalLayer` + Metal renderer for the Scrawl recording pill.
 //!
-//! Replaces the GPUI `HudPillWindow` with a single fixed-size `NSPanel` (`640 × 84 pt` at `y = 34`
-//! below the menu bar) that never resizes or moves during morphs. Supports two backdrop looks via
+//! Replaces the GPUI `HudPillWindow` with a single fixed-size `NSPanel` (`640 × 84 pt` at the bottom centre
+//! of the active screen, `place_at_bottom`) that never resizes or moves during morphs. Supports two backdrop looks via
 //! `pillStyle: "black" | "glass"`:
 //! - `"black"`: Analytic SDF rounded-rect silhouette + shadow + specular border in Metal.
 //! - `"glass"`: AppKit's `NSGlassEffectView` (inside `NSGlassEffectContainerView`) driven on the
@@ -447,16 +447,9 @@ impl NativePill {
 
     /// Moves the capsule to the bottom centre of the screen holding `point` (`bottom_edge`).
     pub fn place_at_bottom(&self, point: [f64; 2]) {
-        let screens = crate::screens::current();
-        let Some(screen) = crate::screens::index_at(&screens, point)
-            .or(if screens.is_empty() { None } else { Some(0) })
-            .map(|i| &screens[i])
-        else {
-            return;
-        };
-        let x = screen.frame[0] + ((screen.frame[2] - f64::from(PANEL_W)) / 2.0).round();
-        let y = bottom_edge(screen) - f64::from(model::ANCHOR_B);
-        self.move_to([x as f32, y as f32]);
+        if let Some(origin) = bottom_origin(point) {
+            self.move_to(origin);
+        }
     }
 
     fn move_to(&self, origin: [f32; 2]) {
@@ -501,8 +494,7 @@ impl NativePill {
                 st.dirty = true;
             }
             let label = match &snapshot.pres {
-                Pres::Completed { label } | Pres::Message { label, .. } => Some(label),
-                Pres::Hint { dictate } => dictate.as_ref(),
+                Pres::Completed { label } | Pres::Message { label } | Pres::Hint { dictate: label } => Some(label),
                 _ => None,
             };
             if let Some(label) = label {
@@ -595,6 +587,16 @@ fn bottom_edge(screen: &crate::screens::Screen) -> f64 {
     let visible_bottom = screen.visible[1] + screen.visible[3];
     let dock = if frame_bottom - visible_bottom > SHOWN_DOCK_MIN { frame_bottom - visible_bottom } else { 0.0 };
     frame_bottom - dock - BOTTOM_GAP
+}
+
+/// The panel's top-left (global points) at the bottom centre of the screen holding `point`, else
+/// the primary one.
+pub fn bottom_origin(point: [f64; 2]) -> Option<[f32; 2]> {
+    let screens = crate::screens::current();
+    let screen = &screens[crate::screens::index_at(&screens, point).or(if screens.is_empty() { None } else { Some(0) })?];
+    let x = screen.frame[0] + ((screen.frame[2] - f64::from(PANEL_W)) / 2.0).round();
+    let y = bottom_edge(screen) - f64::from(model::ANCHOR_B);
+    Some([x as f32, y as f32])
 }
 
 /// The panel's top-left (global points) on the screen holding `point`, else the primary one.
@@ -1366,7 +1368,7 @@ impl PillRuntimeState {
                 );
             }
             ElemId::Message => {
-                let notice = matches!(self.model.pres, Pres::Message { notice: true, .. });
+                let notice = matches!(self.model.pres, Pres::Message { .. });
                 if elem.hover > 0.01 {
                     push_shape(out, [ox, oy, bw, bh], bh * 0.5, [1.0, 1.0, 1.0, 0.06 * elem.hover]);
                 }
