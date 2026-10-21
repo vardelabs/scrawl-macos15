@@ -103,6 +103,15 @@ fn filename(word: &str) -> bool {
         })
 }
 
+/// `Node.js`, `Vue.js`: a capitalised name with `.js` is a product, not a file.
+fn brand_js(word: &str) -> bool {
+    word.rsplit_once('.').is_some_and(|(stem, ext)| {
+        ext.eq_ignore_ascii_case("js")
+            && stem.chars().next().is_some_and(char::is_uppercase)
+            && stem.chars().skip(1).all(char::is_lowercase)
+    })
+}
+
 /// `snake_case`: parts of two or more letters or digits, one of them three or more.
 fn snake_case(word: &str) -> bool {
     let parts: Vec<&str> = word.split('_').collect();
@@ -162,19 +171,24 @@ fn longest_match<'a>(
     }
     let mut ends = Vec::new();
     let mut j = start;
-    while ends.len() < MAX_SPAN_WORDS && j + 2 < tokens.len() {
+    let mut words = 1;
+    while words < MAX_SPAN_WORDS && j + 2 < tokens.len() {
         if !is_joiner(&tokens[j + 1]) || !is_word(&tokens[j + 2]) {
             break;
         }
         j += 2;
+        words += 1;
         if tokens[j - 1] == "." {
             ends.push(j);
         }
     }
     ends.into_iter().rev().find_map(|end| {
-        let span: String = tokens[start..=end].concat();
+        let words: Vec<&String> = tokens[start..=end].iter().filter(|t| is_word(t)).collect();
+        let (last, stem) = words.split_last()?;
+        // The extension keeps its suffix, so "README.md's broken" never loses its "'s".
+        let tail = key(last, false);
         [false, true].iter().find_map(|&strip| {
-            let spoken: String = span.split(|c: char| is_joiner(&c.to_string())).map(|w| key(w, strip)).collect();
+            let spoken: String = stem.iter().map(|w| key(w, strip)).chain([tail.clone()]).collect();
             keys.get(&spoken).map(|term| (end, *term))
         })
     })
@@ -209,7 +223,7 @@ fn backtick_code(text: &str) -> String {
             .split(' ')
             .map(|word| {
                 let (lead, core, rest) = split_code_punctuation(word);
-                if filename(core) || snake_case(core) {
+                if (filename(core) && !brand_js(core)) || snake_case(core) {
                     format!("{lead}`{core}`{rest}")
                 } else {
                     word.to_owned()
@@ -295,9 +309,21 @@ mod tests {
     }
 
     #[test]
+    fn a_suffix_after_a_filename_stays_and_runs_stop_at_six_words() {
+        let screen = "README.md please-update-the-big-old-scrawl-mac-os-notes.md";
+        assert_eq!(
+            dictate("The read me dot md's fine.", screen),
+            "The read me.md's fine."
+        );
+        assert_eq!(dictate("open read me dot md now", screen), "open `README.md` now");
+        let long = "please update the big old scrawl mac os notes dot md";
+        assert_eq!(dictate(long, screen), "please update the big old scrawl mac os `notes.md`");
+    }
+
+    #[test]
     fn names_brands_abbreviations_and_hyphenated_prose_get_no_backticks() {
         let text = "Kai deSilva met Neil deGrasse Tyson in Washington D.C. and N.C. The A.C. is \
-                    broken at 120 mmHg. I got a new iPhone, watched YouTube on macOS, and use \
+                    broken at 120 mmHg. I love Node.js and Vue.js. I got a new iPhone, watched YouTube on macOS, and use \
                     useState. Self-driving cars, a 24-hour turnaround, a T-shirt and COVID-19.";
         assert_eq!(apply(text, &[], true), text);
     }

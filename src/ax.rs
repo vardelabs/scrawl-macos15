@@ -1,7 +1,8 @@
 //! What's under a click or a mark, from the Accessibility tree (the `agentContext` experiment):
 //! the element's role, label, identifier and the document its window shows. Lookups run on one
 //! background thread with a short messaging timeout, so a hung app never holds up input. Secure
-//! text fields are never read, input fields' values are never read, and text is cut short.
+//! text fields are never read, and text is cut short. Lookups for a click or mark never read input
+//! fields' values; `window_text` does, for dictation's filenames, and keeps only filenames.
 
 #[cfg(target_os = "macos")]
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
