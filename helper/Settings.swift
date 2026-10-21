@@ -131,6 +131,7 @@ struct SettingsDictation: Decodable, Equatable {
   var words: [String] = []
   var replacements: [SettingsReplacement] = []
   var error: String?
+  var saveError: String?
 }
 
 struct SettingsState: Decodable, Equatable {
@@ -1020,7 +1021,8 @@ struct SettingsView: View {
         }
         DictionaryAddRow(placeholder: "Add a word or phrase", enabled: d.error == nil) { model.act("add-word", ["word": $0]) }
       }
-      SettingsCaption(text: d.error ?? "Written exactly as saved. Near misses of words of seven letters or more are fixed too.", error: d.error != nil)
+      let problem = d.error ?? d.saveError
+      SettingsCaption(text: problem ?? "Written exactly as saved. Near misses of words of seven letters or more are fixed too.", error: problem != nil)
       SettingsHeader("Replacements")
       SettingsGroup {
         ForEach(d.replacements, id: \.self) { entry in

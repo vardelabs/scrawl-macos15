@@ -629,6 +629,8 @@ pub struct DictationView {
     pub replacements: Vec<ReplacementView>,
     /// Why the dictionary can't be shown or changed (a broken file, left as it is).
     pub error: Option<String>,
+    /// Why the last edit wasn't saved; the next edit tries again.
+    pub save_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -904,7 +906,8 @@ fn dictation_view(
             .into_iter()
             .map(|(heard, write)| ReplacementView { heard, write })
             .collect(),
-        error: error.or_else(|| save_error.map(str::to_owned)),
+        error,
+        save_error: save_error.map(str::to_owned),
     }
 }
 
@@ -1917,11 +1920,13 @@ mod tests {
         let mut panel = Panel::default();
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
         panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
-        let error = panel.view(&host).dictation.error;
+        let view = panel.view(&host).dictation;
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(error.is_some_and(|e| e.starts_with("Couldn't save the dictionary")));
+        assert!(view.save_error.is_some_and(|e| e.starts_with("Couldn't save the dictionary")));
+        // Only a broken file locks the editor; a failed save can be retried.
+        assert_eq!(view.error, None);
         panel.on(serde_json::from_str(r#"{"action":"add-word","word":"Corvus"}"#).unwrap(), &mut host);
-        assert_eq!(panel.view(&host).dictation.error, None);
+        assert_eq!(panel.view(&host).dictation.save_error, None);
         assert_eq!(panel.view(&host).dictation.words, ["Corvus"]);
     }
 
