@@ -37,8 +37,8 @@ if ((leaks > 0)); then
 fi
 
 cp -f "${BUILD_DIR}/scripts/install-prebuilt.sh" "${PKG}/install.sh"
-cp -f "${BUILD_DIR}/scripts/create-local-signing.sh" "${BUILD_DIR}/scripts/scrawl-parakeet.py" "${PKG}/"
-chmod +x "${PKG}/install.sh" "${PKG}/create-local-signing.sh" "${PKG}/scrawl-parakeet.py"
+cp -f "${BUILD_DIR}/scripts/create-local-signing.sh" "${BUILD_DIR}/scripts/scrawl-parakeet.py" "${BUILD_DIR}/scripts/scrawl-format.py" "${PKG}/"
+chmod +x "${PKG}/install.sh" "${PKG}/create-local-signing.sh" "${PKG}/scrawl-parakeet.py" "${PKG}/scrawl-format.py"
 
 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "${PKG}" "${OUT_DIR}/${NAME}.zip"
 (cd "${OUT_DIR}" && shasum -a 256 "${NAME}.zip" >"${NAME}.zip.sha256")
