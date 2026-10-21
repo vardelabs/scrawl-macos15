@@ -167,6 +167,8 @@ pub struct Dictation {
     notice: Option<Notice>,
     /// When the last notice went, for `CLICK_GRACE`.
     notice_gone: Option<Instant>,
+    /// When opening the pill last failed; it is tried again at the settings cadence, not per tick.
+    pill_failed: Option<Instant>,
 }
 
 impl Default for Dictation {
@@ -184,6 +186,7 @@ impl Default for Dictation {
             working: None,
             notice: None,
             notice_gone: None,
+            pill_failed: None,
         }
     }
 }
@@ -407,7 +410,7 @@ impl Dictation {
 
     /// Opens the pill the first time it has something to show, and keeps it out of captures.
     fn ensure_pill(&mut self, telemetry: &SharedCaptureTelemetry) {
-        if self.pill.is_some() {
+        if self.pill.is_some() || self.pill_failed.is_some_and(|at| at.elapsed() < SETTINGS_EVERY) {
             return;
         }
         match NativePill::open() {
@@ -416,7 +419,10 @@ impl Dictation {
                 self.keep_out_of_captures(telemetry);
                 self.follow_pointer();
             }
-            Err(error) => scrawl_log(format!("Dictation pill: {error}")),
+            Err(error) => {
+                scrawl_log(format!("Dictation pill: {error}"));
+                self.pill_failed = Some(Instant::now());
+            }
         }
     }
 
