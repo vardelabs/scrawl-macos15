@@ -30,6 +30,7 @@ struct SettingsLogin: Decodable, Equatable {
   var on = false
   var available = true
   var needsApproval = false
+  var error: String?
 }
 
 struct SettingsShortcut: Decodable, Equatable, Identifiable {
@@ -820,7 +821,9 @@ struct SettingsView: View {
           SettingsSwitch(on: state.autoSend) { model.set("autoSend", $0) }
         }
       }
-      if state.login.needsApproval {
+      if let error = state.login.error {
+        SettingsCaption(text: "Launch at login failed: \(error)", error: true)
+      } else if state.login.needsApproval {
         SettingsCaption(text: "Allow Scrawl in System Settings › General › Login Items.")
       } else if !state.login.available {
         SettingsCaption(text: "Launch at login works in the installed Scrawl.app.")
