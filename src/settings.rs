@@ -920,7 +920,7 @@ fn dictation_view(
     }
 }
 
-/// `/Users/kai/…` as `~/…`, to fit a caption.
+/// `/Users/you/…` as `~/…`, to fit a caption.
 fn home_relative(text: &str) -> String {
     match dirs::home_dir().and_then(|home| home.to_str().map(str::to_owned)) {
         Some(home) => text.replace(&home, "~"),
