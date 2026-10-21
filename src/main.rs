@@ -30,6 +30,7 @@ mod native;
 mod onboarding;
 mod onboarding_window;
 mod page;
+mod pause;
 mod phone;
 // Lowers the output volume while recording on macOS; elsewhere a no-op.
 #[cfg_attr(not(target_os = "macos"), path = "win/playback.rs")]

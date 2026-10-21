@@ -25,6 +25,12 @@ pub struct AudioRecorder {
 
 impl AudioRecorder {
     pub fn start() -> Result<Self> {
+        Self::start_pausable(None)
+    }
+
+    /// Like `start`, but drops what the microphone hears while `pause` is paused, so the WAV
+    /// (and the live transcription reading it) holds the active audio back to back.
+    pub fn start_pausable(pause: Option<Arc<crate::pause::PauseClock>>) -> Result<Self> {
         let started = std::time::Instant::now();
         let samples = Arc::new(Mutex::new(Vec::new()));
         let error = Arc::new(Mutex::new(None));
@@ -34,10 +40,11 @@ impl AudioRecorder {
         let worker = std::thread::Builder::new()
             .name("scrawl-audio".into())
             .spawn(move || {
-                let stream =
-                    Self::open_stream(worker_samples, worker_error).inspect_err(|error| {
+                let stream = Self::open_stream(worker_samples, worker_error, pause).inspect_err(
+                    |error| {
                         crate::capture::scrawl_log(format!("Microphone startup failed: {error:#}"));
-                    })?;
+                    },
+                )?;
                 crate::ui::start_metric("audio_ready_ms", started);
                 // Stream never crosses threads. Disconnect also stops abandoned recorders.
                 let _ = stop_receiver.recv();
@@ -67,6 +74,7 @@ impl AudioRecorder {
     fn open_stream(
         samples: Arc<Mutex<Vec<f32>>>,
         error: Arc<Mutex<Option<String>>>,
+        pause: Option<Arc<crate::pause::PauseClock>>,
     ) -> Result<cpal::Stream> {
         let choice = crate::mic::choice();
         if let Some(choice) = &choice {
@@ -76,7 +84,7 @@ impl AudioRecorder {
                     name: device_name(&device).unwrap_or_else(|| choice.name.clone()),
                 };
                 crate::mic::note_pick(&crate::mic::Pick::Chosen(&input));
-                match Self::open_device(&device, samples.clone(), error.clone()) {
+                match Self::open_device(&device, samples.clone(), error.clone(), pause.clone()) {
                     Ok(stream) => {
                         crate::capture::scrawl_log(format!("Microphone: {}", input.name));
                         return Ok(stream);
@@ -105,7 +113,7 @@ impl AudioRecorder {
         let device = cpal::default_host()
             .default_input_device()
             .context("No microphone is available")?;
-        let stream = Self::open_device(&device, samples, error)?;
+        let stream = Self::open_device(&device, samples, error, pause)?;
         crate::capture::scrawl_log(format!(
             "Microphone: {} (default)",
             device_name(&device).unwrap_or_default()
@@ -117,6 +125,7 @@ impl AudioRecorder {
         device: &cpal::Device,
         samples: Arc<Mutex<Vec<f32>>>,
         error: Arc<Mutex<Option<String>>>,
+        pause: Option<Arc<crate::pause::PauseClock>>,
     ) -> Result<cpal::Stream> {
         let supported = device.default_input_config()?;
         let config = supported.config();
@@ -132,7 +141,13 @@ impl AudioRecorder {
         );
         macro_rules! stream {
             ($ty:ty) => {
-                input_stream::<$ty>(&device, config, samples.clone(), error.clone())?
+                input_stream::<$ty>(
+                    &device,
+                    config,
+                    samples.clone(),
+                    error.clone(),
+                    pause.clone(),
+                )?
             };
         }
         let stream = match supported.sample_format() {
@@ -213,43 +228,32 @@ fn input_stream<T>(
     config: cpal::StreamConfig,
     samples: Arc<Mutex<Vec<f32>>>,
     error: Arc<Mutex<Option<String>>>,
+    pause: Option<Arc<crate::pause::PauseClock>>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
     let channels = usize::from(config.channels);
-    let rate = config.sample_rate;
-    let mut phase = 0_u32;
-    let mut sum = 0.0_f64;
+    let mut downmix = Downmix::new(config.sample_rate);
     Ok(device.build_input_stream::<T, _, _>(
         config,
         move |data, _| {
+            let paused = pause.as_ref().is_some_and(|p| p.is_paused());
             let Ok(mut output) = samples.lock() else {
                 return;
             };
-            for frame in data.chunks_exact(channels) {
-                let mono = frame
-                    .iter()
-                    .map(|sample| sample.to_sample::<f32>() as f64)
-                    .sum::<f64>()
-                    / channels as f64;
-                let mono = if mono.is_finite() { mono } else { 0.0 };
-                // Area averaging gives a continuous-phase downmix/decimator,
-                // including non-integer ratios such as 44.1 kHz -> 16 kHz.
-                let mut remaining = SAMPLE_RATE;
-                while remaining > 0 {
-                    let weight = remaining.min(rate - phase);
-                    sum += mono * weight as f64;
-                    phase += weight;
-                    remaining -= weight;
-                    if phase == rate {
-                        output.push((sum / rate as f64) as f32);
-                        phase = 0;
-                        sum = 0.0;
-                    }
-                }
-            }
+            downmix.push_frames(
+                data.chunks_exact(channels).map(|frame| {
+                    frame
+                        .iter()
+                        .map(|sample| sample.to_sample::<f32>() as f64)
+                        .sum::<f64>()
+                        / channels as f64
+                }),
+                paused,
+                &mut output,
+            );
         },
         move |err| {
             // A buffer under- or overrun drops a few samples; the recording goes on.
@@ -262,6 +266,50 @@ where
         },
         None,
     )?)
+}
+
+/// Mono samples at the device's rate in, 16 kHz out.
+struct Downmix {
+    rate: u32,
+    phase: u32,
+    sum: f64,
+}
+
+impl Downmix {
+    fn new(rate: u32) -> Self {
+        Self {
+            rate,
+            phase: 0,
+            sum: 0.0,
+        }
+    }
+
+    /// A paused buffer is dropped whole, with the part-built output sample, so nothing heard
+    /// while paused leaks into the first sample after it.
+    fn push_frames(&mut self, mono: impl Iterator<Item = f64>, paused: bool, out: &mut Vec<f32>) {
+        if paused {
+            self.phase = 0;
+            self.sum = 0.0;
+            return;
+        }
+        for mono in mono {
+            let mono = if mono.is_finite() { mono } else { 0.0 };
+            // Area averaging gives a continuous-phase downmix/decimator,
+            // including non-integer ratios such as 44.1 kHz -> 16 kHz.
+            let mut remaining = SAMPLE_RATE;
+            while remaining > 0 {
+                let weight = remaining.min(self.rate - self.phase);
+                self.sum += mono * weight as f64;
+                self.phase += weight;
+                remaining -= weight;
+                if self.phase == self.rate {
+                    out.push((self.sum / self.rate as f64) as f32);
+                    self.phase = 0;
+                    self.sum = 0.0;
+                }
+            }
+        }
+    }
 }
 
 /// Reads a 16 kHz mono WAV (as written by `scrawl-helper audio`) back into a recording.
@@ -386,6 +434,58 @@ pub fn encode_wav_16k(samples_16k: &[f32]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// Feeds 10 ms buffers at 48 kHz of `level`, paused or not, as the microphone callback does.
+    fn feed(downmix: &mut Downmix, out: &mut Vec<f32>, ms: u64, level: f64, paused: bool) {
+        for _ in 0..ms / 10 {
+            downmix.push_frames(std::iter::repeat_n(level, 480), paused, out);
+        }
+    }
+
+    #[test]
+    fn paused_audio_is_cut_and_the_rest_is_back_to_back() {
+        let mut downmix = Downmix::new(48_000);
+        let mut out = Vec::new();
+        feed(&mut downmix, &mut out, 1_000, 0.25, false);
+        feed(&mut downmix, &mut out, 5_000, 0.9, true);
+        feed(&mut downmix, &mut out, 500, 0.25, false);
+        assert_eq!(out.len(), 24_000, "1.5 s of active audio at 16 kHz");
+        assert!(
+            out.iter().all(|s| (s - 0.25).abs() < 1e-6),
+            "nothing heard while paused leaks in"
+        );
+    }
+
+    #[test]
+    fn pauses_at_the_start_the_end_and_several_between_keep_only_active_audio() {
+        let mut downmix = Downmix::new(44_100);
+        let mut out = Vec::new();
+        let mut active_ms = 0;
+        for (ms, paused) in [
+            (300, true),
+            (700, false),
+            (200, true),
+            (1_100, false),
+            (2_000, true),
+            (400, false),
+            (900, true),
+        ] {
+            for _ in 0..ms / 10 {
+                downmix.push_frames(std::iter::repeat_n(0.5, 441), paused, &mut out);
+            }
+            if !paused {
+                active_ms += ms;
+            }
+        }
+        assert_eq!(active_ms, 2_200);
+        // A pause drops the part-built sample, so each active run may come up one short.
+        let expected = active_ms as usize * 16;
+        assert!(
+            (expected - 3..=expected).contains(&out.len()),
+            "{} samples for {expected}",
+            out.len()
+        );
+    }
 
     #[test]
     fn stop_joins_worker_before_reading_its_last_samples() {

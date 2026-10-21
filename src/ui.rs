@@ -27,8 +27,8 @@ use crate::capture::{
     LiveOverlayEvent, ScreenCaptureSession, SharedCaptureTelemetry, current_mouse_screen,
     discover_target, install_global_hotkeys, list_selectable_windows,
     record_external_frontmost_app, region_target, scrawl_log, selectable_window_at,
-    set_escape_hotkey_enabled, shortcut_from_key_and_mods, start_global_input_tap,
-    update_global_shortcut,
+    set_escape_hotkey_enabled, set_pause_hotkey_enabled, shortcut_from_key_and_mods,
+    start_global_input_tap, update_global_shortcut,
 };
 use crate::helper::PhoneDevice;
 #[cfg(target_os = "macos")]
@@ -952,6 +952,44 @@ impl ScrawlCoordinator {
         self.active_recording.is_some()
     }
 
+    /// The screen capture is paused (or its resume hasn't taken effect yet).
+    pub fn is_paused(&self) -> bool {
+        matches!(
+            self.active_recording.as_ref().map(|rec| &rec.source),
+            Some(CaptureSource::Screen { session, .. }) if session.is_paused()
+        )
+    }
+
+    /// Pauses or resumes the screen capture (the pill's Pause and Resume, ⌥⇧P). iPhone captures
+    /// record on the phone's own clock and don't pause.
+    pub fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        let Some(CaptureSource::Screen { session, .. }) =
+            self.active_recording.as_ref().map(|rec| &rec.source)
+        else {
+            return;
+        };
+        let pausing = !session.is_paused();
+        let changed = if pausing {
+            session.pause()
+        } else {
+            session.resume()
+        };
+        if !changed {
+            return;
+        }
+        scrawl_log(format!(
+            "capture {} at {} ms",
+            if pausing { "paused" } else { "resuming" },
+            session.elapsed_ms()
+        ));
+        if pausing {
+            self.telemetry.drop_pending_input();
+            self.fold_reveal();
+        }
+        self.sync_native_pill();
+        cx.notify();
+    }
+
     pub fn is_processing(&self) -> bool {
         matches!(self.island_phase, IslandPhase::Processing)
     }
@@ -1365,6 +1403,7 @@ impl ScrawlCoordinator {
     /// its target and overlay.
     fn discard_recording(&mut self) -> Option<(TargetInfo, Option<LaserOverlay>)> {
         set_escape_hotkey_enabled(false);
+        set_pause_hotkey_enabled(false);
         let rec = self.active_recording.take()?;
         let _ = self.telemetry.finish_session();
         match rec.source {
@@ -1882,9 +1921,14 @@ impl ScrawlCoordinator {
         let pres = match self.island_phase {
             IslandPhase::Hidden | IslandPhase::Dismissing => Pres::Hidden,
             IslandPhase::Selecting { mode } => Pres::Selecting { mode, has_iphone },
+            IslandPhase::Recording if self.is_paused() => Pres::Paused,
             IslandPhase::Recording => Pres::Recording {
                 chips: self.reveal.is_open(),
                 has_iphone,
+                pausable: matches!(
+                    self.active_recording.as_ref().map(|rec| &rec.source),
+                    Some(CaptureSource::Screen { .. })
+                ) && crate::capture::PAUSE_SUPPORTED,
             },
             IslandPhase::Processing => Pres::Processing,
             IslandPhase::Completed { inbox_count, .. } => Pres::Completed {
@@ -1917,6 +1961,7 @@ impl ScrawlCoordinator {
             PillAction::RecordSelected => self.record_selected_mode(cx),
             PillAction::Cancel => self.cancel_recording(cx),
             PillAction::Finish => self.finish_recording(cx),
+            PillAction::TogglePause => self.toggle_pause(cx),
             PillAction::Paste(target) => self.paste_completed_bundle(target, cx),
             PillAction::Inspect => self.inspect_completed_bundle(cx),
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
@@ -2570,24 +2615,22 @@ impl ScrawlCoordinator {
         });
         start_metric("metal_open_ms", stage);
         let stage = Instant::now();
-        let audio_recorder = AudioRecorder::start().ok();
+        let clock = self.telemetry.clock();
+        let audio_recorder = AudioRecorder::start_pausable(Some(Arc::clone(&clock))).ok();
         start_metric("audio_start_ms", stage);
         let stage = Instant::now();
-        let screen_session = ScreenCaptureSession::start(
+        let screen_session = ScreenCaptureSession::start_pausable(
             target.clone(),
             Some(video_path),
             Arc::clone(&self.telemetry.excluded_window_ids),
+            Arc::clone(&clock),
         );
         start_metric("sck_start_ms", stage);
+        set_pause_hotkey_enabled(true);
         let window_log = (target.mode == CaptureMode::Display).then(|| {
-            let started_at = *self
-                .telemetry
-                .started_at
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            crate::windows::WindowLogger::start(
+            crate::windows::WindowLogger::start_pausable(
                 target.frame,
-                started_at,
+                crate::pause::SessionClock::whole(clock),
                 Arc::clone(&self.telemetry.window_log_request),
             )
         });
@@ -2779,6 +2822,7 @@ impl ScrawlCoordinator {
         self.playback.take();
         scrawl_log("finish_recording invoked");
         set_escape_hotkey_enabled(false);
+        set_pause_hotkey_enabled(false);
         let Some(rec) = self.active_recording.take() else {
             return;
         };
@@ -5509,6 +5553,7 @@ pub fn run_app(
                             LiveOverlayEvent::UndoStroke => {
                                 coord.undo_stroke(cx);
                             }
+                            LiveOverlayEvent::TogglePause => coord.toggle_pause(cx),
                             LiveOverlayEvent::CancelCapture => {
                                 coord.cancel_recording(cx);
                             }

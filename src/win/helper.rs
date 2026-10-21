@@ -91,6 +91,11 @@ pub fn shrink(movie: &Path, out: &Path, max_edge: u32) -> Result<crate::retentio
 }
 
 /// Mixes a movie's audio to 16 kHz mono WAV, aligned to the movie's start.
+/// Captures here never pause, so there are never segments to join.
+pub fn join_movies(_out: &Path, _parts: &[(&Path, u64, Option<u64>)]) -> Result<()> {
+    bail!("joining movies needs AVFoundation (macOS)")
+}
+
 pub fn export_audio(movie: &Path, wav: &Path) -> Result<()> {
     crate::win::media::export_audio(movie, wav)
 }

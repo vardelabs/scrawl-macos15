@@ -291,6 +291,25 @@ pub fn export_audio(movie: &Path, wav: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Joins a paused capture's movie segments into `out` without re-encoding: each part is
+/// `(movie, at_ms, keep_ms)`, placed at `at_ms` and cut to its first `keep_ms` (`None`: whole).
+pub fn join_movies(out: &Path, parts: &[(&Path, u64, Option<u64>)]) -> Result<()> {
+    let mut args = vec![os("join").to_owned(), out.as_os_str().to_owned()];
+    for (movie, at_ms, keep_ms) in parts {
+        args.push(os("--part").to_owned());
+        args.push(at_ms.to_string().into());
+        args.push(
+            keep_ms
+                .map_or_else(|| "-1".to_owned(), |ms| ms.to_string())
+                .into(),
+        );
+        args.push(movie.as_os_str().to_owned());
+    }
+    let args: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsString::as_os_str).collect();
+    let _: serde_json::Value = run(&args, Duration::from_secs(600))?;
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct FrameFile {
     t: u64,

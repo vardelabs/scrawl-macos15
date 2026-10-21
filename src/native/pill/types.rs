@@ -52,6 +52,7 @@ pub enum PillAction {
     RecordSelected,
     Cancel,
     Finish,
+    TogglePause,
     Paste(Option<[f32; 2]>),
     Inspect,
     DismissCompleted,
