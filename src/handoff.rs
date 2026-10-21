@@ -1573,6 +1573,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_format_command_runs_only_from_an_absolute_path() {
+        let with = |argv: Option<Vec<&str>>| Config {
+            format_command: argv.map(|argv| argv.into_iter().map(String::from).collect()),
+            ..Config::default()
+        };
+        let argv = vec!["/opt/python", "/opt/scrawl-format.py"];
+        assert_eq!(format_command_in(&with(Some(argv.clone()))), Some(argv.into_iter().map(String::from).collect()));
+        assert_eq!(format_command_in(&with(Some(vec!["python3", "scrawl-format.py"]))), None);
+        assert_eq!(format_command_in(&with(Some(vec![]))), None);
+        assert_eq!(format_command_in(&with(None)), None);
+    }
+
+    #[test]
     fn window_captures_crop_unless_turned_off() {
         use crate::model::CaptureMode;
         let on = Config::default();

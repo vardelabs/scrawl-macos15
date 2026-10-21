@@ -5,7 +5,7 @@
 //!
 //! The model may add paragraph breaks, list markers, line breaks and punctuation, and drop the
 //! "and" or "or" before a list's last item. `same_words` holds it to that: the words in order,
-//! ignoring case, punctuation and list markers, must match what was dictated, or the dictation is
+//! ignoring punctuation, list markers and a first letter's case, must match what was dictated, or the dictation is
 //! pasted as it was.
 
 use crate::model::WordTiming;
@@ -85,12 +85,13 @@ pub fn break_at_pauses(text: &str, pauses: &[usize]) -> String {
     out
 }
 
-/// Whether `formatted` has the words of `dictated`, in order: compared without case, and
-/// without the punctuation layout may change around a word (`,` `.` `:` `;`, quotes, brackets)
-/// or the list markers ("1.", "-", "•") that start a line. Markdown the model adds (`**`, `_`,
-/// backticks, a fence) counts as a change. Characters inside a
-/// word (`1.5`, `$50`, `We're`, `C++`) and a word's `?` or `!` must match. A dictated "and" or
-/// "or" may be missing only right before a list's last item.
+/// Whether `formatted` has the words of `dictated`, in order: compared without the punctuation
+/// layout may change around a word (`,` `.` `:` `;`, double quotes, brackets) or the list markers
+/// ("1.", "-", "•") that start a line. Only a word's first letter may change case, as a sentence
+/// or list item starts; code in backticks must match exactly. Markdown the model adds (`**`, `_`,
+/// backticks, a fence) counts as a change. Characters inside a word (`1.5`, `$50`, `We're`,
+/// `C++`), apostrophes, and a word's `?` or `!` must match. A dictated "and" or "or" may be
+/// missing only right before a list's last item.
 pub fn same_words(dictated: &str, formatted: &str) -> bool {
     if formatted.trim().is_empty() {
         return false;
@@ -98,17 +99,29 @@ pub fn same_words(dictated: &str, formatted: &str) -> bool {
     let spoken = tokens(dictated);
     let mut laid_out = tokens(formatted).into_iter().peekable();
     for (word, _) in &spoken {
-        if laid_out.peek().is_some_and(|(next, _)| next == word) {
+        if laid_out.peek().is_some_and(|(next, _)| same_word(word, next)) {
             laid_out.next();
-        } else if !(matches!(word.as_str(), "and" | "or") && laid_out.peek().is_some_and(|(_, last_item)| *last_item)) {
+        } else if !(matches!(word.to_lowercase().as_str(), "and" | "or") && laid_out.peek().is_some_and(|(_, last_item)| *last_item)) {
             return false;
         }
     }
     laid_out.next().is_none()
 }
 
-/// Each word, lowercased and trimmed of layout punctuation, and whether it starts a list's last
-/// item (an item line not followed by another).
+/// Equal, or equal but for the case of a first letter that isn't code.
+fn same_word(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let (mut a, mut b) = (a.chars(), b.chars());
+    match (a.next(), b.next()) {
+        (Some(x), Some(y)) if x != '`' => x.to_lowercase().eq(y.to_lowercase()) && a.eq(b),
+        _ => false,
+    }
+}
+
+/// Each word, trimmed of layout punctuation, and whether it starts a list's last item (an item
+/// line not followed by another).
 fn tokens(text: &str) -> Vec<(String, bool)> {
     let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
     let is_item = |line: &str| strip_list_marker(line).len() < line.trim_start().len();
@@ -118,9 +131,9 @@ fn tokens(text: &str) -> Vec<(String, bool)> {
         let mut item = is_item(line) && !lines.get(n + 1).is_some_and(|next| is_item(next));
         for word in content.split_whitespace() {
             let word = word
-                .trim_start_matches(|c: char| "\"'([“‘".contains(c))
-                .trim_end_matches(|c: char| ",.;:\"')]”’…".contains(c))
-                .to_lowercase();
+                .trim_start_matches(|c: char| "\"([“".contains(c))
+                .trim_end_matches(|c: char| ",.;:\")]”…".contains(c))
+                .to_string();
             if !word.is_empty() {
                 out.push((word, item));
                 item = false;
@@ -198,6 +211,10 @@ mod tests {
             ("Learn C++ first.", "Learn C first."),
             ("Should we ship it?", "Should we ship it."),
             ("Open `snake_case.rs` now.", "Open snake-case.rs now."),
+            ("Open `README.md` now.", "Open `readme.md` now."),
+            ("Open `Cargo.toml` now.", "Open `cargo.toml` now."),
+            ("Ship it to the US team.", "Ship it to the us team."),
+            ("Walk the dogs' leads.", "Walk the dogs leads."),
             ("The venue needs a deposit.", "The **venue** needs a deposit."),
             ("The venue needs a deposit.", "```\nThe venue needs a deposit.\n```"),
         ] {

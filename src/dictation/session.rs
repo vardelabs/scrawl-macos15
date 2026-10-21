@@ -566,7 +566,9 @@ fn transcribe_and_paste(
         }
         None => text,
     };
-    let text = lay_out(text, &transcript.words, formatter);
+    // Estimated timings spread words across the speech, so their gaps are not pauses.
+    let timed: &[crate::model::WordTiming] = if transcript.estimated { &[] } else { &transcript.words };
+    let text = lay_out(text, timed, formatter);
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,
