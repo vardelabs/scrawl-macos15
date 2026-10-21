@@ -235,13 +235,14 @@ fragment float4 pill_composite_fragment(
     float is_glass = u.shape_meta.w;
     float sdf = rrect_sdf(p, u.shape_rect, r);
 
-    // 1. Soft drop shadow behind the capsule (in black mode; NSGlassEffectView has its own material shadow).
+    // 1. A subtle drop shadow under the capsule, a lift rather than a glow (in black mode;
+    // NSGlassEffectView has its own material shadow).
     if (is_glass < 0.5) {
-        float sdf_shadow = rrect_sdf(p - float2(0.0, 4.0), u.shape_rect, r);
-        if (sdf_shadow < 22.0) {
+        float sdf_shadow = rrect_sdf(p - float2(0.0, 1.5), u.shape_rect, r);
+        if (sdf_shadow < 10.0) {
             float sh_d = max(sdf_shadow, 0.0);
-            float sh_u = sh_d / 7.0;
-            float sh_a = 0.16 * shape_alpha * exp(-0.5 * sh_u * sh_u);
+            float sh_u = sh_d / 3.0;
+            float sh_a = 0.08 * shape_alpha * exp(-0.5 * sh_u * sh_u);
             out = blend_over(out, float4(0.0, 0.0, 0.0, sh_a));
         }
     }

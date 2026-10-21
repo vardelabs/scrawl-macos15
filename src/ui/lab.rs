@@ -146,8 +146,6 @@ fn show_dictation(pill: &crate::native::pill::NativePill, pres: crate::native::p
         clock: "0:03".to_owned(),
         reduced_motion: false,
         style: crate::native::pill::PillStyle::current(),
-        // Above the lab's backdrop window, which a Dock-level panel would sit under.
-        under_dock: false,
     });
 }
 

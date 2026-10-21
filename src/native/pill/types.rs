@@ -69,7 +69,4 @@ pub struct PillSnapshot {
     pub clock: String,
     pub reduced_motion: bool,
     pub style: PillStyle,
-    /// Dictation's states (including its Processing) sit just under the Dock; a capture's sit
-    /// above Scrawl's overlays.
-    pub under_dock: bool,
 }
