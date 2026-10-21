@@ -494,7 +494,8 @@ mod login {
         match status {
             1 => LoginItem::On,
             2 => LoginItem::NeedsApproval,
-            3 => LoginItem::Unavailable,
+            // `notFound` comes back for the installed, locally signed app too, so it is offered
+            // as off: registering either works or says why not.
             _ => LoginItem::Off,
         }
     }
@@ -685,6 +686,8 @@ pub struct LoginView {
     pub on: bool,
     pub available: bool,
     pub needs_approval: bool,
+    /// Why the last change to the login item failed, as macOS put it.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -961,6 +964,7 @@ pub struct Panel {
     error: Option<(ShortcutKind, String)>,
     /// Why the last Install or Uninstall failed.
     cli_error: Option<String>,
+    login_error: Option<String>,
     requested: BTreeSet<Permission>,
     grants: Option<Grants>,
     captures_size: Option<u64>,
@@ -1095,9 +1099,10 @@ impl Panel {
         };
         match (key, value) {
             ("launchAtLogin", serde_json::Value::Bool(on)) => {
-                if let Err(error) = host.set_login_item(*on) {
+                self.login_error = host.set_login_item(*on).err().map(|error| {
                     crate::capture::scrawl_log(format!("Launch at login: {error:#}"));
-                }
+                    format!("{error:#}")
+                });
                 if *on && login_item() == LoginItem::NeedsApproval {
                     return Effect::OpenLoginItems;
                 }
@@ -1211,6 +1216,7 @@ impl Panel {
                 on: matches!(login, LoginItem::On | LoginItem::NeedsApproval),
                 available: login != LoginItem::Unavailable,
                 needs_approval: login == LoginItem::NeedsApproval,
+                error: self.login_error.clone(),
             },
             auto_send: config.auto_send.unwrap_or(true),
             shortcuts: ShortcutKind::ALL
@@ -1653,6 +1659,7 @@ mod tests {
         paused: Vec<bool>,
         refuse: Option<String>,
         cli: crate::command_line::Places,
+        login_failure: Option<String>,
     }
 
     impl Host for Fake {
@@ -1675,7 +1682,10 @@ mod tests {
             self.path.clone()
         }
         fn set_login_item(&mut self, _on: bool) -> anyhow::Result<()> {
-            Ok(())
+            match &self.login_failure {
+                Some(reason) => anyhow::bail!("{reason}"),
+                None => Ok(()),
+            }
         }
         fn command_line(&self) -> crate::command_line::Places {
             self.cli.clone()
@@ -1711,12 +1721,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_failed_login_item_change_shows_why_until_one_succeeds() {
+        let dir = TempDir::new("login");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        let set = |panel: &mut Panel, host: &mut Fake, key: &str, value: serde_json::Value| {
+            panel.on(
+                Action::Set {
+                    key: key.into(),
+                    value,
+                },
+                host,
+            )
+        };
+        host.login_failure = Some("Operation not permitted".into());
+        set(&mut panel, &mut host, "launchAtLogin", true.into());
+        assert_eq!(
+            panel.view(&host).login.error.as_deref(),
+            Some("Operation not permitted")
+        );
+        host.login_failure = None;
+        set(&mut panel, &mut host, "launchAtLogin", true.into());
+        assert_eq!(panel.view(&host).login.error, None);
+    }
+
     fn fake(dir: &TempDir) -> Fake {
         Fake {
             shortcuts: Shortcuts::default(),
             path: dir.0.join("config.json"),
             paused: Vec::new(),
             refuse: None,
+            login_failure: None,
             cli: crate::command_line::Places {
                 target: None,
                 install: vec![dir.0.join("bin")],
