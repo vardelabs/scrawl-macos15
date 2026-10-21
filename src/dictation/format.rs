@@ -21,19 +21,26 @@ pub fn worth_formatting(text: &str) -> bool {
     text.split_whitespace().count() >= MIN_WORDS && sentence_ends(text).len() >= MIN_SENTENCES
 }
 
-/// Byte offsets just past each sentence's end: `.`, `!` or `?` followed by a space or the end,
-/// so `design.md` and `1.5` don't count, and neither does a list marker's "1." at a line's start.
+/// Closing quotes and brackets that may follow a sentence's end (`He said "stop."`).
+const CLOSERS: &[char] = &['"', '\'', ')', ']', '”', '’'];
+
+/// Byte offsets just past each sentence's end: `.`, `!` or `?`, then any closing quotes, then a
+/// space or the end, so `design.md` and `1.5` don't count, and neither does a list marker's "1."
+/// at a line's start.
 fn sentence_ends(text: &str) -> Vec<usize> {
-    let bytes = text.as_bytes();
     let list_marker = |i: usize| {
         let line_start = text[..i].rfind('\n').map_or(0, |n| n + 1);
         let before = text[line_start..i].trim_start();
         (1..=3).contains(&before.len()) && before.bytes().all(|b| b.is_ascii_digit())
     };
-    (0..bytes.len())
-        .filter(|&i| matches!(bytes[i], b'.' | b'!' | b'?') && bytes.get(i + 1).is_none_or(|b| b.is_ascii_whitespace()))
-        .filter(|&i| !list_marker(i))
-        .map(|i| i + 1)
+    text.char_indices()
+        .filter(|&(i, c)| matches!(c, '.' | '!' | '?') && !list_marker(i))
+        .filter_map(|(i, _)| {
+            let rest = &text[i + 1..];
+            let closed = rest.trim_start_matches(CLOSERS);
+            let end = i + 1 + (rest.len() - closed.len());
+            closed.chars().next().is_none_or(char::is_whitespace).then_some(end)
+        })
         .collect()
 }
 
@@ -44,7 +51,7 @@ pub fn pause_hints(words: &[WordTiming]) -> Vec<usize> {
     let mut sentence = 0;
     let mut hints = Vec::new();
     for (word, next) in words.iter().zip(words.iter().skip(1)) {
-        if word.text.ends_with(['.', '!', '?']) {
+        if word.text.trim_end_matches(CLOSERS).ends_with(['.', '!', '?']) {
             sentence += 1;
             if next.t0.saturating_sub(word.t1) >= PARAGRAPH_PAUSE_MS {
                 hints.push(sentence);
@@ -80,7 +87,7 @@ pub fn break_at_pauses(text: &str, pauses: &[usize]) -> String {
 /// without the punctuation layout may change around a word (`,` `.` `:` `;`, quotes, brackets,
 /// Markdown wrapping) or the list markers ("1.", "-", "•") that start a line. Characters inside a
 /// word (`1.5`, `$50`, `We're`, `C++`) and a word's `?` or `!` must match. A dictated "and" or
-/// "or" may be missing only right before a list item (the one before a list's last item).
+/// "or" may be missing only right before a list's last item.
 pub fn same_words(dictated: &str, formatted: &str) -> bool {
     if formatted.trim().is_empty() {
         return false;
@@ -90,19 +97,22 @@ pub fn same_words(dictated: &str, formatted: &str) -> bool {
     for (word, _) in &spoken {
         if laid_out.peek().is_some_and(|(next, _)| next == word) {
             laid_out.next();
-        } else if !(matches!(word.as_str(), "and" | "or") && laid_out.peek().is_some_and(|(_, item)| *item)) {
+        } else if !(matches!(word.as_str(), "and" | "or") && laid_out.peek().is_some_and(|(_, last_item)| *last_item)) {
             return false;
         }
     }
     laid_out.next().is_none()
 }
 
-/// Each word, lowercased and trimmed of layout punctuation, and whether it starts a list item.
+/// Each word, lowercased and trimmed of layout punctuation, and whether it starts a list's last
+/// item (an item line not followed by another).
 fn tokens(text: &str) -> Vec<(String, bool)> {
+    let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    let is_item = |line: &str| strip_list_marker(line).len() < line.trim_start().len();
     let mut out = Vec::new();
-    for line in text.lines() {
+    for (n, line) in lines.iter().enumerate() {
         let content = strip_list_marker(line);
-        let mut item = content.len() < line.trim_start().len();
+        let mut item = is_item(line) && !lines.get(n + 1).is_some_and(|next| is_item(next));
         for word in content.split_whitespace() {
             let word = word
                 .trim_start_matches(|c: char| "\"'([“‘`*_".contains(c))
@@ -175,6 +185,9 @@ mod tests {
         // "and" may go only right before a list item, not from prose.
         assert!(!same_words("Salt and pepper.", "Salt pepper."));
         assert!(!same_words("I can and will go. Bring tents.", "I can will go.\n- Bring tents."));
+        let two_dropped = "Pack:\n- tents\n- stoves\n- maps";
+        assert!(!same_words("Pack tents and stoves and maps.", two_dropped), "only the last item's conjunction");
+        assert!(same_words("Pack tents, stoves and maps.", two_dropped));
         for (dictated, formatted) in [
             ("Take 1.5 mg daily.", "Take 15 mg daily."),
             ("It costs $50 now.", "It costs 50 now."),
@@ -197,6 +210,9 @@ mod tests {
         // A list's "1." is no sentence end, so a pause after the intro breaks after it.
         let list = "Intro here. Then:\n1. One thing.\n2. Two things.";
         assert_eq!(sentence_ends(list).len(), 3);
+        let quoted = "She said \"stop here.\" Then we left. \"Why?\" he asked.";
+        assert_eq!(sentence_ends(quoted).len(), 4);
+        assert_eq!(break_at_pauses(quoted, &[1]), "She said \"stop here.\"\n\nThen we left. \"Why?\" he asked.");
         assert!(same_words(text, &break_at_pauses(text, &[1, 3])));
     }
 
