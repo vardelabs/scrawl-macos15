@@ -36,6 +36,10 @@ pub const IDLE_H: f32 = 24.0;
 /// The always-on dictation bar (`Pres::DictationIdle`).
 pub const DICTATION_IDLE_W: f32 = 44.0;
 pub const DICTATION_IDLE_H: f32 = 10.0;
+/// A notice's text starts right after its check's chip-wide slot, and ends this far from the
+/// element's edge, so the space after the text matches the space before the check (13.5 pt from
+/// the capsule's edge on both sides).
+pub const NOTICE_TRAIL: f32 = (CHIP_H - 13.0) * 0.5;
 
 pub const CHIP_H: f32 = ISLAND_H - 2.0 * ISLAND_INSET; // 32.0
 pub const CHIP_RADIUS: f32 = CHIP_H * 0.5; // 16.0
@@ -646,8 +650,8 @@ pub fn layout_of(
             return (Layout::centered(DICTATION_IDLE_W, DICTATION_IDLE_H), Vec::new());
         }
         Pres::Message { notice, .. } => {
-            let lead = if *notice { CHIP_H + 4.0 } else { CHIP_PX };
-            let w = lead + completed_label_w + CHIP_PX;
+            let (lead, trail) = if *notice { (CHIP_H, NOTICE_TRAIL) } else { (CHIP_PX, CHIP_PX) };
+            let w = lead + completed_label_w + trail;
             raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
         }
         Pres::Hint { dictate } => {

@@ -1380,7 +1380,7 @@ impl PillRuntimeState {
                         ic.uv,
                         [0.412, 0.847, 0.624, 1.0],
                     );
-                    text_x = ox + CHIP_H + 4.0;
+                    text_x = ox + CHIP_H;
                 }
                 push_sprite(
                     out,
