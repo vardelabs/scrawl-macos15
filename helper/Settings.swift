@@ -926,30 +926,29 @@ struct SettingsView: View {
           .foregroundStyle(SettingsTheme(scheme).text)
       }
       .frame(height: SettingsMetrics.titlebar)
-      switch pane {
-      case .general: general
-      case .recording:
-        if model.rendering {
-          // ImageRenderer cannot draw the AppKit-backed scroll view.
-          recording.frame(maxHeight: .infinity, alignment: .top).clipped()
-        } else {
-          ScrollView { recording.padding(.bottom, 16) }
-        }
-      case .dictation:
-        if model.rendering {
-          // Taller than the window: an explicit height keeps the top in view.
-          dictation.frame(height: SettingsMetrics.height - SettingsMetrics.titlebar, alignment: .top).clipped()
-        } else {
-          ScrollView { dictation.padding(.bottom, 16) }
-        }
-      case .storage: storage
-      case .permissions: permissions
-      case .agents: agents
-      case .about: about
+      if model.rendering {
+        // ImageRenderer cannot draw the AppKit-backed scroll view; an explicit height keeps the
+        // top of a pane taller than the window in view.
+        paneBody(pane).frame(height: SettingsMetrics.height - SettingsMetrics.titlebar, alignment: .top).clipped()
+      } else {
+        // Every pane scrolls, so none is cut off at the window's minimum size.
+        ScrollView { paneBody(pane).padding(.bottom, 16) }
       }
       Spacer(minLength: 0)
     }
     .padding(.horizontal, SettingsMetrics.inset)
+  }
+
+  @ViewBuilder private func paneBody(_ pane: SettingsPane) -> some View {
+    switch pane {
+    case .general: general
+    case .recording: recording
+    case .dictation: dictation
+    case .storage: storage
+    case .permissions: permissions
+    case .agents: agents
+    case .about: about
+    }
   }
 
   private var state: SettingsState { model.state }
