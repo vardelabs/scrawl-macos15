@@ -58,8 +58,17 @@ impl Dictionary {
         let mut json = serde_json::to_vec_pretty(self)?;
         json.push(b'\n');
         std::fs::write(&temp, json)?;
-        if let Ok(meta) = std::fs::metadata(&path) {
-            std::fs::set_permissions(&temp, meta.permissions())?;
+        // Owner-only like config.json, since entries can be private names; an existing file keeps
+        // the mode its owner gave it.
+        match std::fs::metadata(&path) {
+            Ok(meta) => std::fs::set_permissions(&temp, meta.permissions())?,
+            #[cfg(unix)]
+            Err(_) => {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+            }
+            #[cfg(not(unix))]
+            Err(_) => {}
         }
         std::fs::rename(&temp, &path).with_context(|| format!("Could not save {}", path.display()))
     }
@@ -287,7 +296,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("scrawl-dictionary-test-{}", std::process::id()));
         let path = dir.join("dictionary.json");
         assert_eq!(Dictionary::load_from(&path).unwrap(), Dictionary::default());
-        std::fs::create_dir_all(&dir).unwrap();
+        Dictionary::default().save_to(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
 
         std::fs::write(&path, r#"{"words": ["Corvus"], "learned": {"corvis": 1}}"#).unwrap();
         let mut d = Dictionary::load_from(&path).unwrap();
