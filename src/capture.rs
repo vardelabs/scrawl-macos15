@@ -746,37 +746,33 @@ impl ScreenCaptureSession {
 
 /// One movie from a session's segments (`crate::pause::join_plan`), with its `videoOffsetMs`.
 /// A capture that was never paused has one segment, which is used as it is. `None` when there
-/// was no movie, or the join failed (the candidate frames stand in).
+/// was no movie; a failed join keeps the segments on disk and leaves the movie out (the candidate
+/// frames stand in).
 fn join_segments(segments: Vec<crate::pause::Segment>) -> Option<(Option<PathBuf>, u64)> {
     let written: Vec<_> = segments
         .into_iter()
         .filter(|s| s.path.metadata().is_ok_and(|m| m.len() > 0))
         .collect();
     let plan = crate::pause::join_plan(&written)?;
-    if let [(path, 0, None)] = plan.parts[..] {
-        return Some((Some(path.to_path_buf()), plan.video_offset_ms));
-    }
     let first = written.first()?.path.clone();
+    if let [(path, 0, None)] = plan.parts[..]
+        && path == first
+    {
+        return Some((Some(first), plan.video_offset_ms));
+    }
     let joined = first.with_file_name("recording-joined.mp4");
     let result = crate::helper::join_movies(&joined, &plan.parts)
         .and_then(|()| std::fs::rename(&joined, &first).map_err(Into::into));
-    for segment in &written {
-        if segment.path != first {
-            let _ = std::fs::remove_file(&segment.path);
-        }
+    if let Err(error) = result {
+        scrawl_log(format!("Joining the recording segments failed: {error:#}"));
+        let _ = std::fs::remove_file(&joined);
+        return Some((None, plan.video_offset_ms));
     }
-    match result {
-        Ok(()) => {
-            scrawl_log(format!("Joined {} recording segments", plan.parts.len()));
-            Some((Some(first), plan.video_offset_ms))
-        }
-        Err(error) => {
-            scrawl_log(format!("Joining the recording segments failed: {error:#}"));
-            let _ = std::fs::remove_file(&joined);
-            let _ = std::fs::remove_file(&first);
-            Some((None, plan.video_offset_ms))
-        }
+    for segment in &written[1..] {
+        let _ = std::fs::remove_file(&segment.path);
     }
+    scrawl_log(format!("Joined {} recording segments", plan.parts.len()));
+    Some((Some(first), plan.video_offset_ms))
 }
 
 impl Drop for ScreenCaptureSession {
