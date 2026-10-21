@@ -181,7 +181,7 @@ struct PillUniforms {
     float4 shape_rect;     // l, t, r, b in panel points
     float4 shape_meta;     // radius, alpha, blur, is_glass (1.0 = glass, 0.0 = black)
     float4 ghost_rect;     // l, t, r, b in panel points
-    float4 ghost_meta;     // radius, alpha, 0, 0
+    float4 ghost_meta;     // radius, alpha, 0, idle (1.0 = the see-through dictation bar)
     float4 hint_rect;      // x, y, w, h of optional "Esc" badge below capsule (w == 0 when off)
     float4 hint_uv;        // u0, v0, u1, v1 of "Esc" label in atlas
 };
@@ -263,7 +263,8 @@ fragment float4 pill_composite_fragment(
     float in_cov = smoothstep(half_band, -half_band, sdf);
     if (in_cov > 0.001) {
         if (is_glass < 0.5) {
-            float fill_a = 0.96 * shape_alpha * in_cov;
+            // The idle dictation bar is see-through, as Wispr Flow's is.
+            float fill_a = mix(0.96, 0.5, u.ghost_meta.w) * shape_alpha * in_cov;
             out = blend_over(out, float4(bg_rgb * fill_a, fill_a));
         }
 
@@ -340,7 +341,7 @@ fragment float4 pill_composite_fragment(
             float3 border_rgb = (u.is_completed != 0u)
                 ? float3(105.0 / 255.0, 216.0 / 255.0, 159.0 / 255.0)
                 : float3(1.0, 1.0, 1.0);
-            float border_max_a = (u.is_completed != 0u) ? 0.42 : 0.12;
+            float border_max_a = (u.is_completed != 0u) ? 0.42 : mix(0.12, 0.5, u.ghost_meta.w);
             float ba = border_cov * border_max_a * shape_alpha;
             out = blend_over(out, float4(border_rgb * ba, ba));
         }

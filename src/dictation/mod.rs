@@ -7,7 +7,7 @@ pub mod chord;
 #[cfg(target_os = "macos")]
 mod session;
 #[cfg(target_os = "macos")]
-pub use session::Dictation;
+pub use session::{Dictation, PillInput};
 
 /// The default chord, as Wispr Flow binds it.
 pub const DEFAULT_SHORTCUT: &str = "⌃⌥";
@@ -55,6 +55,13 @@ pub fn parse_shortcut(text: &str) -> Option<Modifiers> {
 pub struct Dictation;
 
 #[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+pub struct PillInput {
+    pub hovered: bool,
+    pub clicks: Vec<crate::native::pill::PillAction>,
+}
+
+#[cfg(not(target_os = "macos"))]
 impl Dictation {
     pub fn is_busy(&self) -> bool {
         false
@@ -62,7 +69,18 @@ impl Dictation {
 
     pub fn cede(&mut self) {}
 
-    pub fn tick(&mut self, _telemetry: &crate::capture::SharedCaptureTelemetry, _capture_busy: bool) {}
+    pub fn tick(
+        &mut self,
+        _telemetry: &crate::capture::SharedCaptureTelemetry,
+        _capture_busy: bool,
+        _pill: PillInput,
+    ) -> crate::native::pill::model::Pres {
+        crate::native::pill::model::Pres::Hidden
+    }
+
+    pub fn clock(&self) -> String {
+        String::new()
+    }
 }
 
 #[cfg(test)]

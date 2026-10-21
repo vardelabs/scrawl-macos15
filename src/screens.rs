@@ -250,6 +250,20 @@ pub fn pointer() -> Option<[f64; 2]> {
     crate::capture::current_mouse_screen().map(|[x, y]| [f64::from(x), f64::from(y)])
 }
 
+/// A point on the screen that's active: the centre of the frontmost app's front window, else the
+/// pointer. Where the bottom pill sits, as Wispr Flow's follows the active screen.
+#[cfg(target_os = "macos")]
+pub fn active_point() -> Option<[f64; 2]> {
+    let front = crate::capture::frontmost_external_pid().and_then(|pid| {
+        objc2::rc::autoreleasepool(|_| crate::windows::raw_windows())
+            .into_iter()
+            .find(|w| w.pid == pid && w.layer == 0 && w.alpha > 0.01 && w.bounds[2] > 40.0)
+    });
+    front
+        .map(|w| [w.bounds[0] + w.bounds[2] / 2.0, w.bounds[1] + w.bounds[3] / 2.0])
+        .or_else(pointer)
+}
+
 /// Every display, the primary first, in global pixels; `id` is its index (`TargetInfo::display_id`).
 #[cfg(target_os = "windows")]
 pub fn displays() -> Vec<Screen> {
@@ -275,6 +289,12 @@ pub fn current() -> Vec<Screen> {
 #[cfg(target_os = "windows")]
 pub fn pointer() -> Option<[f64; 2]> {
     crate::win::cursor_position().map(|(x, y)| [x, y])
+}
+
+/// The pointer stands in for the active screen on Windows, where only the GPUI capsule draws.
+#[cfg(target_os = "windows")]
+pub fn active_point() -> Option<[f64; 2]> {
+    pointer()
 }
 
 #[cfg(test)]

@@ -24,6 +24,9 @@ pub const PANEL_Y: f32 = 34.0;
 pub const CX: f32 = PANEL_W * 0.5;
 /// Top edge of the resting 40 pt capsule inside the 84 pt panel (vertical centre y = 42, screen y = 76).
 pub const TOP: f32 = 22.0;
+/// With `PillModel::anchor_bottom`, the capsule's resting bottom edge: it grows upward from here,
+/// as a pill at the bottom of the screen should.
+pub const ANCHOR_B: f32 = TOP + ISLAND_H;
 pub const ISLAND_H: f32 = 40.0;
 pub const ISLAND_RADIUS: f32 = ISLAND_H * 0.5;
 pub const ISLAND_INSET: f32 = 4.0;
@@ -464,11 +467,14 @@ pub enum Pres {
     },
     /// Dictation is on and idle: a small bar that stays on screen, as Wispr Flow's does.
     DictationIdle,
-    /// One line from dictation: a hint while the idle bar is hovered, or a notice (with a check)
-    /// such as "Copied to the clipboard".
+    /// One line from dictation: a notice (with a check) such as "Copied to the clipboard".
     Message {
         label: String,
         notice: bool,
+    },
+    /// The idle bar hovered: "Dictate ⌃⌥" (when dictation is on) and Record.
+    Hint {
+        dictate: Option<String>,
     },
 }
 
@@ -513,6 +519,7 @@ impl Pres {
                 Self::Message { label: a, notice: na },
                 Self::Message { label: b, notice: nb },
             ) => a == b && na == nb,
+            (Self::Hint { dictate: a }, Self::Hint { dictate: b }) => a == b,
             _ => false,
         }
     }
@@ -642,6 +649,19 @@ pub fn layout_of(
             let lead = if *notice { CHIP_H + 4.0 } else { CHIP_PX };
             let w = lead + completed_label_w + CHIP_PX;
             raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
+        }
+        Pres::Hint { dictate } => {
+            if dictate.is_some() {
+                let w = 2.0 * CHIP_PX + completed_label_w;
+                raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
+            }
+            raw.push((
+                ElemId::Record,
+                Metrics::chip_width(m.record),
+                CHIP_CORE_ROUND,
+                0.0,
+                true,
+            ));
         }
         Pres::Selecting {
             mode,
@@ -851,9 +871,28 @@ pub struct FrameState {
     pub shape: Silhouette,
     pub ghost: Option<Silhouette>,
     pub is_completed: bool,
+    /// The always-on dictation bar, drawn see-through with a light rim, as Wispr Flow's is.
+    pub is_idle: bool,
     pub content_blur: f32,
     pub content_alpha: f32,
     pub elems: Vec<FrameElem>,
+}
+
+impl FrameState {
+    fn shift_down(&mut self, dy: f32) {
+        if dy == 0.0 {
+            return;
+        }
+        self.shape.t += dy;
+        self.shape.b += dy;
+        if let Some(ghost) = self.ghost.as_mut() {
+            ghost.t += dy;
+            ghost.b += dy;
+        }
+        for elem in &mut self.elems {
+            elem.rect[1] += dy;
+        }
+    }
 }
 
 pub struct PillModel {
@@ -880,6 +919,8 @@ pub struct PillModel {
     pub pressed: Option<ElemId>,
     pub clock: String,
     pub completed_label_w: f32,
+    /// Keep the bottom edge still and grow upward (the pill sits at the bottom of the screen).
+    pub anchor_bottom: bool,
     pub metrics: Metrics,
 }
 
@@ -910,6 +951,7 @@ impl PillModel {
             pressed: None,
             clock: "0:00".to_owned(),
             completed_label_w: 46.0,
+            anchor_bottom: false,
             metrics,
         }
     }
@@ -1163,6 +1205,7 @@ impl PillModel {
             return false;
         }
         let (lay, _) = layout_of(&self.pres, &self.clock, self.completed_label_w, &self.metrics);
+        let y = y - self.anchor_dy(TOP + (lay.b - TOP).max(IDLE_H * 0.5));
         let slop = 6.0;
         x >= lay.l - slop && x <= lay.r + slop && y >= lay.t - slop && y <= lay.b + slop
     }
@@ -1173,6 +1216,7 @@ impl PillModel {
             return None;
         }
         let (_, items) = layout_of(&self.pres, &self.clock, self.completed_label_w, &self.metrics);
+        let y = y - self.anchor_dy(self.silhouette().b);
         for item in &items {
             if !item.id.is_interactive() || !item.enabled {
                 continue;
@@ -1604,15 +1648,24 @@ impl PillModel {
             });
         }
 
-        FrameState {
+        let mut frame = FrameState {
             t: self.t,
             shape,
             ghost,
             is_completed: matches!(self.geo_pres, Pres::Completed { .. }),
+            is_idle: matches!(self.geo_pres, Pres::DictationIdle),
             content_blur: max_blur,
             content_alpha: max_alpha,
             elems,
-        }
+        };
+        frame.shift_down(self.anchor_dy(frame.shape.b));
+        frame
+    }
+
+    /// How far a frame drawn hanging from `TOP` moves down so its drawn bottom edge `b` rests at
+    /// `ANCHOR_B`; zero unless `anchor_bottom`.
+    fn anchor_dy(&self, b: f32) -> f32 {
+        if self.anchor_bottom { ANCHOR_B - b } else { 0.0 }
     }
 
     /// True once every spring has settled and no delayed geometry transition is pending.
@@ -1723,6 +1776,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_bottom_anchored_pill_grows_upward_from_one_edge() {
+        let mut m = PillModel::new(Metrics::default());
+        m.anchor_bottom = true;
+        m.set_pres(Pres::DictationIdle);
+        for _ in 0..120 {
+            m.advance(FRAME_DT);
+        }
+        let idle = m.frame();
+        assert!(idle.is_idle);
+        assert!((idle.shape.b - ANCHOR_B).abs() < 0.5, "idle bottom {}", idle.shape.b);
+        assert!(idle.shape.height() < ISLAND_H * 0.5);
+
+        m.set_pres(Pres::Dictating { latched: true });
+        for _ in 0..120 {
+            m.advance(FRAME_DT);
+        }
+        let open = m.frame();
+        assert!(!open.is_idle);
+        assert!((open.shape.b - ANCHOR_B).abs() < 0.5, "open bottom {}", open.shape.b);
+        assert!(open.shape.t < idle.shape.t, "the open pill grows upward");
+        // Hits land where the shifted elements are drawn.
+        let confirm = open.elems.iter().find(|e| e.id == ElemId::Confirm).unwrap();
+        let [x, y, w, h] = confirm.rect;
+        assert_eq!(m.hit_element(x + w / 2.0, y + h / 2.0), Some(ElemId::Confirm));
+        assert!(m.hit_island(x + w / 2.0, y + h / 2.0));
     }
 
     #[test]

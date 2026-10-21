@@ -323,7 +323,8 @@ impl NativePill {
 
         let pipelines = MetalPipelines::new(scale)?;
         let metrics = atlas::measure_metrics();
-        let model = PillModel::new(metrics);
+        let mut model = PillModel::new(metrics);
+        model.anchor_bottom = true;
         let (action_tx, action_rx) = flume::unbounded();
 
         let window = NSPanel::initWithContentRect_styleMask_backing_defer(
@@ -453,8 +454,9 @@ impl NativePill {
         }
     }
 
-    /// Moves the capsule to the bottom centre of the screen holding `point`, above the Dock, where
-    /// dictation shows it (clear of the capture capsule at the top).
+    /// Moves the capsule to the bottom centre of the screen holding `point`, a few points above
+    /// its bottom edge whatever the Dock does, as Wispr Flow's pill sits: a hidden Dock slides
+    /// over it rather than pushing it up.
     pub fn place_at_bottom(&self, point: [f64; 2]) {
         let screens = crate::screens::current();
         let Some(screen) = crate::screens::index_at(&screens, point)
@@ -463,9 +465,8 @@ impl NativePill {
         else {
             return;
         };
-        let capsule_bottom = f64::from(model::TOP + model::ISLAND_H);
         let x = screen.frame[0] + ((screen.frame[2] - f64::from(PANEL_W)) / 2.0).round();
-        let y = screen.visible[1] + screen.visible[3] - capsule_bottom - BOTTOM_GAP;
+        let y = screen.frame[1] + screen.frame[3] - f64::from(model::ANCHOR_B) - BOTTOM_GAP;
         self.move_to([x as f32, y as f32]);
     }
 
@@ -510,16 +511,22 @@ impl NativePill {
                 st.model.set_clock(&snapshot.clock);
                 st.dirty = true;
             }
-            if let Pres::Completed { ref label } | Pres::Message { ref label, .. } = snapshot.pres {
+            let label = match &snapshot.pres {
+                Pres::Completed { label } | Pres::Message { label, .. } => Some(label),
+                Pres::Hint { dictate } => dictate.as_ref(),
+                _ => None,
+            };
+            if let Some(label) = label {
                 let sp = st.pipelines.atlas.update_completed(label);
                 st.model.set_completed_label(label.clone(), sp.size_pt[0]);
             }
             if st.model.pres != snapshot.pres {
                 let was_hidden = st.model.is_fully_hidden();
+                let level = window_level(&snapshot.pres);
                 st.model.set_pres(snapshot.pres);
                 st.dirty = true;
-                if was_hidden {
-                    st.window.setLevel(NSStatusWindowLevel + 5);
+                if was_hidden || st.window.level() != level {
+                    st.window.setLevel(level);
                     st.window.orderFrontRegardless();
                 }
             }
@@ -567,8 +574,27 @@ impl Drop for NativePill {
     }
 }
 
-/// Space between the dictation capsule and the Dock or the screen's bottom edge.
-const BOTTOM_GAP: f64 = 16.0;
+/// Space between the capsule's bottom edge and the screen's.
+const BOTTOM_GAP: f64 = 6.0;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGWindowLevelForKey(key: i32) -> i32;
+}
+
+/// `kCGDockWindowLevelKey`.
+const DOCK_LEVEL_KEY: i32 = 7;
+
+/// Capture states sit above Scrawl's overlays (picker, ink); dictation's sit just under the
+/// Dock, so a Dock that pops up covers the pill instead of the pill covering the Dock.
+fn window_level(pres: &Pres) -> isize {
+    match pres {
+        Pres::DictationIdle | Pres::Message { .. } | Pres::Hint { .. } | Pres::Dictating { .. } => {
+            (unsafe { CGWindowLevelForKey(DOCK_LEVEL_KEY) } - 1) as isize
+        }
+        _ => NSStatusWindowLevel + 5,
+    }
+}
 
 /// The panel's top-left (global points) on the screen holding `point`, else the primary one.
 fn panel_origin(screens: &[crate::screens::Screen], point: Option<[f64; 2]>) -> Option<[f32; 2]> {
@@ -822,6 +848,7 @@ impl PillRuntimeState {
                     PillAction::SwitchRecording(SelectionMode::Iphone)
                 }
             }
+            ElemId::Record if matches!(self.model.pres, Pres::Hint { .. }) => PillAction::RecordScreen,
             ElemId::Record => PillAction::RecordSelected,
             ElemId::Undo => PillAction::Undo,
             ElemId::Cancel => PillAction::Cancel,
@@ -945,14 +972,15 @@ impl PillRuntimeState {
             hint_uv = esc_sp.uv;
         }
 
+        let idle = if frame.is_idle { 1.0 } else { 0.0 };
         let (has_ghost, ghost_rect, ghost_meta) = if let Some(ref g) = frame.ghost {
             (
                 1_u32,
                 [g.l, g.t, g.r, g.b],
-                [g.radius, g.alpha, 0.0, 0.0],
+                [g.radius, g.alpha, 0.0, idle],
             )
         } else {
-            (0_u32, [0.0; 4], [0.0; 4])
+            (0_u32, [0.0; 4], [0.0, 0.0, 0.0, idle])
         };
 
         let tile_uniforms = TileUniforms {

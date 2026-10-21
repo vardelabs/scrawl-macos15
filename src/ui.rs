@@ -673,6 +673,10 @@ pub struct ScrawlCoordinator {
     playback: Option<crate::playback::Guard>,
     picker_metal_overlay: Option<LaserOverlay>,
     native_pill: Option<crate::native::pill::NativePill>,
+    /// What dictation last put on the capsule while no capture was on it (`tick_dictation`).
+    dictation_shown: Option<crate::native::pill::PillSnapshot>,
+    /// When the capsule last followed the active screen while showing dictation.
+    dictation_placed: Instant,
     iphone_preview: Option<PhoneSession>,
     island_phase: IslandPhase,
     island_prev_phase: IslandPhase,
@@ -784,6 +788,8 @@ impl ScrawlCoordinator {
             playback: None,
             picker_metal_overlay: None,
             native_pill: None,
+            dictation_shown: None,
+            dictation_placed: Instant::now(),
             iphone_preview: None,
             island_phase: IslandPhase::Hidden,
             island_prev_phase: IslandPhase::Hidden,
@@ -1838,11 +1844,11 @@ impl ScrawlCoordinator {
             IslandPhase::Selecting { .. } => Some(centre(self.display_rect.map(f64::from))),
             _ => None,
         };
-        let Some(point) = anchor.or_else(crate::screens::pointer) else {
+        let Some(point) = anchor.or_else(crate::screens::active_point) else {
             return;
         };
         match self.native_pill {
-            Some(ref pill) => pill.place_on(point),
+            Some(ref pill) => pill.place_at_bottom(point),
             None => platform::place_hud_pill(point),
         }
     }
@@ -2007,6 +2013,79 @@ impl ScrawlCoordinator {
         }
     }
 
+    /// Dictation shares the capsule. While no capture is on it, dictation gets its hover and
+    /// clicks and decides what it shows: the always-on bar, the hint, listening, a notice.
+    pub fn tick_dictation(&mut self, cx: &mut Context<Self>) {
+        use crate::native::pill::PillAction;
+        let capture_busy = self.switcher.is_held()
+            || self.is_recording()
+            || self.is_selecting()
+            || self.is_processing();
+        let free = matches!(self.island_phase, IslandPhase::Hidden);
+        let mut input = crate::dictation::PillInput::default();
+        if free && let Some(pill) = &self.native_pill {
+            input.hovered = pill.pointer_on_pill();
+            input.clicks = pill.drain_actions();
+        }
+        let record = input.clicks.iter().any(|c| matches!(c, PillAction::RecordScreen));
+        input.clicks.retain(|c| !matches!(c, PillAction::RecordScreen));
+        let pres = self.dictation.tick(&self.telemetry, capture_busy, input);
+        if record && free {
+            self.record_from_pill(cx);
+        } else if free {
+            self.show_dictation(pres);
+        } else {
+            // The capture owns the capsule; dictation redraws in full once it's free again.
+            self.dictation_shown = None;
+        }
+    }
+
+    /// Record on the hovered bar: what a tap of the record shortcut does.
+    fn record_from_pill(&mut self, cx: &mut Context<Self>) {
+        self.dictation_shown = None;
+        if crate::handoff::tap_chooses() {
+            self.begin_target_selection(cx);
+        } else {
+            self.record_or_finish(cx);
+        }
+    }
+
+    fn show_dictation(&mut self, pres: crate::native::pill::model::Pres) {
+        use crate::native::pill::{PillSnapshot, PillStyle, model::Pres};
+        if pres != Pres::Hidden && crate::handoff::native_pill() {
+            self.ensure_native_pill();
+        }
+        let Some(pill) = &self.native_pill else {
+            return;
+        };
+        if self.dictation_placed.elapsed() >= Duration::from_millis(500) {
+            self.dictation_placed = Instant::now();
+            if let Some(point) = crate::screens::active_point() {
+                pill.place_at_bottom(point);
+            }
+            // Each recording starts with a fresh exclusion list (`reset_for_session`).
+            let id = pill.window_number();
+            let mut excluded = self
+                .telemetry
+                .excluded_window_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !excluded.contains(&id) {
+                excluded.push(id);
+            }
+        }
+        let snapshot = PillSnapshot {
+            pres,
+            clock: self.dictation.clock(),
+            reduced_motion: self.reduced_motion,
+            style: PillStyle::current(),
+        };
+        if self.dictation_shown.as_ref() != Some(&snapshot) {
+            pill.sync(snapshot.clone());
+            self.dictation_shown = Some(snapshot);
+        }
+    }
+
     pub(crate) fn sync_native_pill(&mut self) {
         if self.native_pill.is_some() {
             let snap = self.pill_snapshot();
@@ -2028,8 +2107,9 @@ impl ScrawlCoordinator {
             PillAction::Paste(target) => self.paste_completed_bundle(target, cx),
             PillAction::Inspect => self.inspect_completed_bundle(cx),
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
-            // Only dictation's own pill shows a message.
+            // Dictation's states never show while a capture owns the capsule.
             PillAction::MessageClicked => {}
+            PillAction::RecordScreen => self.record_or_finish(cx),
         }
     }
 
@@ -5458,13 +5538,7 @@ pub fn run_app(
                     }
 
                     motion::poll_tune();
-                    loop_coord.update(cx, |coord, _| {
-                        let capture_busy = coord.switcher.is_held()
-                            || coord.is_recording()
-                            || coord.is_selecting()
-                            || coord.is_processing();
-                        coord.dictation.tick(&coord.telemetry, capture_busy);
-                    });
+                    loop_coord.update(cx, |coord, cx| coord.tick_dictation(cx));
                     if loop_coord.read(cx).switcher.is_held() {
                         loop_coord.update(cx, |coord, cx| coord.tick_switcher(cx));
                     } else if loop_coord.read(cx).telemetry.take_escape()

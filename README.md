@@ -809,7 +809,8 @@ Scrawl can also type for you, with no screen recorded. Turn on Settings › **Di
 - **Double tap `⌃⌥`**, or click the pill, for hands-free: the pill shows ✕ and ✓. `⌃⌥` again or ✓
   pastes; Esc or ✕ discards.
 
-A small pill stays at the bottom of the screen while dictation is on, as Wispr Flow's does.
+A small see-through pill stays at the bottom of the active screen, as Wispr Flow's does; hover it
+for Dictate and Record. Scrawl's recording controls show in the same pill.
 Unless a text field had focus, the text also stays on the clipboard to paste by hand, and with
 nothing focused the pill says so.
 

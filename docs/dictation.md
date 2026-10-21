@@ -16,13 +16,14 @@ The default chord is `⌃⌥` (`dictationShortcut`, also `⌃⌘`, `⌥⌘` or `
 
 ## The pill
 
-Dictation owns its own `NativePill`, placed at the bottom centre of the display under the pointer (it follows the pointer between displays), clear of the capture capsule at the top. Like Wispr Flow's, it stays on screen while dictation is on (`dictationPill`, default on):
+Dictation shares Scrawl's one capsule with captures (`ScrawlCoordinator::tick_dictation`). While no capture is on it, dictation gets its hover and clicks (`PillInput`) and decides what it shows (`session::presentation`); a capture takes it over and gives it back when its island is hidden. The capsule sits at the bottom centre of the active screen (`screens::active_point`), a few points above the bottom edge whatever the Dock does, and grows upward from there, as Wispr Flow's pill does:
 
-- `Pres::DictationIdle`: a small bar. Hovered, it becomes `Pres::Message` with the hint "Click or hold ⌃⌥ to dictate"; a click starts hands-free dictation (`Chord::latch`).
+- `Pres::DictationIdle`: a small see-through bar with a light rim (`FrameState::is_idle`), on while `dictationPill` is (default on), even with dictation off, since it also starts recordings.
+- Hovered, `Pres::Hint`: "Dictate ⌃⌥" (when dictation is on), which starts hands-free dictation (`Chord::latch`), and Record, which does what a tap of the record shortcut does.
 - `Pres::Dictating { latched }`: the dot and clock, with ✕ and ✓ when latched; `Pres::Processing` while it transcribes.
-- A notice, `Pres::Message { notice: true }` with a check, for 2.5 s: "Copied to the clipboard" when there was nowhere to paste, "Didn't catch that" when nothing was heard. Automatic dictionary updates will use the same notice.
+- A notice, `Pres::Message { notice: true }` with a check, for 2.5 s: "Copied to the clipboard" when nothing was focused, "Didn't catch that" when nothing was heard. Automatic dictionary updates will use the same notice.
 
-The pill hides while a capture records, selects or processes, and its window is put back on the capture exclusion list every 500 ms (each recording starts a fresh list). Element tiles are packed by width (`render_frame`), so a message wider than a chip isn't cut off. `scrawl lab pill dictation` plays these states on their own pill.
+Dictation's states sit one window level under the Dock (`window_level`), so a Dock that pops up covers the pill; capture states stay above Scrawl's overlays. The capsule hides while a capture records, selects or processes, and its window is put back on the capture exclusion list every 500 ms (each recording starts a fresh list). Element tiles are packed by width (`render_frame`), so a message wider than a chip isn't cut off. `scrawl lab pill dictation` plays these states.
 
 ## Transcription and paste
 

@@ -56,8 +56,10 @@ pub enum PillAction {
     Paste(Option<[f32; 2]>),
     Inspect,
     DismissCompleted,
-    /// The dictation pill's hint or notice was clicked.
+    /// The pill's "Dictate" hint or a notice was clicked.
     MessageClicked,
+    /// Record on the hovered idle bar: record the screen, as a tap of the shortcut does.
+    RecordScreen,
 }
 
 /// Coordinator state snapshot synced to `NativePill`.

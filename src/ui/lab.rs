@@ -123,7 +123,12 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
     };
     vec![
         (0.0, Pres::DictationIdle),
-        (1.2, message("Click or hold ⌃⌥ to dictate", false)),
+        (
+            1.2,
+            Pres::Hint {
+                dictate: Some("Dictate ⌃⌥".to_owned()),
+            },
+        ),
         (2.4, Pres::Dictating { latched: true }),
         (4.0, Pres::Processing),
         (4.8, message("Copied to the clipboard", true)),
