@@ -34,6 +34,11 @@ unsafe extern "C" {
         out: *mut CFTypeRef,
     ) -> i32;
     fn AXUIElementSetMessagingTimeout(element: AxElement, seconds: f32) -> i32;
+    fn AXUIElementIsAttributeSettable(
+        element: AxElement,
+        attribute: CFStringRef,
+        settable: *mut u8,
+    ) -> i32;
     fn AXUIElementGetPid(element: AxElement, pid: *mut i32) -> i32;
     fn AXUIElementGetTypeID() -> usize;
 }
@@ -70,8 +75,20 @@ pub fn focused_takes_text() -> Option<bool> {
     };
     let role = string_attribute(element.0, "AXRole")?;
     let subrole = string_attribute(element.0, "AXSubrole").unwrap_or_default();
-    let text = is_input(&role, &subrole) || attribute(element.0, "AXSelectedTextRange").is_some();
+    // Read-only selectable text has a selection too; only a value that can be set takes text.
+    let text = is_input(&role, &subrole)
+        || attribute(element.0, "AXSelectedTextRange").is_some() && settable(element.0, "AXValue");
     text.then_some(true)
+}
+
+#[cfg(target_os = "macos")]
+fn settable(element: AxElement, name: &'static str) -> bool {
+    let key = CFString::from_static_string(name);
+    let mut settable = 0_u8;
+    let status = unsafe {
+        AXUIElementIsAttributeSettable(element, key.as_concrete_TypeRef(), &raw mut settable)
+    };
+    status == 0 && settable != 0
 }
 
 /// The element under a point.
