@@ -14,6 +14,7 @@
 //!   across `Recording (chips) -> Selecting`) travel on a `0.24 s` zero-bounce spring with up to
 //!   `4 pt` blur in transit that clears before landing.
 
+use super::wave::{CLOCK_X, LISTENING_GAP, LISTENING_W, Wave, WaveLine};
 use crate::ui::SelectionMode;
 
 // ─── Geometry (pt in the fixed 640 × 84 panel) ──────────────────────────────────────────────
@@ -770,7 +771,7 @@ pub fn layout_of(
             push_controls(&mut raw, Some(m.resume), *stroke_count, m);
         }
         Pres::Dictating { latched } => {
-            let lead_w = CHIP_H + m.clock_width(clock) + LEAD_TRAIL;
+            let lead_w = CLOCK_X + m.clock_width(clock) + 2.0 * LISTENING_GAP + LISTENING_W;
             if *latched {
                 raw.push((ElemId::Close, CHIP_H, CHIP_CORE_ROUND, 0.0, true));
             }
@@ -912,6 +913,8 @@ pub struct FrameState {
     pub content_blur: f32,
     pub content_alpha: f32,
     pub elems: Vec<FrameElem>,
+    /// Dictation's mic level line (`wave`), drawn over the elements.
+    pub waves: Vec<WaveLine>,
 }
 
 impl FrameState {
@@ -926,6 +929,9 @@ impl FrameState {
         }
         for elem in &mut self.elems {
             elem.rect[1] += dy;
+        }
+        for wave in &mut self.waves {
+            wave.rect[1] += dy;
         }
     }
 }
@@ -957,6 +963,7 @@ pub struct PillModel {
     /// Keep the bottom edge still and grow upward (the pill sits at the bottom of the screen).
     pub anchor_bottom: bool,
     pub metrics: Metrics,
+    pub wave: Wave,
 }
 
 impl PillModel {
@@ -988,6 +995,7 @@ impl PillModel {
             completed_label_w: 46.0,
             anchor_bottom: false,
             metrics,
+            wave: Wave::default(),
         }
     }
 
@@ -1018,6 +1026,7 @@ impl PillModel {
         }
 
         self.pres = next.clone();
+        self.wave.show(&next);
 
         if !layout_changed {
             self.geo_pres = next;
@@ -1367,6 +1376,7 @@ impl PillModel {
             return;
         }
         self.t += dt;
+        self.wave.advance(dt);
         if self.geo_at <= self.t + 1e-3 && self.geo_pres != self.pres {
             self.apply_geometry();
         }
@@ -1686,6 +1696,10 @@ impl PillModel {
             });
         }
 
+        let lead = elems.iter().find(|e| e.id == ElemId::Lead);
+        let waves = self
+            .wave
+            .lines(&shape, lead, self.metrics.clock_width(&self.clock));
         let mut frame = FrameState {
             t: self.t,
             shape,
@@ -1696,6 +1710,7 @@ impl PillModel {
             content_blur: max_blur,
             content_alpha: max_alpha,
             elems,
+            waves,
         };
         let ghost_dy = frame.ghost.as_ref().map_or(0.0, |g| self.anchor_dy(g.b));
         frame.shift_down(self.anchor_dy(frame.shape.b), ghost_dy);

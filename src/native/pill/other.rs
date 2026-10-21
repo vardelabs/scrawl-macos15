@@ -6,6 +6,8 @@
 pub mod model;
 #[path = "types.rs"]
 mod types;
+#[path = "wave.rs"]
+pub mod wave;
 
 pub use self::types::{PillAction, PillSnapshot, PillStyle};
 
@@ -23,6 +25,8 @@ impl NativePill {
     pub fn place_at_bottom(&self, _point: [f64; 2]) {}
 
     pub fn sync(&self, _snapshot: PillSnapshot) {}
+
+    pub fn set_mic_rms(&self, _rms: Option<f32>) {}
 
     pub fn drain_actions(&self) -> Vec<PillAction> {
         Vec::new()

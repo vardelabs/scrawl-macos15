@@ -10,6 +10,7 @@
 pub mod atlas;
 pub mod model;
 mod types;
+pub mod wave;
 
 pub use self::types::{PillAction, PillSnapshot, PillStyle};
 
@@ -115,6 +116,21 @@ struct CompositeElem {
     sigma_pt: f32,
     pad_pt: f32,
     _pad0: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct WaveLineUniform {
+    rect: [f32; 4],
+    meta: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WaveUniforms {
+    lines: [WaveLineUniform; 2],
+    meta: [f32; 4],
+    samples: [f32; wave::SAMPLES],
 }
 
 struct PillViewIvars {
@@ -518,6 +534,13 @@ impl NativePill {
         }
     }
 
+    /// The mic's RMS for dictation's level line, or `None` while it is closed.
+    pub fn set_mic_rms(&self, rms: Option<f32>) {
+        if let Ok(mut st) = self.shared.state.lock() {
+            st.model.wave.set_rms(rms);
+        }
+    }
+
     pub fn drain_actions(&self) -> Vec<PillAction> {
         self.action_rx.try_iter().collect()
     }
@@ -714,7 +737,8 @@ impl SharedNativePill {
         let dt = raw_dt.min(0.025 * motion::time_scale());
 
         let animating = !st.model.is_at_rest()
-            || matches!(st.model.pres, Pres::Processing);
+            || matches!(st.model.pres, Pres::Processing)
+            || st.model.wave.is_moving();
         if !animating && !st.dirty {
             if motion::tracing() && !st.model.is_fully_hidden() {
                 let frame = st.model.frame();
@@ -1007,6 +1031,24 @@ impl PillRuntimeState {
             hint_uv,
         };
 
+        let mut wave_lines = [WaveLineUniform::default(); 2];
+        for (slot, line) in wave_lines.iter_mut().zip(&frame.waves) {
+            *slot = WaveLineUniform {
+                rect: line.rect,
+                meta: [line.alpha, line.blur, line.stroke, line.wavelength],
+            };
+        }
+        let wave_uniforms = WaveUniforms {
+            lines: wave_lines,
+            meta: [
+                frame.waves.len().min(2) as f32,
+                self.model.wave.scroll(),
+                self.model.wave.phase(),
+                0.0,
+            ],
+            samples: self.model.wave.samples(),
+        };
+
         let prim_count = prims.len() as u64;
         let box_count = blur_boxes.len() as u64;
         if prims.is_empty() {
@@ -1108,6 +1150,11 @@ impl PillRuntimeState {
                 1,
                 (comp_elems.len() * size_of::<CompositeElem>()) as u64,
                 comp_elems.as_ptr().cast::<c_void>(),
+            );
+            enc.set_fragment_bytes(
+                2,
+                size_of::<WaveUniforms>() as u64,
+                (&raw const wave_uniforms).cast::<c_void>(),
             );
             enc.set_fragment_texture(0, Some(&self.pipelines.offscreen_b));
             enc.set_fragment_texture(1, Some(&self.pipelines.atlas.texture));

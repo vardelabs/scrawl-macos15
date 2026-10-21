@@ -2097,6 +2097,9 @@ impl ScrawlCoordinator {
             self.dictation_shown = None;
             self.dictation_placed = None;
         }
+        if !free && let Some(pill) = &self.native_pill {
+            pill.set_mic_rms(None);
+        }
     }
 
     /// Record on the hovered bar: what a tap of the record shortcut does.
@@ -2134,6 +2137,7 @@ impl ScrawlCoordinator {
             pill.sync(snapshot.clone());
             self.dictation_shown = Some(snapshot);
         }
+        pill.set_mic_rms(self.dictation.mic_rms());
     }
 
     pub(crate) fn sync_native_pill(&mut self) {
