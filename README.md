@@ -818,7 +818,10 @@ nothing focused the pill says so.
 another chord (`"⌃⌘"`, `"⌥⌘"`, `"⌃⇧"`), `"dictationPill": false` hides the idle pill, and `"dictationRestoreClipboard": false` keeps
 pasted text on the clipboard too. Dictation uses the transcriber set for recordings and needs Accessibility to
 paste. Words it gets wrong go in the Dictation pane's **Words** and **Replacements** lists, which
-live in `~/.config/scrawl/dictionary.json` (**Edit as Text…** opens it):
+live in `~/.config/scrawl/dictionary.json` (**Edit as Text…** opens it). Filenames come out as
+files ("design dot MD" → `design.md`), a name you say that matches one on screen is written as it
+is there, and code goes in backticks outside Mail, Messages, Notes, Pages, Word and Outlook
+(`"dictationCodeFormatting": false` turns the backticks off):
 
 ```json
 { "words": ["Corvus", "Varde Labs"], "replacements": { "corvis": "Corvus" } }

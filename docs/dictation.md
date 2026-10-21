@@ -1,6 +1,6 @@
 # Dictation: voice only, pasted where you type
 
-Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime), `src/dictionary.rs` or the dictation pill.
+Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `context.rs`, filenames and code), `src/dictionary.rs` or the dictation pill.
 
 Dictation is the screenless sibling of a capture: a modifier-only chord records the microphone, the configured transcriber turns it into text, and Scrawl pastes the text into the app in front. It is off by default (`"dictation": true` turns it on, or Settings › Dictation).
 
@@ -45,6 +45,16 @@ Dictation's states, its Processing included, sit one window level under the Dock
 
 Parakeet takes no vocabulary prompt, so the dictionary corrects after transcription.
 
+## Filenames and code (`src/dictation/context.rs`)
+
+After the dictionary, the text goes through three pure steps, so they are tested without a Mac:
+
+1. `spoken_extensions`: a spoken "dot" before a known extension (`EXTENSIONS`) joins the word before it, so "design dot MD" becomes "design.md".
+2. `apply` with screen terms: when the chord is released, `ax::window_text` walks the focused window's Accessibility tree breadth first (at most `SCREEN_ELEMENTS` elements and `SCREEN_BUDGET`, on the transcribing thread, before transcription so the window still has focus). `terms` keeps the code-like words it finds: a known extension, an underscore, camelCase, or a hyphen with a capital or a digit. A spoken span of up to `MAX_SPAN_WORDS` words that matches a term, compared on letters and digits only (a possessive "'s" dropped), is written as the term: "the product's design dot MD" with `PRODUCT-DESIGN.md` on screen becomes `PRODUCT-DESIGN.md`. Spans of 8 letters or more also match one letter off with the same first letter; a single word must match exactly.
+3. Backticks: code-like words and matched terms go in `` ` `` (outside existing backticks, with trailing punctuation left outside), unless `dictationCodeFormatting` is off or the frontmost app is a prose app (`PROSE_APPS`: Mail, Messages, Notes, Pages, Word, Outlook).
+
+Nothing read from the screen is stored or sent anywhere; the terms live for one dictation.
+
 ## Settings › Dictation
 
-The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).
+The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Put code in backticks** (`dictationCodeFormatting`, default on), **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).

@@ -538,6 +538,9 @@ pub struct Config {
     /// Keeps the small dictation bar on screen while dictation is on (default on).
     #[serde(default)]
     pub dictation_pill: Option<bool>,
+    /// Puts dictated filenames and identifiers in backticks, outside prose apps (default on).
+    #[serde(default)]
+    pub dictation_code_formatting: Option<bool>,
 }
 
 /// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
@@ -792,6 +795,7 @@ pub struct DictationConfig {
     pub shortcut: Option<String>,
     pub restore_clipboard: bool,
     pub pill: bool,
+    pub code: bool,
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -802,6 +806,7 @@ pub fn dictation() -> DictationConfig {
         shortcut: config.dictation_shortcut,
         restore_clipboard: config.dictation_restore_clipboard.unwrap_or(true),
         pill: config.dictation_pill.unwrap_or(true),
+        code: config.dictation_code_formatting.unwrap_or(true),
     }
 }
 

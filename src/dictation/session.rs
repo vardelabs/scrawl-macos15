@@ -14,6 +14,18 @@ use crate::native::pill::{PillAction, model::Pres};
 const MIN_AUDIO_MS: u64 = 300;
 /// Settings are read from `config.json` this often, not on every tick.
 const SETTINGS_EVERY: Duration = Duration::from_millis(500);
+/// The focused window's text is read up to this many elements or this long, for filenames.
+const SCREEN_ELEMENTS: usize = 1_500;
+const SCREEN_BUDGET: Duration = Duration::from_millis(150);
+/// Apps where text is prose, so code-like words don't go in backticks.
+const PROSE_APPS: &[&str] = &[
+    "com.apple.mail",
+    "com.apple.MobileSMS",
+    "com.apple.Notes",
+    "com.apple.iWork.Pages",
+    "com.microsoft.Word",
+    "com.microsoft.Outlook",
+];
 /// How long a notice ("Copied to the clipboard") stays in the pill.
 const NOTICE_FOR: Duration = Duration::from_millis(2_500);
 /// A click this soon after a notice goes was aimed at the notice, not the hint that replaced it.
@@ -26,6 +38,8 @@ struct Settings {
     label: String,
     restore_clipboard: bool,
     pill: bool,
+    /// Put filenames and identifiers in backticks (`dictationCodeFormatting`).
+    code: bool,
 }
 
 impl Settings {
@@ -51,6 +65,7 @@ impl Settings {
             label,
             restore_clipboard: config.restore_clipboard,
             pill: config.pill,
+            code: config.code,
         }
     }
 
@@ -393,14 +408,19 @@ impl Dictation {
             return;
         };
         let restore = self.settings.restore_clipboard;
+        let code = self.settings.code && !prose_app();
         let (done, working) = flume::bounded(1);
         self.working = Some(working);
         let spawned = std::thread::Builder::new()
             .name("scrawl-dictation".into())
             .spawn(move || {
+                // Read while the target window still has focus, before transcribing.
+                let screen = crate::ax::window_text(SCREEN_ELEMENTS, SCREEN_BUDGET);
+                let terms = super::context::terms(&screen);
+                drop(screen);
                 let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore)
+                        transcribe_and_paste(&audio, restore, &terms, code)
                     }
                     Ok(_) => Outcome::Quiet,
                     Err(error) => {
@@ -417,7 +437,18 @@ impl Dictation {
     }
 }
 
-fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) -> Outcome {
+fn prose_app() -> bool {
+    crate::capture::frontmost_app_info()
+        .and_then(|(_, _, bundle)| bundle)
+        .is_some_and(|bundle| PROSE_APPS.contains(&bundle.as_str()))
+}
+
+fn transcribe_and_paste(
+    audio: &RecordedAudio,
+    restore_clipboard: bool,
+    terms: &[String],
+    code: bool,
+) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
     if let Err(error) = std::fs::write(&wav, &audio.wav_bytes) {
@@ -426,7 +457,9 @@ fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) -> Outco
     }
     let transcript = crate::transcribe::transcribe(Some(&wav), Some(audio));
     let _ = std::fs::remove_file(&wav);
-    let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
+    let spoken = super::context::spoken_extensions(transcript.text.trim());
+    let text = crate::dictionary::Dictionary::load().apply(&spoken);
+    let text = super::context::apply(&text, terms, code);
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,
