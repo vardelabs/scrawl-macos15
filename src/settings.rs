@@ -494,8 +494,8 @@ mod login {
         match status {
             1 => LoginItem::On,
             2 => LoginItem::NeedsApproval,
-            // `notFound` is also what a never-registered app signed without a Developer ID
-            // reports, so it is offered as off: registering either works or says why not.
+            // `notFound` comes back for the installed, locally signed app too, so it is offered
+            // as off: registering either works or says why not.
             _ => LoginItem::Off,
         }
     }
