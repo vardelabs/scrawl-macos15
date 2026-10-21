@@ -129,6 +129,7 @@ struct SettingsDictation: Decodable, Equatable {
   var shortcuts = ["⌃⌥", "⌃⌘", "⌥⌘", "⌃⇧"]
   var restoreClipboard = true
   var pill = true
+  var codeFormatting = true
   var removeFillers = true
   var words: [String] = []
   var replacements: [SettingsReplacement] = []
@@ -1023,8 +1024,12 @@ struct SettingsView: View {
         SettingsRow(title: "Remove filler words") {
           SettingsSwitch(on: d.removeFillers) { model.set("removeFillers", $0) }
         }
+        SettingsSeparator()
+        SettingsRow(title: "Format code and filenames") {
+          SettingsSwitch(on: d.codeFormatting) { model.set("dictationCodeFormatting", $0) }
+        }
       }
-      SettingsCaption(text: "Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
+      SettingsCaption(text: "Filenames on screen are written as they appear there (“product design dot md” becomes PRODUCT-DESIGN.md), and filenames and snake_case go in backticks except in Mail, Messages, Notes, Pages, Word and Outlook. Unless a text field had focus, the text also stays on the clipboard; with nothing focused, the pill says so. Filler words (“um”, “uh”) are dropped from recordings too. Dictation uses the microphone, transcription and playback settings in Recording.")
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }

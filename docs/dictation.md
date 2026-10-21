@@ -1,6 +1,6 @@
 # Dictation: voice only, pasted where you type
 
-Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime), `src/dictionary.rs` or the dictation pill.
+Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `context.rs`, filenames and code), `src/dictionary.rs` or the dictation pill.
 
 Dictation is the screenless sibling of a capture: a modifier-only chord records the microphone, the configured transcriber turns it into text, and Scrawl pastes the text into the app in front. It is off by default (`"dictation": true` turns it on, or Settings › Dictation).
 
@@ -45,6 +45,16 @@ Dictation's states, its Processing included, sit one window level under the Dock
 
 Parakeet takes no vocabulary prompt, so the dictionary corrects after transcription.
 
+## Filenames and code (`src/dictation/context.rs`)
+
+With **Format code and filenames** (`dictationCodeFormatting`, default on), the text goes through three pure steps after the dictionary, so a rule for "design dot md" still sees what was said. Prose is the common case, so every rule needs a spoken "dot" or a written `.` or `_`. Names (deSilva), brand names (iPhone, Node), camelCase, and phrasal verbs that match an identifier on screen ("sign in" beside `signIn`) all stay as spoken.
+
+1. `spoken_extensions`: a lower-case spoken "dot" before a known extension joins the word before it, so "design dot MD" becomes "design.md". The name "Dot", "the", "a" or "an" before the "dot", and extensions that are everyday words or letters (`AMBIGUOUS`: go, c, h, sh, env, lock) are left as spoken.
+2. `apply` with screen filenames: when the chord is released, `ax::window_text` walks the focused window's Accessibility tree breadth first, on a thread of its own alongside transcription. It stops at `SCREEN_ELEMENTS` elements or `SCREEN_BUDGET`, and never reads a secure text field. The paste waits for it at most `SCREEN_WAIT` after the chord; an app slow to answer Accessibility gets its text without filenames. `terms` keeps the filenames it finds. A spoken run of up to `MAX_SPAN_WORDS` words that ends in a spoken "dot" and an extension, and equals a screen filename on letters and digits (a possessive "'s" or "s'" dropped from the words before the extension), is written as that filename. So "the product's design dot MD" with `PRODUCT-DESIGN.md` on screen becomes `PRODUCT-DESIGN.md`, while "note text" beside `note.txt` stays.
+3. Backticks go around filenames (not a product name such as `Node.js`) and `snake_case` (outside existing backticks, with punctuation and quotes outside), except in prose apps (`PROSE_APPS`: Mail, Messages, Notes, Pages, Word, Outlook).
+
+With the setting off, none of this runs and nothing is read from the screen. Screen text is kept for one dictation only, and never stored or sent.
+
 ## Settings › Dictation
 
-The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).
+The pane (`settings::DictationView`, `dictation` in `helper/Settings.swift`) holds the switch, the chord, **Always show the pill** (`dictationPill`), **Restore the clipboard after a paste**, **Format code and filenames** (`dictationCodeFormatting`, default on), **Remove filler words** (`removeFillers`, shared with recordings) and the dictionary editor. `add-word`, `remove-word`, `add-replacement` and `remove-replacement` load, change and save `dictionary.json` (`Dictionary::save_to` renames a temp file into place and keeps keys it doesn't know). A file that doesn't parse is shown as an error and never overwritten; **Edit as Text…** (`edit-dictionary`) opens it in the default text editor, made empty first if there is none. The pane is macOS only: the Windows settings window doesn't list it. Render it with `scrawl-helper settings --render DIR` (`dictation`, `dictation-empty`, `dictation-replacements`, `dictation-broken`).

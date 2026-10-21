@@ -1,7 +1,8 @@
 //! What's under a click or a mark, from the Accessibility tree (the `agentContext` experiment):
 //! the element's role, label, identifier and the document its window shows. Lookups run on one
 //! background thread with a short messaging timeout, so a hung app never holds up input. Secure
-//! text fields are never read, input fields' values are never read, and text is cut short.
+//! text fields are never read, and text is cut short. Lookups for a click or mark never read input
+//! fields' values; `window_text` does, for dictation's filenames, and keeps only filenames.
 
 #[cfg(target_os = "macos")]
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
@@ -89,6 +90,69 @@ fn settable(element: AxElement, name: &'static str) -> bool {
         AXUIElementIsAttributeSettable(element, key.as_concrete_TypeRef(), &raw mut settable)
     };
     status == 0 && settable != 0
+}
+
+/// Longest text kept from one element (a whole chat or document is cut here).
+#[cfg(target_os = "macos")]
+const MAX_ELEMENT_TEXT: usize = 20_000;
+
+/// The text shown in the focused window, for dictation to match spoken filenames against
+/// (`dictation::context`). Walks the window's elements breadth first, up to `max_elements` or
+/// `budget`, and never reads a secure text field. The text is used and dropped, never stored.
+/// Blocking; call it off the main thread.
+#[cfg(target_os = "macos")]
+pub fn window_text(max_elements: usize, budget: Duration) -> Vec<String> {
+    let started = Instant::now();
+    let system = Owned(unsafe { AXUIElementCreateSystemWide() });
+    unsafe { AXUIElementSetMessagingTimeout(system.0, MESSAGE_TIMEOUT_S) };
+    let Some(app) = element_attribute(system.0, "AXFocusedApplication") else {
+        return Vec::new();
+    };
+    unsafe { AXUIElementSetMessagingTimeout(app.0, MESSAGE_TIMEOUT_S) };
+    let Some(window) = element_attribute(app.0, "AXFocusedWindow") else {
+        return Vec::new();
+    };
+    let mut queue = std::collections::VecDeque::from([window]);
+    let mut texts = Vec::new();
+    let mut seen = 0;
+    while let Some(element) = queue.pop_front() {
+        seen += 1;
+        if seen > max_elements || started.elapsed() > budget {
+            break;
+        }
+        let role = string_attribute(element.0, "AXRole").unwrap_or_default();
+        let subrole = string_attribute(element.0, "AXSubrole").unwrap_or_default();
+        if role == "AXSecureTextField" || subrole == "AXSecureTextField" {
+            continue;
+        }
+        for name in ["AXValue", "AXTitle", "AXDescription"] {
+            if let Some(text) = string_attribute(element.0, name) {
+                texts.push(text.chars().take(MAX_ELEMENT_TEXT).collect());
+            }
+        }
+        queue.extend(children(element.0));
+    }
+    texts
+}
+
+#[cfg(target_os = "macos")]
+fn children(element: AxElement) -> Vec<Owned> {
+    use core_foundation::array::{CFArray, CFArrayRef};
+    let Some(list) = attribute(element, "AXChildren") else {
+        return Vec::new();
+    };
+    if unsafe { core_foundation::base::CFGetTypeID(list.0) } != CFArray::<CFType>::type_id() {
+        return Vec::new();
+    }
+    let array: CFArray<CFType> = unsafe { CFArray::wrap_under_get_rule(list.0 as CFArrayRef) };
+    array
+        .iter()
+        .filter(|item| {
+            let kind = unsafe { core_foundation::base::CFGetTypeID(item.as_CFTypeRef()) };
+            kind == unsafe { AXUIElementGetTypeID() }
+        })
+        .map(|item| Owned(unsafe { core_foundation::base::CFRetain(item.as_CFTypeRef()) }))
+        .collect()
 }
 
 /// The element under a point.

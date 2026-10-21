@@ -14,6 +14,21 @@ use crate::native::pill::{PillAction, model::Pres};
 const MIN_AUDIO_MS: u64 = 300;
 /// Settings are read from `config.json` this often, not on every tick.
 const SETTINGS_EVERY: Duration = Duration::from_millis(500);
+/// The focused window's text is read up to this many elements or this long, for filenames.
+const SCREEN_ELEMENTS: usize = 1_500;
+const SCREEN_BUDGET: Duration = Duration::from_millis(150);
+/// The paste waits at most this long after the chord for the screen read, which can overrun its
+/// budget in an app slow to answer Accessibility; past it, the text goes in without filenames.
+const SCREEN_WAIT: Duration = Duration::from_millis(400);
+/// Apps where text is prose, so code-like words don't go in backticks.
+const PROSE_APPS: &[&str] = &[
+    "com.apple.mail",
+    "com.apple.MobileSMS",
+    "com.apple.Notes",
+    "com.apple.iWork.Pages",
+    "com.microsoft.Word",
+    "com.microsoft.Outlook",
+];
 /// How long a notice ("Copied to the clipboard") stays in the pill.
 const NOTICE_FOR: Duration = Duration::from_millis(2_500);
 /// A click this soon after a notice goes was aimed at the notice, not the hint that replaced it.
@@ -26,6 +41,8 @@ struct Settings {
     label: String,
     restore_clipboard: bool,
     pill: bool,
+    /// Match filenames on screen and put code in backticks (`dictationCodeFormatting`).
+    code: bool,
 }
 
 impl Settings {
@@ -51,6 +68,7 @@ impl Settings {
             label,
             restore_clipboard: config.restore_clipboard,
             pill: config.pill,
+            code: config.code,
         }
     }
 
@@ -393,6 +411,19 @@ impl Dictation {
             return;
         };
         let restore = self.settings.restore_clipboard;
+        let backticks = self.settings.code && !prose_app();
+        // The screen is read alongside transcription, while the target window still has focus,
+        // and only with code formatting on.
+        let screen = self.settings.code.then(|| {
+            let (found, screen) = flume::bounded(1);
+            let spawned = std::thread::Builder::new().name("scrawl-dictation-screen".into()).spawn(move || {
+                let _ = found.send(super::context::terms(&crate::ax::window_text(SCREEN_ELEMENTS, SCREEN_BUDGET)));
+            });
+            if let Err(error) = spawned {
+                scrawl_log(format!("Dictation: screen read: {error}"));
+            }
+            (screen, Instant::now() + SCREEN_WAIT)
+        });
         let (done, working) = flume::bounded(1);
         self.working = Some(working);
         let spawned = std::thread::Builder::new()
@@ -400,7 +431,7 @@ impl Dictation {
             .spawn(move || {
                 let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore)
+                        transcribe_and_paste(&audio, restore, screen, backticks)
                     }
                     Ok(_) => Outcome::Quiet,
                     Err(error) => {
@@ -417,7 +448,18 @@ impl Dictation {
     }
 }
 
-fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) -> Outcome {
+fn prose_app() -> bool {
+    crate::capture::frontmost_app_info()
+        .and_then(|(_, _, bundle)| bundle)
+        .is_some_and(|bundle| PROSE_APPS.contains(&bundle.as_str()))
+}
+
+fn transcribe_and_paste(
+    audio: &RecordedAudio,
+    restore_clipboard: bool,
+    screen: Option<(flume::Receiver<Vec<String>>, Instant)>,
+    backticks: bool,
+) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
     if let Err(error) = std::fs::write(&wav, &audio.wav_bytes) {
@@ -426,7 +468,17 @@ fn transcribe_and_paste(audio: &RecordedAudio, restore_clipboard: bool) -> Outco
     }
     let transcript = crate::transcribe::transcribe(Some(&wav), Some(audio));
     let _ = std::fs::remove_file(&wav);
+    // The dictionary first, so a user's rule for "design dot md" still sees what was said.
     let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
+    // With code formatting off, `screen` is `None` and the text is left as transcribed.
+    let text = match screen {
+        Some((read, deadline)) => {
+            let text = super::context::spoken_extensions(&text);
+            let terms = read.recv_deadline(deadline).unwrap_or_default();
+            super::context::apply(&text, &terms, backticks)
+        }
+        None => text,
+    };
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,
