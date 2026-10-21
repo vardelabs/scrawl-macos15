@@ -8,6 +8,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # leaves Sparkle out, which disables Check for Updates. SCRAWL_BUILD_COMMIT stamps the built commit
 # into Info.plist as ScrawlForkCommit.
 PROFILE="${SCRAWL_PROFILE:-debug}"
+case "${PROFILE}" in
+  debug | release) ;;
+  *) echo "SCRAWL_PROFILE must be debug or release." >&2; exit 1 ;;
+esac
 APP_DIR="${SCRAWL_APP_DIR:-${HOME}/Applications/Scrawl.app}"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -39,8 +43,8 @@ if [[ -f "${REPO_DIR}/assets/Scrawl.icns" ]]; then
   cp -f "${REPO_DIR}/assets/Scrawl.icns" "${RESOURCES_DIR}/Scrawl.icns"
 fi
 
+rm -rf "${FRAMEWORKS_DIR}/Sparkle.framework"
 if [[ -n "${SPARKLE_DIR}" && -d "${SPARKLE_DIR}/Sparkle.framework" ]]; then
-  rm -rf "${FRAMEWORKS_DIR}/Sparkle.framework"
   /usr/bin/ditto "${SPARKLE_DIR}/Sparkle.framework" "${FRAMEWORKS_DIR}/Sparkle.framework"
 fi
 

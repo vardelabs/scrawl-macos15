@@ -36,8 +36,8 @@ if ((leaks > 0)); then
   exit 1
 fi
 
-cp -f "${REPO_DIR}/scripts/install-prebuilt.sh" "${PKG}/install.sh"
-cp -f "${REPO_DIR}/scripts/create-local-signing.sh" "${REPO_DIR}/scripts/scrawl-parakeet.py" "${PKG}/"
+cp -f "${BUILD_DIR}/scripts/install-prebuilt.sh" "${PKG}/install.sh"
+cp -f "${BUILD_DIR}/scripts/create-local-signing.sh" "${BUILD_DIR}/scripts/scrawl-parakeet.py" "${PKG}/"
 chmod +x "${PKG}/install.sh" "${PKG}/create-local-signing.sh" "${PKG}/scrawl-parakeet.py"
 
 /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "${PKG}" "${OUT_DIR}/${NAME}.zip"
