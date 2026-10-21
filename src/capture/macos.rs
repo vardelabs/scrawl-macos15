@@ -19,7 +19,8 @@ use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
 use super::{
     CANDIDATE_EDGE, CANDIDATE_EDGE_NO_VIDEO, CARBON_CMD_KEY, CARBON_CONTROL_KEY, CARBON_OPTION_KEY,
     CARBON_SHIFT_KEY, FRAME_SAMPLE_INTERVAL, LiveOverlayEvent, Sampler, SharedCaptureTelemetry,
-    ShortcutConfig, ShortcutKind, capture_size, clean_label, hotkey_combos, pick_display,
+    ShortcutConfig, ShortcutKind, capture_size, clean_label, hotkey_combos, pause_combo,
+    pick_display,
     poll_clicks, scrawl_log, track_shift_ink,
 };
 use crate::model::{CaptureMode, InteractionEvent, RgbaFrame, TargetInfo};
@@ -84,8 +85,8 @@ const HOTKEY_ID_TOGGLE: u32 = 1;
 const HOTKEY_ID_ESCAPE: u32 = 2;
 const HOTKEY_ID_ALT1: u32 = 3;
 const HOTKEY_ID_PAUSE: u32 = 50;
-/// The P key on the ANSI layout (`kVK_ANSI_P`).
-const KEY_P: u16 = 35;
+/// The A key on the ANSI layout (`kVK_ANSI_A`).
+const KEY_A: u16 = 0;
 const HOTKEY_ID_PASTE_BASE: u32 = 100;
 
 #[repr(C, packed(2))]
@@ -335,7 +336,7 @@ pub fn layout_v_keycode() -> u16 {
 /// The registered Carbon hotkeys, so a change can replace all of them.
 struct CarbonHotKeyState {
     refs: Vec<usize>,
-    /// ⌥⇧P, held only while a capture runs (`set_pause_hotkey_enabled`).
+    /// The pause hotkey, held only while a capture runs (`set_pause_hotkey`).
     pause: Option<usize>,
 }
 
@@ -520,9 +521,9 @@ fn register_shortcuts(
     failed.map_or(Ok(()), Err)
 }
 
-/// Registers ⌥⇧P (pause and resume) while a screen capture runs, so the combo stays free for
-/// other apps the rest of the time.
-pub fn set_pause_hotkey_enabled(enabled: bool) {
+/// Registers the pause hotkey (`pause_combo` of `record`) while a screen capture runs, so the
+/// combo stays free for other apps the rest of the time; `None` releases it.
+pub fn set_pause_hotkey(record: Option<&ShortcutConfig>) {
     let Some(state) = CARBON_HOTKEYS.get() else {
         return;
     };
@@ -532,15 +533,15 @@ pub fn set_pause_hotkey_enabled(enabled: bool) {
     if let Some(r) = state.pause.take() {
         unsafe { UnregisterEventHotKey(r as *mut c_void) };
     }
-    if !enabled {
+    let a_code = u32::from(key_code_for_char('a').unwrap_or(KEY_A));
+    let Some((code, mods)) = record.and_then(|record| pause_combo(record, a_code)) else {
         return;
-    }
-    let code = u32::from(key_code_for_char('p').unwrap_or(KEY_P));
+    };
     let mut r: *mut c_void = ptr::null_mut();
     let rc = unsafe {
         RegisterEventHotKey(
             code,
-            CARBON_OPTION_KEY | CARBON_SHIFT_KEY,
+            mods,
             EventHotKeyID {
                 signature: HOTKEY_SIG,
                 id: HOTKEY_ID_PAUSE,
@@ -554,7 +555,8 @@ pub fn set_pause_hotkey_enabled(enabled: bool) {
         state.pause = Some(r as usize);
     } else {
         scrawl_log(format!(
-            "Pause shortcut ⌥⇧P could not be registered (rc={rc})"
+            "Pause shortcut {} could not be registered (rc={rc})",
+            super::shortcut_label(mods, "A")
         ));
     }
 }
