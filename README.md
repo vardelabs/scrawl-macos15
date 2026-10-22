@@ -54,8 +54,8 @@ The installer:
 - installs `uv`, `ffmpeg`, `parakeet-mlx` and `mlx-lm`
 - downloads the Parakeet model (about 1.2 GB) and the dictation formatter's model (about 1.8 GB),
   which lays long dictations out in paragraphs and lists
-- sets the three Parakeet keys and `formatCommand` in `~/.config/scrawl/config.json`, after it
-  backs the file up to `config.json.bak`
+- backs up `~/.config/scrawl/config.json` to `config.json.bak`, then sets the three Parakeet keys
+  and `formatCommand` only where they are not set yet, so an update keeps what you chose in Settings
 
 To update, choose **Check for Updates…** in the menu bar menu or in Settings › About. Scrawl asks
 GitHub for this repository's newest release, shows its notes, and on **Install** downloads the zip,
