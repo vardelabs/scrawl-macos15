@@ -1046,7 +1046,7 @@ struct SettingsView: View {
           SettingsButton(title: "Forget", enabled: d.learnedLayouts > 0) { model.act("forget-layouts") }
         }
       }
-      SettingsCaption(text: learningCaption(formatterReady: d.formattingAvailable))
+      SettingsCaption(text: learningCaption(d))
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
@@ -1075,11 +1075,14 @@ struct SettingsView: View {
 
   /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
   /// already says what it does.
-  private func learningCaption(formatterReady: Bool) -> String {
-    let formatter = formatterReady
-      ? "Paragraphs and lists you rearrange teach the formatter your layout."
-      : "Paragraphs and lists are off because the formatter model isn't installed. Run the installer again to set it up."
-    return "Words marked ✨ were learned from your corrections to pasted text. \(formatter)\nThe microphone and transcription model are set in Recording."
+  private func learningCaption(_ d: SettingsDictation) -> String {
+    var lines = ["Words marked ✨ were learned from your corrections to pasted text."]
+    if !d.formattingAvailable {
+      lines.append("Paragraphs and lists are off because the formatter isn't set up. Run the installer again to set it up.")
+    } else if d.formatting && d.learn {
+      lines.append("Paragraphs and lists you rearrange teach the formatter your layout.")
+    }
+    return lines.joined(separator: " ") + "\nThe microphone and transcription model are set in Recording."
   }
 
   /// The popup's mode from `lowerPlayback` and `playbackLevel`: a level of 0 mutes.

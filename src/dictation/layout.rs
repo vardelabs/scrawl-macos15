@@ -80,7 +80,15 @@ pub fn path_beside(config: &Path) -> PathBuf {
     config.with_file_name("format-examples.json")
 }
 
-/// Saving and forgetting each hold this, so a Forget never races a save back into place.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bumped by each Forget. A layout learned from a paste made before a Forget carries an older
+/// generation and is never saved, since a watch outlives the click by up to a minute.
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Saving and forgetting each hold this, so the two file changes never interleave.
 pub fn edit_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -114,8 +122,9 @@ pub fn save_to(path: &Path, examples: Vec<Example>) -> Result<()> {
     })
 }
 
-/// Deletes the examples; none saved is no error.
+/// Deletes the examples and bumps `generation`; none saved is no error.
 pub fn forget(path: &Path) -> Result<()> {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             Err(error).with_context(|| format!("Could not remove {}", path.display()))
@@ -206,8 +215,10 @@ mod tests {
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o600);
         std::fs::write(&path, "not json").unwrap();
         assert!(load_from(&path).is_empty());
+        let before = generation();
         forget(&path).unwrap();
         forget(&path).unwrap();
+        assert!(generation() >= before + 2, "each Forget starts a new generation");
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }

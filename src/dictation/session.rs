@@ -214,6 +214,8 @@ pub struct Dictation {
 struct Learned {
     words: Vec<super::learn::Respelling>,
     layout: Option<super::layout::Example>,
+    /// `layout::generation` at the paste, so a Forget since then drops the layout.
+    generation: u64,
 }
 
 /// What the shared pill reports to dictation while dictation is what it shows.
@@ -420,9 +422,15 @@ impl Dictation {
     /// Keeps the respellings the spell checker doesn't know, adds them to the dictionary, and
     /// says so in the pill; saves learned layouts while the formatter is on.
     fn take_learned(&mut self) {
-        let (words, layouts): (Vec<_>, Vec<_>) = self.learned_rx.try_iter().map(|l| (l.words, l.layout)).unzip();
-        if self.settings.learn && self.settings.format.is_some() {
-            layouts.into_iter().flatten().for_each(save_layout);
+        let learned: Vec<Learned> = self.learned_rx.try_iter().collect();
+        let saving = self.settings.learn && self.settings.format.is_some();
+        let generation = super::layout::generation();
+        let mut words = Vec::new();
+        for Learned { words: respelled, layout, generation: at } in learned {
+            words.push(respelled);
+            if let Some(example) = layout.filter(|_| saving && at == generation) {
+                save_layout(example);
+            }
         }
         let words: Vec<String> = words
             .into_iter()
@@ -631,6 +639,7 @@ fn save_layout(example: super::layout::Example) {
 /// the formatter's input, a change of layout alone is sent too (`layout::example`), unless the
 /// span vanished: a field the user cleared reads the same as a sent message.
 fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Sender<Learned>) {
+    let generation = super::layout::generation();
     let spawned = std::thread::Builder::new().name("scrawl-dictation-learn".into()).spawn(move || {
         std::thread::sleep(PASTE_SETTLE);
         let read = |field: &crate::ax::FocusedText| field.value(MAX_FIELD_CHARS);
@@ -656,7 +665,7 @@ fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Send
             .filter(|_| !vanished)
             .and_then(|dictated| super::layout::example(&dictated, &paste.text, &edited, &words));
         if !words.is_empty() || layout.is_some() {
-            let _ = candidates.send(Learned { words, layout });
+            let _ = candidates.send(Learned { words, layout, generation });
         }
     });
     if let Err(error) = spawned {
