@@ -1070,7 +1070,7 @@ impl MetalPipelines {
                 frame.t,
                 frame.is_paused,
                 frame.is_notice,
-                frame.elems.iter().any(|e| e.id == ElemId::Pause),
+                frame.pausable_controls,
                 &mut prims,
             );
 

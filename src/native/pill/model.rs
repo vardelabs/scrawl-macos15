@@ -923,6 +923,9 @@ pub struct FrameState {
     pub ghost: Option<Silhouette>,
     pub is_completed: bool,
     pub is_paused: bool,
+    /// The recording controls capsule holds Pause between Cancel and Finish, so their inner
+    /// ends are square even while Pause is still fading in.
+    pub pausable_controls: bool,
     /// A dictation notice, whose label leads with a check.
     pub is_notice: bool,
     /// The always-on dictation bar, drawn see-through with a light rim, as Wispr Flow's is.
@@ -1735,6 +1738,10 @@ impl PillModel {
             ghost,
             is_completed: matches!(self.geo_pres, Pres::Completed { .. }),
             is_paused: matches!(self.geo_pres, Pres::Paused),
+            pausable_controls: matches!(
+                self.geo_pres,
+                Pres::Recording { pausable: true, .. } | Pres::Paused
+            ),
             is_notice: matches!(self.geo_pres, Pres::Message { .. }),
             is_idle: matches!(self.geo_pres, Pres::DictationIdle),
             content_blur: max_blur,
