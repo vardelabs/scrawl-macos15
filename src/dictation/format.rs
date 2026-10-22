@@ -85,6 +85,17 @@ pub fn break_at_pauses(text: &str, pauses: &[usize]) -> String {
     out
 }
 
+/// What the pill says of a layout: a list, or paragraphs; `None` for text on one line.
+pub fn describe(laid_out: &str) -> Option<&'static str> {
+    if laid_out.lines().any(|line| strip_list_marker(line).len() < line.trim_start().len()) {
+        Some("Formatted as a list")
+    } else if laid_out.trim().contains('\n') {
+        Some("Split into paragraphs")
+    } else {
+        None
+    }
+}
+
 /// Whether `formatted` has the words of `dictated`, in order: compared without the punctuation
 /// layout may change around a word (`,` `.` `:` `;`, double quotes, brackets) or the list markers
 /// ("1.", "-", "•") that start a line. A word's first letter may change case only where a
@@ -169,6 +180,15 @@ fn strip_list_marker(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_layout_is_described_as_a_list_or_paragraphs() {
+        assert_eq!(describe("We need:\n\n1. Tents.\n2. Maps."), Some("Formatted as a list"));
+        assert_eq!(describe("We need:\n- Tents.\n- Maps."), Some("Formatted as a list"));
+        assert_eq!(describe("One topic.\n\nAnother topic."), Some("Split into paragraphs"));
+        assert_eq!(describe("All on one line. Still one."), None);
+        assert_eq!(describe("Version 1.5 shipped.\n\nThen 2.0."), Some("Split into paragraphs"), "a number is not a marker");
+    }
 
     const LONG: &str = "Here is the plan for the garden this spring. First we clear the old beds and turn \
         the soil. Then we plant the tomatoes along the south fence where they get the most sun. \

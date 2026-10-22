@@ -534,7 +534,7 @@ impl NativePill {
                 st.dirty = true;
             }
             let label = match &snapshot.pres {
-                Pres::Message { label } | Pres::Hint { dictate: label } => Some(label),
+                Pres::Message { label, .. } | Pres::Hint { dictate: label } => Some(label),
                 _ => None,
             };
             if let Pres::Completed {
@@ -921,6 +921,7 @@ impl PillRuntimeState {
             ElemId::Route1 => PillAction::Route(1),
             ElemId::Confirm => PillAction::Finish,
             ElemId::Message => PillAction::MessageClicked,
+            ElemId::Undo => PillAction::Undo,
             _ => return,
         };
         let _ = self.action_tx.try_send(action);
@@ -1412,6 +1413,13 @@ fn emit_elem_prims(
             let g = (0.361 + 0.059 * elem.hover - 0.04 * elem.press).clamp(0.0, 1.0);
             let b = (0.965 + 0.035 * elem.hover - 0.04 * elem.press).clamp(0.0, 1.0);
             push_shape(out, [ox, oy, bw, bh], bh * 0.5, [r, g, b, 1.0]);
+            push_sprite(out, center_text(tx), tx.uv, [0.95, 0.95, 0.96, 1.0]);
+        }
+        ElemId::Undo => {
+            // Quieter than Record's blue: it takes back a small thing, not the main action.
+            let fill = 0.12 + 0.06 * elem.hover - 0.04 * elem.press;
+            push_shape(out, [ox, oy, bw, bh], bh * 0.5, [1.0, 1.0, 1.0, fill]);
+            let tx = atlas.label("Undo");
             push_sprite(out, center_text(tx), tx.uv, [0.95, 0.95, 0.96, 1.0]);
         }
         ElemId::Lead if paused => {

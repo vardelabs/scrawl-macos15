@@ -42,8 +42,6 @@ const LEARN_FOR: Duration = Duration::from_secs(60);
 const LEARN_EVERY: Duration = Duration::from_secs(1);
 /// The paste lands this long after `⌘V`, so the field is read after it.
 const PASTE_SETTLE: Duration = Duration::from_millis(300);
-/// How long a notice ("Copied to the clipboard") stays in the pill.
-const NOTICE_FOR: Duration = Duration::from_millis(2_500);
 /// A click this soon after a notice goes was aimed at the notice, not the hint that replaced it.
 const CLICK_GRACE: Duration = Duration::from_millis(700);
 
@@ -60,6 +58,8 @@ struct Settings {
     format: Option<Vec<String>>,
     /// Learn words from the user's edits to pasted text (`dictationLearn`).
     learn: bool,
+    /// Say in the pill what dictation learned or laid out (`dictationNotices`).
+    notices: bool,
 }
 
 impl Settings {
@@ -88,6 +88,7 @@ impl Settings {
             code: config.code,
             format: config.format,
             learn: config.learn,
+            notices: config.notices,
         }
     }
 
@@ -104,7 +105,8 @@ impl Settings {
 
 /// How a finished dictation ended, for the pill's notice.
 enum Outcome {
-    Pasted,
+    /// Pasted, with how the formatter laid it out ("Formatted as a list").
+    Pasted(Option<&'static str>),
     /// Nowhere to paste: the text is on the clipboard.
     Copied,
     NoSpeech,
@@ -117,14 +119,9 @@ impl Outcome {
         match self {
             Self::Copied => Some("Copied to the clipboard"),
             Self::NoSpeech => Some("Didn't catch that"),
-            Self::Pasted | Self::Quiet => None,
+            Self::Pasted(_) | Self::Quiet => None,
         }
     }
-}
-
-struct Notice {
-    text: String,
-    until: Instant,
 }
 
 /// What the pill's presentation depends on, so the choice can be tested without a pill.
@@ -133,7 +130,8 @@ struct PillState<'a> {
     /// Listening, and whether latched.
     dictating: Option<bool>,
     capture_busy: bool,
-    notice: Option<&'a str>,
+    /// The notice's text, and whether it offers Undo.
+    notice: Option<(&'a str, bool)>,
     enabled: bool,
     pill: bool,
     hovered: bool,
@@ -151,9 +149,10 @@ fn presentation(state: &PillState) -> Pres {
     if state.capture_busy {
         return Pres::Hidden;
     }
-    if let Some(text) = state.notice {
+    if let Some((text, undo)) = state.notice {
         return Pres::Message {
             label: text.to_owned(),
+            undo,
         };
     }
     // With dictation off the bar stays away, so turning dictation on is what adds it to the screen.
@@ -202,9 +201,7 @@ pub struct Dictation {
     playback: Option<crate::playback::Guard>,
     /// Transcribing and pasting on a worker; the next dictation waits for it.
     working: Option<flume::Receiver<Outcome>>,
-    notice: Option<Notice>,
-    /// When the last notice went, for `CLICK_GRACE`.
-    notice_gone: Option<Instant>,
+    notices: super::notices::Notices,
     /// What the edit watcher learned, checked and saved on this thread (`take_learned`).
     learned_tx: flume::Sender<Learned>,
     learned_rx: flume::Receiver<Learned>,
@@ -239,8 +236,7 @@ impl Default for Dictation {
             started: None,
             playback: None,
             working: None,
-            notice: None,
-            notice_gone: None,
+            notices: super::notices::Notices::default(),
             learned_tx,
             learned_rx,
         }
@@ -279,22 +275,24 @@ impl Dictation {
         self.take_outcome();
         self.start_formatter_once_long();
         self.take_learned();
-        if self.notice.as_ref().is_some_and(|n| n.until <= Instant::now()) {
-            self.dismiss_notice();
-        }
         // Clicks arrive every tick, so one made while dictation was off can't start it later.
         let clicks = pill.clicks;
+        if clicks.iter().any(|c| matches!(c, PillAction::Undo)) {
+            self.undo();
+        }
         if self.settings.enabled {
             self.listen(telemetry, capture_busy, clicks);
         } else if clicks.iter().any(|c| matches!(c, PillAction::MessageClicked)) {
             // Off, the pill can still show the last dictation's notice; a click dismisses it.
-            self.dismiss_notice();
+            self.notices.dismiss(Instant::now());
         }
+        let free = self.working.is_none() && self.started.is_none() && !capture_busy;
+        let notice = self.notices.current(free, Instant::now()).map(|n| (n.text.clone(), n.undo.is_some()));
         presentation(&PillState {
             working: self.working.is_some(),
             dictating: self.started.map(|_| self.chord.is_latched()),
             capture_busy,
-            notice: self.notice.as_ref().map(|n| n.text.as_str()),
+            notice: notice.as_ref().map(|(text, undo)| (text.as_str(), *undo)),
             enabled: self.settings.enabled,
             pill: self.settings.pill,
             hovered: pill.hovered,
@@ -318,10 +316,31 @@ impl Dictation {
         crate::model::format_clock(self.started.map_or(0, |at| at.elapsed().as_millis() as u64))
     }
 
-    fn dismiss_notice(&mut self) {
-        if self.notice.take().is_some() {
-            self.notice_gone = Some(Instant::now());
+    /// Undo on the notice: takes back what it reports dictation learned.
+    fn undo(&mut self) {
+        use super::notices::Undo;
+        let Some(undo) = self.notices.dismiss(Instant::now()).and_then(|n| n.undo) else { return };
+        match undo {
+            Undo::Word(word) => {
+                let path = crate::dictionary::default_path();
+                let _editing = crate::dictionary::edit_lock();
+                let Ok(mut dictionary) = crate::dictionary::Dictionary::load_from(&path) else { return };
+                // Removing a learned word records it as rejected, so it is never learned again.
+                dictionary.remove_word(&word);
+                if let Err(error) = dictionary.save_to(&path) {
+                    scrawl_log(format!("Dictation: could not undo a learned word: {error:#}"));
+                }
+            }
+            Undo::Layout(example) => {
+                let path = super::layout::default_path();
+                let _editing = super::layout::edit_lock();
+                let examples = super::layout::load_from(&path).into_iter().filter(|e| *e != example).collect();
+                if let Err(error) = super::layout::save_to(&path, examples) {
+                    scrawl_log(format!("Dictation: could not undo a learned layout: {error:#}"));
+                }
+            }
         }
+        scrawl_log("Dictation: undid what an edit taught");
     }
 
     fn listen(
@@ -368,9 +387,9 @@ impl Dictation {
     /// A click on a notice dismisses it; a click on the hint starts hands-free dictation, unless
     /// it lands just after a notice went (the press was meant for the notice).
     fn message_clicked(&mut self, capture_busy: bool, key_tap_live: bool) {
-        if self.notice.is_some() {
-            self.dismiss_notice();
-        } else if self.notice_gone.is_none_or(|at| at.elapsed() >= CLICK_GRACE) {
+        if self.notices.showing() {
+            self.notices.dismiss(Instant::now());
+        } else if self.notices.gone().is_none_or(|at| at.elapsed() >= CLICK_GRACE) {
             self.start_hands_free(capture_busy, key_tap_live);
         }
     }
@@ -407,16 +426,19 @@ impl Dictation {
         let Some(rx) = &self.working else {
             return;
         };
-        let text = match rx.try_recv() {
+        let outcome = match rx.try_recv() {
             Err(flume::TryRecvError::Empty) => return,
-            Ok(outcome) => outcome.notice(),
-            Err(flume::TryRecvError::Disconnected) => None,
+            Ok(outcome) => outcome,
+            Err(flume::TryRecvError::Disconnected) => Outcome::Quiet,
         };
         self.working = None;
-        self.notice = text.map(|text| Notice {
-            text: text.to_owned(),
-            until: Instant::now() + NOTICE_FOR,
-        });
+        let text = match outcome {
+            Outcome::Pasted(laid_out) => laid_out.filter(|_| self.settings.notices),
+            other => other.notice(),
+        };
+        if let Some(text) = text {
+            self.notices.push(text, None);
+        }
     }
 
     /// Keeps the respellings the spell checker doesn't know, adds them to the dictionary, and
@@ -428,8 +450,11 @@ impl Dictation {
         let mut words = Vec::new();
         for Learned { words: respelled, layout, generation: at } in learned {
             words.push(respelled);
-            if let Some(example) = layout.filter(|_| saving && at == generation) {
-                save_layout(example);
+            if let Some(example) = layout.filter(|_| saving && at == generation)
+                && save_layout(&example)
+                && self.settings.notices
+            {
+                self.notices.push(super::notices::LEARNED_LAYOUT, Some(super::notices::Undo::Layout(example)));
             }
         }
         let words: Vec<String> = words
@@ -454,8 +479,10 @@ impl Dictation {
             Ok(()) => scrawl_log(format!("Dictation: learned {} word(s) from an edit", added.len())),
             Err(error) => return scrawl_log(format!("Dictation: could not save learned words: {error:#}")),
         }
-        if let Some(text) = learned_notice(&added) {
-            self.notice = Some(Notice { text, until: Instant::now() + NOTICE_FOR });
+        if self.settings.notices {
+            for word in added {
+                self.notices.push(super::notices::added_word(&word), Some(super::notices::Undo::Word(word)));
+            }
         }
     }
 
@@ -489,7 +516,6 @@ impl Dictation {
                 self.formatter_started = false;
                 self.playback = self.playback.take().or_else(crate::playback::Guard::start_quick);
                 self.started = Some(Instant::now());
-                self.notice = None;
             }
             Action::Finish => self.finish(),
             // Dropping the recorder stops the microphone without encoding what it heard. The drop
@@ -593,7 +619,7 @@ fn transcribe_and_paste(
     let timed: &[crate::model::WordTiming] = if transcript.estimated { &[] } else { &transcript.words };
     // What the formatter is asked to lay out, so an edit of its layout can be learned from.
     let dictated = (formatter.is_some() && super::format::worth_formatting(&text)).then(|| text.clone());
-    let text = lay_out(text, timed, formatter);
+    let (text, laid_out) = lay_out(text, timed, formatter);
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,
@@ -605,31 +631,31 @@ fn transcribe_and_paste(
     if !text.chars().any(char::is_alphanumeric) {
         return Outcome::NoSpeech;
     }
-    let outcome = deliver(&text, restore_clipboard);
-    if let (Outcome::Pasted, Some(learned)) = (&outcome, learn) {
+    let outcome = deliver(&text, restore_clipboard, laid_out);
+    if let (Outcome::Pasted(_), Some(learned)) = (&outcome, learn) {
         watch_edits(text, dictated, learned);
     }
     outcome
 }
 
-/// "Added Klose to the dictionary", or "Added Klose and Nova to the dictionary".
-fn learned_notice(words: &[String]) -> Option<String> {
-    let (last, rest) = words.split_last()?;
-    let names = if rest.is_empty() { last.clone() } else { format!("{} and {last}", rest.join(", ")) };
-    Some(format!("Added {names} to the dictionary"))
-}
 
 /// A field longer than this (a whole document) is not watched.
 const MAX_FIELD_CHARS: usize = 200_000;
 
 /// Saves a layout learned from an edit among the newest (`layout::remember`).
-fn save_layout(example: super::layout::Example) {
+fn save_layout(example: &super::layout::Example) -> bool {
     use super::layout;
     let path = layout::default_path();
     let _editing = layout::edit_lock();
-    match layout::save_to(&path, layout::remember(layout::load_from(&path), example)) {
-        Ok(()) => scrawl_log("Dictation: learned a layout from an edit"),
-        Err(error) => scrawl_log(format!("Dictation: could not save a learned layout: {error:#}")),
+    match layout::save_to(&path, layout::remember(layout::load_from(&path), example.clone())) {
+        Ok(()) => {
+            scrawl_log("Dictation: learned a layout from an edit");
+            true
+        }
+        Err(error) => {
+            scrawl_log(format!("Dictation: could not save a learned layout: {error:#}"));
+            false
+        }
     }
 }
 
@@ -760,9 +786,13 @@ fn one_slip(a: &str, b: &str) -> bool {
 /// The text in paragraphs and lists from the formatter, when it is long enough to need them and
 /// the formatter kept every word (`format::same_words`); otherwise the text as it was. Only the
 /// outcome is logged, never the text.
-fn lay_out(text: String, words: &[crate::model::WordTiming], formatter: Option<super::formatter::Formatter>) -> String {
+fn lay_out(
+    text: String,
+    words: &[crate::model::WordTiming],
+    formatter: Option<super::formatter::Formatter>,
+) -> (String, Option<&'static str>) {
     use super::format;
-    let Some(formatter) = formatter.filter(|_| format::worth_formatting(&text)) else { return text };
+    let Some(formatter) = formatter.filter(|_| format::worth_formatting(&text)) else { return (text, None) };
     let count = text.split_whitespace().count() as u32;
     let wait = (FORMAT_WAIT_BASE + FORMAT_WAIT_PER_WORD * count).min(FORMAT_WAIT_MAX);
     let started = Instant::now();
@@ -770,15 +800,16 @@ fn lay_out(text: String, words: &[crate::model::WordTiming], formatter: Option<s
     match formatter.format(&text, &pauses, wait).map(|laid_out| format::break_at_pauses(&laid_out, &pauses)) {
         Some(laid_out) if format::same_words(&text, &laid_out) => {
             scrawl_log(format!("Dictation: laid out in {} ms", started.elapsed().as_millis()));
-            laid_out
+            let described = format::describe(&laid_out);
+            (laid_out, described)
         }
         Some(_) => {
             scrawl_log("Dictation: the formatter changed words; pasting the text as dictated");
-            text
+            (text, None)
         }
         None => {
             scrawl_log(format!("Dictation: no layout after {} ms; pasting the text as dictated", started.elapsed().as_millis()));
-            text
+            (text, None)
         }
     }
 }
@@ -786,11 +817,11 @@ fn lay_out(text: String, words: &[crate::model::WordTiming], formatter: Option<s
 /// Pastes where a text field has focus and then puts the clipboard back; with nowhere to paste,
 /// the text stays on the clipboard to paste by hand. An app that doesn't say gets the paste and
 /// keeps the text on the clipboard too, so nothing is lost.
-fn deliver(text: &str, restore_clipboard: bool) -> Outcome {
+fn deliver(text: &str, restore_clipboard: bool, laid_out: Option<&'static str>) -> Outcome {
     let delivered = match route(crate::ax::focused_takes_text()) {
-        Route::Paste => crate::handoff::paste_text(text, restore_clipboard).map(|()| Outcome::Pasted),
+        Route::Paste => crate::handoff::paste_text(text, restore_clipboard).map(|()| Outcome::Pasted(laid_out)),
         Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
-        Route::PasteAndKeep => crate::handoff::paste_text(text, false).map(|()| Outcome::Pasted),
+        Route::PasteAndKeep => crate::handoff::paste_text(text, false).map(|()| Outcome::Pasted(laid_out)),
     };
     delivered.unwrap_or_else(|error| {
         scrawl_log(format!("Dictation: paste failed: {error:#}"));
@@ -822,9 +853,11 @@ mod tests {
             dictate: "Dictate ⌃⌥".into(),
         };
         assert_eq!(presentation(&PillState { hovered: true, ..idle() }), hint);
-        let copied = PillState { notice: Some("Copied to the clipboard"), hovered: true, ..idle() };
-        assert!(matches!(presentation(&copied), Pres::Message { .. }));
-        let listening = PillState { dictating: Some(true), notice: Some("x"), ..idle() };
+        let copied = PillState { notice: Some(("Copied to the clipboard", false)), hovered: true, ..idle() };
+        assert!(matches!(presentation(&copied), Pres::Message { undo: false, .. }));
+        let learned = PillState { notice: Some(("Learned your formatting", true)), ..idle() };
+        assert!(matches!(presentation(&learned), Pres::Message { undo: true, .. }));
+        let listening = PillState { dictating: Some(true), notice: Some(("x", true)), ..idle() };
         assert_eq!(presentation(&listening), Pres::Dictating { latched: true });
         let both = PillState { working: true, dictating: Some(false), ..idle() };
         assert_eq!(presentation(&both), Pres::Processing);
@@ -832,12 +865,12 @@ mod tests {
 
     #[test]
     fn the_idle_pill_hides_for_captures_and_when_off() {
-        let capture = PillState { capture_busy: true, notice: Some("x"), ..idle() };
+        let capture = PillState { capture_busy: true, notice: Some(("x", false)), ..idle() };
         assert_eq!(presentation(&capture), Pres::Hidden);
         assert_eq!(presentation(&PillState { pill: false, ..idle() }), Pres::Hidden);
         assert_eq!(presentation(&PillState { enabled: false, hovered: true, ..idle() }), Pres::Hidden);
         // A notice still shows with the idle pill off: it reports a dictation that just ran.
-        let notice = PillState { pill: false, enabled: false, notice: Some("x"), ..idle() };
+        let notice = PillState { pill: false, enabled: false, notice: Some(("x", false)), ..idle() };
         assert!(matches!(presentation(&notice), Pres::Message { .. }));
     }
 
@@ -848,15 +881,9 @@ mod tests {
         assert_eq!(route(None), Route::PasteAndKeep);
         assert_eq!(Outcome::Copied.notice(), Some("Copied to the clipboard"));
         assert_eq!(Outcome::NoSpeech.notice(), Some("Didn't catch that"));
-        assert_eq!(Outcome::Pasted.notice(), None);
+        assert_eq!(Outcome::Pasted(Some("Formatted as a list")).notice(), None, "a layout's notice is a setting's");
         assert_eq!(Outcome::Quiet.notice(), None);
         assert!(one_slip("calender", "calendar") && one_slip("recieved", "received"));
         assert!(!one_slip("klose", "klaus"));
-        assert_eq!(learned_notice(&[]), None);
-        assert_eq!(learned_notice(&["Klose".into()]).as_deref(), Some("Added Klose to the dictionary"));
-        assert_eq!(
-            learned_notice(&["Klose".into(), "Nova".into(), "Pell".into()]).as_deref(),
-            Some("Added Klose, Nova and Pell to the dictionary")
-        );
     }
 }

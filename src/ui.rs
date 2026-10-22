@@ -2079,7 +2079,7 @@ impl ScrawlCoordinator {
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
             PillAction::Route(index) => self.choose_route(index, cx),
             // Dictation's states never show while a capture owns the capsule.
-            PillAction::MessageClicked => {}
+            PillAction::MessageClicked | PillAction::Undo => {}
             PillAction::RecordScreen if !self.is_recording() => self.record_from_pill(cx),
             PillAction::RecordScreen => {}
         }

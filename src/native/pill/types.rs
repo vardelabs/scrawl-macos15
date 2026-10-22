@@ -62,6 +62,8 @@ pub enum PillAction {
     MessageClicked,
     /// Record on the hovered idle bar: record the screen, as a tap of the shortcut does.
     RecordScreen,
+    /// Undo on a notice of something dictation learned.
+    Undo,
 }
 
 /// Coordinator state snapshot synced to `NativePill`.
