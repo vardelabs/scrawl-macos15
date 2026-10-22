@@ -1,0 +1,180 @@
+//! Recent dictations, as pasted, so one is never lost to a clipboard that something else
+//! overwrote: the pill's Copy button copies the last, and the menu bar's Recent Dictations lists
+//! them. The last stays in memory for the button; with **Keep recent dictations**
+//! (`dictationHistory`, default on) the newest `MAX_ENTRIES` are also kept on disk, owner-only, in
+//! `~/Library/Application Support/scrawl/dictation-history.json`, so a quit or crash keeps them.
+//! Clear deletes the file and forgets the last.
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+pub const MAX_ENTRIES: usize = 20;
+/// How many the menu lists.
+pub const MENU_ENTRIES: usize = 10;
+/// The longest first line a menu item shows.
+const LABEL_CHARS: usize = 48;
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Entry {
+    /// When it was pasted, in epoch milliseconds; also the entry's id in the menu.
+    #[serde(rename = "atMs")]
+    pub at_ms: u64,
+    pub text: String,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct File {
+    #[serde(default)]
+    entries: Vec<Entry>,
+}
+
+/// The last dictation, kept in memory so the pill can copy it with history off too.
+static LAST: Mutex<Option<String>> = Mutex::new(None);
+/// Saving and clearing each hold this, so a Clear never races a save back into place.
+static EDIT: Mutex<()> = Mutex::new(());
+
+fn edit_lock() -> std::sync::MutexGuard<'static, ()> {
+    EDIT.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `entries` with `entry` added newest last, keeping the newest `MAX_ENTRIES`.
+pub fn remember(mut entries: Vec<Entry>, entry: Entry) -> Vec<Entry> {
+    entries.push(entry);
+    let excess = entries.len().saturating_sub(MAX_ENTRIES);
+    entries.drain(..excess);
+    entries
+}
+
+/// `First line of the text…  ·  2 min ago`, for the menu.
+pub fn label(entry: &Entry, now_ms: u64) -> String {
+    let first = entry.text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let short: String = first.chars().take(LABEL_CHARS).collect();
+    let more = first.chars().count() > LABEL_CHARS || entry.text.trim().lines().count() > 1;
+    let age = crate::inbox::relative_age(now_ms.saturating_sub(entry.at_ms));
+    format!("{short}{}  ·  {age}", if more { "…" } else { "" })
+}
+
+pub fn default_path() -> PathBuf {
+    path_in(&crate::handoff::default_captures_dir())
+}
+
+/// The history beside the captures folder, in Scrawl's Application Support folder.
+pub fn path_in(captures: &Path) -> PathBuf {
+    captures.with_file_name("dictation-history.json")
+}
+
+/// The saved entries, oldest first; a missing or broken file is none.
+pub fn load_from(path: &Path) -> Vec<Entry> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<File>(&bytes).ok())
+        .map(|file| file.entries)
+        .unwrap_or_default()
+}
+
+/// Writes a temp file and renames it over `path`, owner-only, since dictations can be private.
+fn save_to(path: &Path, entries: Vec<Entry>) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let mut json = serde_json::to_vec_pretty(&File { entries })?;
+    json.push(b'\n');
+    let _ = std::fs::remove_file(&temp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    std::io::Write::write_all(&mut options.open(&temp)?, &json)?;
+    std::fs::rename(&temp, path).with_context(|| format!("Could not save {}", path.display())).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
+/// Keeps a pasted dictation: as the last, and on disk at `path` when `keep` (`dictationHistory`).
+pub fn record(path: &Path, text: &str, at_ms: u64, keep: bool) -> Result<()> {
+    let _editing = edit_lock();
+    *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(text.to_owned());
+    if !keep {
+        return Ok(());
+    }
+    save_to(path, remember(load_from(path), Entry { at_ms, text: text.to_owned() }))
+}
+
+/// The last dictation: this run's, else the newest on disk at `path`.
+pub fn last(path: &Path) -> Option<String> {
+    let kept = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    kept.or_else(|| load_from(path).pop().map(|entry| entry.text))
+}
+
+/// Forgets the last and deletes the file at `path`; none saved is no error.
+pub fn clear(path: &Path) -> Result<()> {
+    let _editing = edit_lock();
+    *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(error).with_context(|| format!("Could not remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(n: u64) -> Entry {
+        Entry { at_ms: n, text: format!("Dictation {n}") }
+    }
+
+    #[test]
+    fn the_newest_entries_are_kept() {
+        let mut entries = Vec::new();
+        for n in 0..(MAX_ENTRIES as u64 + 5) {
+            entries = remember(entries, entry(n));
+        }
+        assert_eq!(entries.len(), MAX_ENTRIES);
+        assert_eq!(entries.first(), Some(&entry(5)));
+        assert_eq!(entries.last(), Some(&entry(MAX_ENTRIES as u64 + 4)));
+    }
+
+    #[test]
+    fn a_label_is_the_first_line_and_its_age() {
+        let now = 10 * 60_000;
+        assert_eq!(label(&Entry { at_ms: now, text: "Book the cabin.".into() }, now), "Book the cabin.  ·  just now");
+        let list = Entry { at_ms: 0, text: "\nWe need:\n- tents\n- maps".into() };
+        assert_eq!(label(&list, now), "We need:…  ·  10 min ago");
+        let long = Entry { at_ms: now, text: "word ".repeat(20) };
+        assert!(label(&long, now).starts_with(&"word ".repeat(10)[..LABEL_CHARS]), "cut at LABEL_CHARS");
+        assert!(label(&long, now).contains('…'));
+    }
+
+    // One test, since the last dictation is process-wide.
+    #[test]
+    fn dictations_persist_and_clear_deletes_them() {
+        let dir = std::env::temp_dir().join(format!("scrawl-history-test-{}", std::process::id()));
+        let path = path_in(&dir.join("captures"));
+        assert_eq!(path.file_name().unwrap(), "dictation-history.json");
+        clear(&path).unwrap();
+        assert_eq!(last(&path), None);
+        record(&path, "Only in memory.", 1, false).unwrap();
+        assert!(!path.exists(), "history off writes nothing");
+        assert_eq!(last(&path).as_deref(), Some("Only in memory."));
+        record(&path, "First.", 2, true).unwrap();
+        record(&path, "Second.", 3, true).unwrap();
+        assert_eq!(load_from(&path).iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["First.", "Second."]);
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o600);
+        *LAST.lock().unwrap() = None;
+        assert_eq!(last(&path).as_deref(), Some("Second."), "after a restart, the newest on disk");
+        clear(&path).unwrap();
+        assert!(!path.exists());
+        assert_eq!(last(&path), None);
+        std::fs::write(&path, "not json").unwrap();
+        assert!(load_from(&path).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

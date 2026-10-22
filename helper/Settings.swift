@@ -134,6 +134,8 @@ struct SettingsDictation: Decodable, Equatable {
   var formattingAvailable = false
   var learn = true
   var notices = true
+  var history = true
+  var recent = 0
   var learnedLayouts = 0
   var removeFillers = true
   var words: [String] = []
@@ -1045,6 +1047,13 @@ struct SettingsView: View {
         SettingsSeparator()
         SettingsRow(title: "Show what dictation learns") {
           SettingsSwitch(on: d.notices) { model.set("dictationNotices", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Keep recent dictations") {
+          HStack(spacing: 8) {
+            SettingsButton(title: "Clear", enabled: d.recent > 0) { model.act("clear-dictations") }
+            SettingsSwitch(on: d.history) { model.set("dictationHistory", $0) }
+          }
         }
         SettingsSeparator()
         SettingsRow(title: d.learnedLayouts == 1 ? "1 layout learned" : "\(d.learnedLayouts) layouts learned") {

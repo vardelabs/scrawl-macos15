@@ -136,6 +136,7 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
             1.2,
             Pres::Hint {
                 dictate: "Dictate ⌃⌥".to_owned(),
+                copy: true,
             },
         ),
         (2.4, Pres::Dictating { latched: true }),

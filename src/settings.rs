@@ -682,6 +682,9 @@ pub struct DictationView {
     pub learn: bool,
     /// Notices in the pill of what dictation learned or how it laid text out.
     pub notices: bool,
+    /// Recent dictations kept on disk, and how many there are.
+    pub history: bool,
+    pub recent: usize,
     /// Layouts learned from edits to laid-out text (`dictation::layout`), shown to the formatter.
     pub learned_layouts: usize,
     pub remove_fillers: bool,
@@ -973,6 +976,8 @@ fn dictation_view(
         formatting_available: crate::handoff::format_command_in(config).is_some(),
         learn: config.dictation_learn.unwrap_or(true),
         notices: config.dictation_notices.unwrap_or(true),
+        history: config.dictation_history.unwrap_or(true),
+        recent: crate::dictation::history::load_from(&crate::dictation::history::default_path()).len(),
         learned_layouts: crate::dictation::layout::load_from(&crate::dictation::layout::path_beside(config_path)).len(),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
@@ -1119,6 +1124,8 @@ pub enum Action {
     EditDictionary,
     /// Forget the layouts learned from edits.
     ForgetLayouts,
+    /// Delete the recent dictations kept on disk, and the last in memory.
+    ClearDictations,
     Close,
 }
 
@@ -1273,6 +1280,13 @@ impl Panel {
             Action::EditDictionary => {
                 Effect::EditDictionary(crate::dictionary::path_beside(&host.config_path()))
             }
+            Action::ClearDictations => {
+                let path = crate::dictation::history::default_path();
+                if let Err(error) = crate::dictation::history::clear(&path) {
+                    crate::capture::scrawl_log(format!("Dictation: {error:#}"));
+                }
+                Effect::None
+            }
             Action::ForgetLayouts => {
                 let layouts = crate::dictation::layout::path_beside(&host.config_path());
                 let _editing = crate::dictation::layout::edit_lock();
@@ -1375,7 +1389,7 @@ impl Panel {
             (
                 "autoSend" | "videoExport" | "lowerPlayback" | "tapChooses" | "cropWindowCaptures"
                 | "dictation" | "dictationRestoreClipboard" | "dictationPill"
-                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices"
+                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory"
                 | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => {

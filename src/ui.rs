@@ -440,6 +440,9 @@ enum MenuAction {
     ExportVideo,
     Settings,
     CheckForUpdates,
+    /// A Recent Dictations item, by when it was pasted.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    CopyDictation(u64),
     Quit,
 }
 
@@ -2080,7 +2083,7 @@ impl ScrawlCoordinator {
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
             PillAction::Route(index) => self.choose_route(index, cx),
             // Dictation's states never show while a capture owns the capsule.
-            PillAction::MessageClicked | PillAction::Undo => {}
+            PillAction::MessageClicked | PillAction::Undo | PillAction::CopyLast => {}
             PillAction::RecordScreen if !self.is_recording() => self.record_from_pill(cx),
             PillAction::RecordScreen => {}
         }
@@ -5573,6 +5576,9 @@ pub fn run_app(
                                 }
                                 MenuAction::CheckForUpdates => {
                                     platform::check_for_updates();
+                                }
+                                MenuAction::CopyDictation(at_ms) => {
+                                    loop_coord.update(cx, |coord, _| coord.dictation.copy_recent(at_ms));
                                 }
                                 MenuAction::Quit => {
                                     should_quit = true;
