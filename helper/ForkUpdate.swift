@@ -35,9 +35,10 @@ struct ForkRelease: Equatable {
       else { return nil }
       return ForkAsset(name: name, url: url)
     }
-    guard let zip = assets.first(where: { $0.name.hasPrefix("Scrawl-Fork-") && $0.name.hasSuffix(".zip") }),
-          let checksum = assets.first(where: { $0.name == zip.name + ".sha256" })
-    else { return nil }
+    let pairs = assets.lazy
+      .filter { $0.name.hasPrefix("Scrawl-Fork-") && $0.name.hasSuffix(".zip") }
+      .compactMap { zip in assets.first { $0.name == zip.name + ".sha256" }.map { (zip, $0) } }
+    guard let (zip, checksum) = pairs.first else { return nil }
     return ForkRelease(
       tag: tag, name: object["name"] as? String ?? tag, notes: object["body"] as? String ?? "",
       zip: zip, checksum: checksum)
@@ -75,6 +76,8 @@ enum ForkVersion {
     let parsed = ForkRelease.parse(Data(release.utf8))
     precondition(parsed?.zip.name == "Scrawl-Fork-abc1234.zip" && parsed?.checksum.url.lastPathComponent == "z.sha256")
     precondition(ForkRelease.parse(Data(release.replacingOccurrences(of: ".zip.sha256", with: ".txt").utf8)) == nil)
+    let lone = #"{"name":"Scrawl-Fork-old.zip","browser_download_url":"https://github.com/o/r/releases/download/t/old.zip"},"#
+    precondition(ForkRelease.parse(Data(release.replacingOccurrences(of: #""assets":["#, with: #""assets":["# + lone).utf8))?.zip.name == "Scrawl-Fork-abc1234.zip")
     precondition(ForkRelease.parse(Data(release.replacingOccurrences(of: "https://", with: "http://").utf8)) == nil)
     precondition(ForkRelease.parse(Data(release.replacingOccurrences(of: "github.com", with: "example.com").utf8)) == nil)
     let digest = String(repeating: "ab", count: 32)
@@ -224,7 +227,9 @@ final class ForkUpdater: NSObject, ObservableObject, URLSessionDownloadDelegate 
       switch (moved, status) {
       case (.success, 200): downloaded?.resume(returning: kept)
       case (.failure(let error), _): downloaded?.resume(throwing: error)
-      default: downloaded?.resume(throwing: HelperError("GitHub answered \(status) for the download."))
+      default:
+        try? FileManager.default.removeItem(at: kept)
+        downloaded?.resume(throwing: HelperError("GitHub answered \(status) for the download."))
       }
       downloaded = nil
     }

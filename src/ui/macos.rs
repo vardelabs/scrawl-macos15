@@ -206,9 +206,8 @@ pub(super) fn hand_back_keys(cx: &mut App) {
     }
 }
 
-pub(super) fn start_updates() {
-    crate::sparkle::start();
-}
+/// Sparkle's feed is Kit's, so the fork never starts it: `fork_update` checks instead.
+pub(super) fn start_updates() {}
 
 pub(super) fn check_for_updates() {
     crate::fork_update::check();
