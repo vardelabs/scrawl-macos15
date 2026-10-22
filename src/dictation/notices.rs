@@ -45,9 +45,13 @@ impl Notices {
     }
 
     /// Puts where a dictation went ("Copied to the clipboard") ahead of what earlier edits
-    /// taught, past the cap: it is about the text the user is looking for now. A notice it
-    /// displaces shows again in full afterwards.
+    /// taught: it is about the text the user is looking for now. It replaces any such notice
+    /// still waiting, which a pill that never shows (`nativePill` off) would otherwise pile up,
+    /// and takes the place of the oldest learned notice past the cap. A notice it displaces shows
+    /// again in full afterwards.
     pub fn push_first(&mut self, text: impl Into<String>) {
+        self.queue.retain(|n| n.undo.is_some());
+        self.queue.truncate(MAX_WAITING - 1);
         if let Some(front) = self.queue.front_mut() {
             front.until = None;
         }
@@ -156,7 +160,7 @@ mod tests {
     fn dismissing_takes_the_shown_notice_and_its_undo() {
         let t0 = Instant::now();
         let mut notices = Notices::default();
-        notices.push(LEARNED_LAYOUT, Some(Undo::Word("Nova".into())));
+        notices.push(added_word("Nova"), Some(Undo::Word("Nova".into())));
         texts(&mut notices, true, t0);
         assert_eq!(notices.dismiss(t0).and_then(|n| n.undo), Some(Undo::Word("Nova".into())));
         assert!(!notices.showing());
@@ -180,6 +184,23 @@ mod tests {
             Some("Added “0” to your dictionary"),
             "in full"
         );
+    }
+
+    #[test]
+    fn notices_that_never_show_do_not_pile_up() {
+        let t0 = Instant::now();
+        let mut notices = Notices::default();
+        for _ in 0..50 {
+            notices.push_first("Copied to the clipboard");
+            notices.current(false, t0);
+        }
+        assert_eq!(notices.queue.len(), 1);
+        for n in 0..10 {
+            notices.push(added_word(&n.to_string()), Some(Undo::Word(n.to_string())));
+        }
+        notices.push_first("Didn't catch that");
+        assert_eq!(notices.queue.len(), MAX_WAITING);
+        assert_eq!(notices.queue[0].text, "Didn't catch that");
     }
 
     #[test]

@@ -72,8 +72,10 @@ pub fn remember(mut examples: Vec<Example>, new: Example) -> Vec<Example> {
 }
 
 /// `examples` without `learned`, and with `replaced`, the example of the same dictation it took
-/// the place of, back. Once `learned` is gone (a later layout of the same dictation, or Forget),
-/// nothing changes: bringing `replaced` back then would undo something else.
+/// the place of, added back through `remember`, so the budget still holds: an oldest example that
+/// saving `learned` trimmed stays gone, and one may be trimmed again. Once `learned` is gone (a
+/// later layout of the same dictation, or Forget), nothing changes: bringing `replaced` back then
+/// would undo something else.
 pub fn unlearn(mut examples: Vec<Example>, learned: &Example, replaced: Option<Example>) -> Vec<Example> {
     let before = examples.len();
     examples.retain(|e| e != learned);
