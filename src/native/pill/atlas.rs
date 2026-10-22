@@ -570,6 +570,8 @@ mod tests {
             IconKind::Iphone,
             IconKind::Close,
             IconKind::Check,
+            IconKind::Pause,
+            IconKind::Play,
         ] {
             let (w, h, _, rgba) = rasterize_icon(kind, 14.0, 2.0);
             assert_eq!(w, 28);
