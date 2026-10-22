@@ -140,9 +140,8 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
     ]
 }
 
-/// When the pretend mic is open, in animation seconds: a hold on the idle bar that never grows
-/// the pill (as a `⌃⌥` shortcut does), then the hands-free dictation.
-const LAB_MIC: [(f32, f32); 2] = [(0.3, 1.0), (2.4, 5.0)];
+/// When the pretend mic is open, in animation seconds: the hands-free dictation.
+const LAB_MIC: std::ops::Range<f32> = 2.4..5.0;
 
 /// A pretend voice for the level line: syllables about 3 a second, in phrases with pauses.
 fn synthetic_level(t: f32) -> f32 {
@@ -158,12 +157,11 @@ pub(super) fn pretend_mic_rms(t: f32) -> f32 {
     crate::native::pill::wave::rms_of_height(synthetic_level(t))
 }
 
-/// Each time the pretend mic opens, the voice starts a phrase.
+/// When the pretend mic opens, the voice starts a phrase.
 fn lab_mic_rms(at: f32) -> Option<f32> {
     LAB_MIC
-        .iter()
-        .find(|&&(from, to)| (from..to).contains(&at))
-        .map(|&(from, _)| pretend_mic_rms(at - from))
+        .contains(&at)
+        .then(|| pretend_mic_rms(at - LAB_MIC.start))
 }
 
 fn show_dictation(pill: &crate::native::pill::NativePill, pres: crate::native::pill::model::Pres) {
@@ -322,7 +320,7 @@ fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
             // Stepped every frame, so the pretend mic level moves as a real one does; the scene's
             // clock is the animation clock, so frames that run late don't stretch it.
             let mut steps = dictation_steps().into_iter().peekable();
-            let end = LAB_MIC.iter().map(|&(_, to)| to).fold(0.0, f32::max);
+            let end = LAB_MIC.end;
             let start = motion::now();
             let mut at = 0.0;
             while steps.peek().is_some() || at < end {

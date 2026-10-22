@@ -1,8 +1,9 @@
-//! The dictation pill's mic level line: a thin wave that is flat in silence and moves with the
-//! voice, so the user can see the mic hears them. The newest level sits at the centre and older
-//! levels ripple outward; the line fades into the capsule at both ends.
+//! The pill's mic level line, after the clock while dictating or recording: a thin wave that is
+//! flat in silence and moves with the voice, so the user can see the mic hears them. The newest
+//! level sits at the centre and older levels ripple outward; the line fades into the capsule at
+//! both ends.
 
-use super::model::{CHIP_H, FrameElem, Pres, Silhouette, SpringCfg, SpringVal};
+use super::model::{CHIP_H, FrameElem, Pres, SpringCfg, SpringVal};
 
 /// Levels kept for the line, newest first, plus the live level ahead of them.
 pub const SAMPLES: usize = 48;
@@ -15,8 +16,8 @@ const SPAN_DB: f32 = 34.0;
 const NOISE_RISE_DB_PER_S: f32 = 6.0;
 const NOISE_MARGIN_DB: f32 = 4.0;
 /// The noise estimate before the mic has heard the room: low enough that the floor is
-/// `FLOOR_DB`. It carries across dictations, since the room does, so the 250 ms the idle bar
-/// shows a hold's line is not spent relearning a fan.
+/// `FLOOR_DB`. It carries across dictations, since the room does, so a new one doesn't spend its
+/// first seconds relearning a fan.
 const QUIET_NOISE_DB: f32 = FLOOR_DB - NOISE_MARGIN_DB;
 /// No room is this quiet: it is a recorder before its device delivers audio, or a muted mic, and
 /// it would wipe the room's noise estimate.
@@ -29,17 +30,12 @@ const PHASE_SPEED: f32 = 5.5;
 const STILL: f32 = 1e-3;
 const FADE: SpringCfg = SpringCfg::new(0.2, 0.0);
 
-/// In the listening pill the line follows the clock inside the lead element.
+/// The line follows the clock inside the lead element.
 pub const LISTENING_W: f32 = 56.0;
 pub const LISTENING_GAP: f32 = 6.0;
 const LISTENING_AMP: f32 = 7.0;
 const LISTENING_STROKE: f32 = 1.5;
 const LISTENING_WAVELENGTH: f32 = 11.0;
-/// In the idle bar (`DICTATION_IDLE_W` × `DICTATION_IDLE_H`) the line is shorter and lower.
-const IDLE_W: f32 = 30.0;
-const IDLE_AMP: f32 = 2.4;
-const IDLE_STROKE: f32 = 1.25;
-const IDLE_WAVELENGTH: f32 = 7.0;
 
 /// The lead's clock starts this far in, after the dot (`emit_elem_prims`).
 pub const CLOCK_X: f32 = CHIP_H - 2.0;
@@ -59,7 +55,7 @@ pub fn rms_of_height(height: f32) -> f32 {
     10_f32.powf((FLOOR_DB + height.clamp(0.0, 1.0) * SPAN_DB) / 20.0)
 }
 
-/// One line to draw, in panel points.
+/// The line to draw, in panel points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WaveLine {
     /// `[x, y, w, h]`: the line runs across `w` and swings within `h` about the middle.
@@ -82,7 +78,6 @@ pub struct Wave {
     phase: f32,
     mic: SpringVal,
     listening: SpringVal,
-    idle: SpringVal,
 }
 
 impl Default for Wave {
@@ -97,7 +92,6 @@ impl Default for Wave {
             phase: 0.0,
             mic: SpringVal::new(0.0, FADE),
             listening: SpringVal::new(0.0, FADE),
-            idle: SpringVal::new(0.0, FADE),
         }
     }
 }
@@ -114,13 +108,11 @@ impl Wave {
         self.mic.to(f32::from(u8::from(rms.is_some())), FADE);
     }
 
-    /// Dictation and a screen capture recording the Mac's mic carry the line; a paused or an
-    /// iPhone capture doesn't.
+    /// Dictation and a screen capture recording the Mac's mic carry the line; the idle bar, a
+    /// paused capture and an iPhone one don't.
     pub fn show(&mut self, pres: &Pres) {
         let listening = matches!(pres, Pres::Dictating { .. } | Pres::Recording { mic: true, .. });
-        let idle = matches!(pres, Pres::DictationIdle);
         self.listening.to(f32::from(u8::from(listening)), FADE);
-        self.idle.to(f32::from(u8::from(idle)), FADE);
     }
 
     /// Under Reduce Motion the crests hold still; the height still follows the voice.
@@ -145,16 +137,15 @@ impl Wave {
             self.history.copy_within(..SAMPLES - 2, 1);
             self.history[0] = self.level;
         }
-        for spring in [&mut self.mic, &mut self.listening, &mut self.idle] {
-            spring.step(dt);
-        }
+        self.mic.step(dt);
+        self.listening.step(dt);
     }
 
     /// Something on the line would change on the next frame, so the pill keeps drawing; a flat
     /// line in silence, or one no state shows, draws nothing new.
     pub fn is_moving(&self) -> bool {
-        let fading = !(self.mic.is_resting() && self.listening.is_resting() && self.idle.is_resting());
-        let shown = self.mic.x > STILL && (self.listening.x > STILL || self.idle.x > STILL);
+        let fading = !(self.mic.is_resting() && self.listening.is_resting());
+        let shown = self.mic.x > STILL && self.listening.x > STILL;
         let heard = self.target > STILL
             || self.level > STILL
             || self.history.iter().any(|&h| h > STILL);
@@ -178,41 +169,24 @@ impl Wave {
         self.phase
     }
 
-    /// The lines to draw this frame: one inside the listening pill's lead, after the clock, and
-    /// one in the idle bar while the mic is open before the pill grows. They cross-fade as the
-    /// pill changes.
-    pub fn lines(&self, shape: &Silhouette, lead: Option<&FrameElem>, clock_w: f32) -> Vec<WaveLine> {
-        let mut lines = Vec::with_capacity(2);
-        let mic = self.mic.x.clamp(0.0, 1.0);
-        if let Some(lead) = lead {
-            let alpha = lead.alpha * self.listening.x.clamp(0.0, 1.0) * mic;
-            if alpha > STILL {
-                let k = lead.scale;
-                let x = lead.rect[0] + (CLOCK_X + clock_w + LISTENING_GAP) * k;
-                let cy = lead.rect[1] + lead.rect[3] * 0.5;
-                lines.push(WaveLine {
-                    rect: [x, cy - LISTENING_AMP * k, LISTENING_W * k, 2.0 * LISTENING_AMP * k],
-                    alpha,
-                    blur: lead.blur,
-                    stroke: LISTENING_STROKE * k,
-                    wavelength: LISTENING_WAVELENGTH * k,
-                });
-            }
+    /// The line inside the lead, after the clock, this frame; it fades, scales and blurs with
+    /// the lead.
+    pub fn line(&self, lead: Option<&FrameElem>, clock_w: f32) -> Option<WaveLine> {
+        let lead = lead?;
+        let alpha = lead.alpha * self.listening.x.clamp(0.0, 1.0) * self.mic.x.clamp(0.0, 1.0);
+        if alpha <= STILL {
+            return None;
         }
-        let alpha = shape.alpha * self.idle.x.clamp(0.0, 1.0) * mic;
-        if alpha > STILL {
-            let cx = (shape.l + shape.r) * 0.5;
-            let cy = (shape.t + shape.b) * 0.5;
-            let w = IDLE_W.min(shape.width() - shape.height());
-            lines.push(WaveLine {
-                rect: [cx - w * 0.5, cy - IDLE_AMP, w, 2.0 * IDLE_AMP],
-                alpha,
-                blur: shape.blur,
-                stroke: IDLE_STROKE,
-                wavelength: IDLE_WAVELENGTH,
-            });
-        }
-        lines
+        let k = lead.scale;
+        let x = lead.rect[0] + (CLOCK_X + clock_w + LISTENING_GAP) * k;
+        let cy = lead.rect[1] + lead.rect[3] * 0.5;
+        Some(WaveLine {
+            rect: [x, cy - LISTENING_AMP * k, LISTENING_W * k, 2.0 * LISTENING_AMP * k],
+            alpha,
+            blur: lead.blur,
+            stroke: LISTENING_STROKE * k,
+            wavelength: LISTENING_WAVELENGTH * k,
+        })
     }
 }
 
@@ -255,7 +229,7 @@ mod tests {
     #[test]
     fn the_next_dictation_remembers_a_noisy_room() {
         let mut wave = Wave::default();
-        wave.show(&Pres::DictationIdle);
+        wave.show(&Pres::Dictating { latched: false });
         wave.set_rms(Some(FAN));
         run(&mut wave, 3.0);
         wave.set_rms(None);
@@ -308,8 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_recording_shows_the_line_and_an_iphone_or_paused_one_does_not() {
-        let shape = Silhouette { l: 200.0, r: 440.0, t: 22.0, b: 62.0, radius: 20.0, alpha: 1.0, blur: 0.0 };
+    fn dictation_and_a_screen_recording_show_the_line_and_the_idle_bar_an_iphone_or_paused_one_do_not() {
         let lead = FrameElem {
             id: super::super::model::ElemId::Lead,
             rect: [204.0, 26.0, 125.0, 32.0],
@@ -324,7 +297,9 @@ mod tests {
         };
         let recording = |mic| Pres::Recording { chips: false, has_iphone: false, pausable: true, mic };
         for (pres, shows) in [
+            (Pres::Dictating { latched: false }, true),
             (recording(true), true),
+            (Pres::DictationIdle, false),
             (recording(false), false),
             (Pres::Paused, false),
         ] {
@@ -332,34 +307,18 @@ mod tests {
             wave.show(&pres);
             wave.set_rms(Some(SPEECH));
             run(&mut wave, 0.5);
-            assert_eq!(!wave.lines(&shape, Some(&lead), 29.0).is_empty(), shows, "{pres:?}");
+            assert_eq!(wave.line(Some(&lead), 29.0).is_some(), shows, "{pres:?}");
         }
     }
 
     #[test]
     fn a_line_no_state_shows_draws_nothing_new() {
-        let mut wave = Wave::default();
-        wave.show(&Pres::Hidden);
-        wave.set_rms(Some(SPEECH));
-        run(&mut wave, 0.5);
-        assert!(!wave.is_moving());
-    }
-
-    #[test]
-    fn the_idle_bar_shows_the_line_only_while_the_mic_is_open() {
-        let shape = Silhouette { l: 298.0, r: 342.0, t: 22.0, b: 29.0, radius: 3.5, alpha: 1.0, blur: 0.0 };
-        let mut wave = Wave::default();
-        wave.show(&Pres::DictationIdle);
-        run(&mut wave, 0.5);
-        assert!(wave.lines(&shape, None, 29.0).is_empty());
-        wave.set_rms(Some(SPEECH));
-        run(&mut wave, 0.3);
-        let lines = wave.lines(&shape, None, 29.0);
-        assert_eq!(lines.len(), 1);
-        let [x, _, w, _] = lines[0].rect;
-        assert!(x > shape.l && x + w < shape.r, "the line stays inside the bar");
-        wave.show(&Pres::Hidden);
-        run(&mut wave, 0.5);
-        assert!(wave.lines(&shape, None, 29.0).is_empty());
+        for pres in [Pres::Hidden, Pres::DictationIdle] {
+            let mut wave = Wave::default();
+            wave.show(&pres);
+            wave.set_rms(Some(SPEECH));
+            run(&mut wave, 0.5);
+            assert!(!wave.is_moving(), "{pres:?}");
+        }
     }
 }

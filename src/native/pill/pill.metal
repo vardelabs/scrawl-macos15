@@ -223,8 +223,8 @@ struct WaveLine {
 };
 
 struct WaveUniforms {
-    WaveLine lines[2];
-    float4 meta;   // count, scroll (0..1 toward the next history slot), phase, 0
+    WaveLine line;
+    float4 meta;   // shown (1 or 0), scroll (0..1 toward the next history slot), phase, 0
     float samples[WAVE_SAMPLES]; // live level, then history newest first, 0..1
 };
 
@@ -399,9 +399,8 @@ fragment float4 pill_composite_fragment(
             out = blend_over(out, sample_col * eff_a);
         }
 
-        uint wave_count = min(uint(wave.meta.x), 2u);
-        for (uint i = 0; i < wave_count; ++i) {
-            WaveLine l = wave.lines[i];
+        if (wave.meta.x > 0.5) {
+            WaveLine l = wave.line;
             // In Liquid Glass mode the line gets the labels' 1 pt dark backing, for bright pages.
             if (is_glass >= 0.5) {
                 float sh = wave_coverage(wave, l, p - float2(0.0, 0.85), u.scale) * 0.64 * l.meta.x * in_cov;
