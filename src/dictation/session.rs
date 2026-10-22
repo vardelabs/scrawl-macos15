@@ -299,6 +299,12 @@ impl Dictation {
         self.started.is_some() || self.working.is_some()
     }
 
+    /// The mic's RMS while it is open (from the chord going down, before the pill grows), so
+    /// the pill can show it is hearing; `None` while it is closed.
+    pub fn mic_rms(&self) -> Option<f32> {
+        self.recorder.as_ref().map(AudioRecorder::rms)
+    }
+
     /// The listening clock (`M:SS`) for the pill.
     pub fn clock(&self) -> String {
         crate::model::format_clock(self.started.map_or(0, |at| at.elapsed().as_millis() as u64))

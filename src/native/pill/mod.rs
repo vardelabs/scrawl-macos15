@@ -10,6 +10,7 @@
 pub mod atlas;
 pub mod model;
 mod types;
+pub mod wave;
 
 pub use self::types::{PillAction, PillSnapshot, PillStyle};
 
@@ -113,6 +114,21 @@ struct CompositeElem {
     sigma_pt: f32,
     pad_pt: f32,
     _pad0: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct WaveLineUniform {
+    rect: [f32; 4],
+    meta: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WaveUniforms {
+    lines: [WaveLineUniform; 2],
+    meta: [f32; 4],
+    samples: [f32; wave::SAMPLES],
 }
 
 struct PillViewIvars {
@@ -530,6 +546,16 @@ impl NativePill {
         }
     }
 
+    /// The mic's RMS for dictation's level line, or `None` while it is closed.
+    pub fn set_mic_rms(&self, rms: Option<f32>) {
+        if let Ok(mut st) = self.shared.state.lock() {
+            st.model.wave.set_rms(rms);
+        }
+        if self.display_link.is_none() {
+            self.shared.tick_main();
+        }
+    }
+
     pub fn drain_actions(&self) -> Vec<PillAction> {
         self.action_rx.try_iter().collect()
     }
@@ -726,7 +752,8 @@ impl SharedNativePill {
         let dt = raw_dt.min(0.025 * motion::time_scale());
 
         let animating = !st.model.is_at_rest()
-            || matches!(st.model.pres, Pres::Processing);
+            || matches!(st.model.pres, Pres::Processing)
+            || st.model.wave.is_moving();
         if !animating && !st.dirty {
             if motion::tracing() && !st.model.is_fully_hidden() {
                 let frame = st.model.frame();
@@ -917,7 +944,8 @@ impl PillRuntimeState {
         let Some(drawable) = self.pipelines.layer.next_drawable() else {
             return;
         };
-        let cmd = self.pipelines.encode(frame, use_glass, drawable.texture());
+        let wave = wave_uniforms(frame, &self.model.wave);
+        let cmd = self.pipelines.encode(frame, use_glass, &wave, drawable.texture());
 
         // Synchronize `NSGlassEffectView` geometry and Metal drawable presentation in one CATransaction.
         CATransaction::begin();
@@ -959,6 +987,22 @@ impl PillRuntimeState {
 
 }
 
+/// The level lines `frame` draws, with `wave`'s samples and motion.
+fn wave_uniforms(frame: &FrameState, wave: &wave::Wave) -> WaveUniforms {
+    let mut lines = [WaveLineUniform::default(); 2];
+    for (slot, line) in lines.iter_mut().zip(&frame.waves) {
+        *slot = WaveLineUniform {
+            rect: line.rect,
+            meta: [line.alpha, line.blur, line.stroke, line.wavelength],
+        };
+    }
+    WaveUniforms {
+        lines,
+        meta: [frame.waves.len().min(2) as f32, wave.scroll(), wave.phase(), 0.0],
+        samples: wave.samples(),
+    }
+}
+
 impl MetalPipelines {
     /// Encodes `frame`'s three passes into `target` (`BGRA8`, the panel's size at `scale`); the
     /// caller commits the returned buffer.
@@ -966,6 +1010,7 @@ impl MetalPipelines {
         &self,
         frame: &FrameState,
         use_glass: bool,
+        wave: &WaveUniforms,
         target: &metal::TextureRef,
     ) -> metal::CommandBuffer {
         let mut prims: Vec<TilePrim> = Vec::with_capacity(frame.elems.len() * 3);
@@ -1154,6 +1199,11 @@ impl MetalPipelines {
                 1,
                 (comp_elems.len() * size_of::<CompositeElem>()) as u64,
                 comp_elems.as_ptr().cast::<c_void>(),
+            );
+            enc.set_fragment_bytes(
+                2,
+                size_of::<WaveUniforms>() as u64,
+                (wave as *const WaveUniforms).cast::<c_void>(),
             );
             enc.set_fragment_texture(0, Some(&self.offscreen_b));
             enc.draw_primitives(MTLPrimitiveType::Triangle, 0, 3);
@@ -1580,7 +1630,7 @@ mod tests {
         desc.set_storage_mode(metal::MTLStorageMode::Shared);
         desc.set_usage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
         let target = pipelines._device.new_texture(&desc);
-        let cmd = pipelines.encode(&frame, false, &target);
+        let cmd = pipelines.encode(&frame, false, &wave_uniforms(&frame, &model.wave), &target);
         cmd.commit();
         cmd.wait_until_completed();
         let mut bgra = vec![0_u8; (w * h * 4) as usize];

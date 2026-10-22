@@ -213,10 +213,84 @@ inline float4 blend_over(float4 dst, float4 src) {
     return src + dst * (1.0 - src.a);
 }
 
+// ─── Dictation's mic level line (`wave.rs`) ─────────────────────────────────────────────────
+
+constant int WAVE_SAMPLES = 48;
+
+struct WaveLine {
+    float4 rect;   // x, y, w, h in panel points: the line runs across w and swings within h
+    float4 meta;   // alpha, blur sigma, stroke, wavelength (all in points)
+};
+
+struct WaveUniforms {
+    WaveLine lines[2];
+    float4 meta;   // count, scroll (0..1 toward the next history slot), phase, 0
+    float samples[WAVE_SAMPLES]; // live level, then history newest first, 0..1
+};
+
+// The newest level sits at the centre (q = 0) and older ones ripple outward: a level moves out
+// with `scroll` between pushes, and lands where the push puts it.
+inline float wave_level(constant WaveUniforms &w, float q) {
+    float idx = clamp(q - w.meta.y, 0.0, float(WAVE_SAMPLES) - 1.001);
+    int i = int(floor(idx));
+    float f = idx - float(i);
+    return mix(w.samples[i], w.samples[i + 1], f * f * (3.0 - 2.0 * f));
+}
+
+inline float wave_y(constant WaveUniforms &w, WaveLine l, float x) {
+    float u = clamp((x - l.rect.x) / max(l.rect.z, 1e-3), 0.0, 1.0);
+    float level = wave_level(w, abs(u - 0.5) * 2.0 * float(WAVE_SAMPLES - 2));
+    // Both ends return to the middle, so the line never jumps where it starts.
+    float taper = sin(M_PI_F * u);
+    float dx = x - l.rect.x;
+    float k = 2.0 * M_PI_F / max(l.meta.w, 1.0);
+    float phase = w.meta.z;
+    float carrier = 0.78 * sin(k * dx - phase) + 0.22 * sin(k * dx / 2.3 + phase * 0.6);
+    return l.rect.y + l.rect.w * 0.5 * (1.0 + level * taper * carrier);
+}
+
+inline float segment_distance(float2 p, float2 a, float2 b) {
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// Coverage of a round-capped stroke along the curve, as the distance to a short polyline around
+// `p` (a steep crest is too far from vertical for `|p.y - y(x)|`), fading out over each outer
+// quarter so the line has no visible end.
+inline float wave_coverage(constant WaveUniforms &w, WaveLine l, float2 p, float scale) {
+    float half_t = l.meta.z * 0.5;
+    float band = max(1.0 / scale, l.meta.y * 1.6);
+    float reach = half_t + band;
+    float x0 = l.rect.x;
+    float x1 = l.rect.x + l.rect.z;
+    if (p.x < x0 - reach || p.x > x1 + reach || p.y < l.rect.y - reach || p.y > l.rect.y + l.rect.w + reach) {
+        return 0.0;
+    }
+    float step = 0.5;
+    int n = min(16, int(ceil(reach / step)) + 1);
+    float xa = clamp(p.x - float(n) * step, x0, x1);
+    float2 a = float2(xa, wave_y(w, l, xa));
+    float d = 1e6;
+    for (int j = -n + 1; j <= n; ++j) {
+        float xb = clamp(p.x + float(j) * step, x0, x1);
+        float2 b = float2(xb, wave_y(w, l, xb));
+        d = min(d, segment_distance(p, a, b));
+        a = b;
+    }
+    float cov = smoothstep(half_t + band * 0.5, half_t - band * 0.5, d);
+    // A blurred stroke spreads its ink rather than fading it to nothing.
+    cov *= min(1.0, (half_t * 2.0 + 1.0 / scale) / (half_t * 2.0 + l.meta.y * 1.6));
+    float u = (p.x - x0) / max(l.rect.z, 1e-3);
+    return cov * smoothstep(0.0, 0.25, u) * smoothstep(0.0, 0.25, 1.0 - u);
+}
+
 fragment float4 pill_composite_fragment(
     ScreenVertexOut in [[stage_in]],
     constant PillUniforms &u [[buffer(0)]],
     const device CompositeElem *elems [[buffer(1)]],
+    constant WaveUniforms &wave [[buffer(2)]],
     texture2d<float> offscreen_b [[texture(0)]]
 ) {
     constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
@@ -323,6 +397,18 @@ fragment float4 pill_composite_fragment(
             }
             float eff_a = e.alpha * in_cov;
             out = blend_over(out, sample_col * eff_a);
+        }
+
+        uint wave_count = min(uint(wave.meta.x), 2u);
+        for (uint i = 0; i < wave_count; ++i) {
+            WaveLine l = wave.lines[i];
+            // In Liquid Glass mode the line gets the labels' 1 pt dark backing, for bright pages.
+            if (is_glass >= 0.5) {
+                float sh = wave_coverage(wave, l, p - float2(0.0, 0.85), u.scale) * 0.64 * l.meta.x * in_cov;
+                out = blend_over(out, float4(0.0, 0.0, 0.0, sh));
+            }
+            float wa = wave_coverage(wave, l, p, u.scale) * 0.92 * l.meta.x * in_cov;
+            out = blend_over(out, float4(float3(0.961, 0.961, 0.969) * wa, wa));
         }
     }
 

@@ -2,6 +2,7 @@ name: Check
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -13,6 +14,8 @@ concurrency:
 jobs:
   macos:
     name: macOS
+    # Draft PRs take no runner time; marking one ready for review runs the checks.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # macos-26 runners are scarce enough that jobs sat queued until GitHub cancelled them.
     runs-on: macos-15
     timeout-minutes: 60
@@ -37,6 +40,8 @@ jobs:
 
   windows:
     name: Windows
+    # Draft PRs take no runner time; marking one ready for review runs the checks.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: windows-latest
     timeout-minutes: 60
     steps:

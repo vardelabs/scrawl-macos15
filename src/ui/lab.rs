@@ -18,6 +18,8 @@ pub(super) const PROCESSING_S: f32 = 0.8;
 /// Quiet time before a scene's first step, so motion-lint's launch settle passes and a screen
 /// recording starts on a still frame.
 const LEAD_IN_S: f32 = 0.85;
+/// The dictation scene's step, so its pretend mic level updates every frame.
+const FRAME_S: f32 = 1.0 / 60.0;
 /// Quiet time after the last step (and between repeats).
 const TAIL_S: f32 = 0.75;
 /// The backdrop behind the capsule at the primary display's bottom centre (`bottom_origin`): from
@@ -132,10 +134,36 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
             },
         ),
         (2.4, Pres::Dictating { latched: true }),
-        (4.0, Pres::Processing),
-        (4.8, message("Copied to the clipboard")),
-        (6.6, Pres::DictationIdle),
+        (5.0, Pres::Processing),
+        (5.8, message("Copied to the clipboard")),
+        (7.6, Pres::DictationIdle),
     ]
+}
+
+/// When the pretend mic is open, in animation seconds: a hold on the idle bar that never grows
+/// the pill (as a `⌃⌥` shortcut does), then the hands-free dictation.
+const LAB_MIC: [(f32, f32); 2] = [(0.3, 1.0), (2.4, 5.0)];
+
+/// A pretend voice for the level line: syllables about 3 a second, in phrases with pauses.
+fn synthetic_level(t: f32) -> f32 {
+    use std::f32::consts::TAU;
+    let syllables = ((TAU * 3.1 * t).sin() * 0.8 + (TAU * 1.3 * t).sin() * 0.5).max(0.0);
+    let phrase = if (TAU * 0.27 * t).sin() > -0.35 { 1.0 } else { 0.05 };
+    (0.75 * syllables.powf(0.7) * phrase).min(1.0)
+}
+
+/// The pretend voice's RMS `t` seconds into a phrase, for the level line of a pretend dictation
+/// or recording.
+pub(super) fn pretend_mic_rms(t: f32) -> f32 {
+    crate::native::pill::wave::rms_of_height(synthetic_level(t))
+}
+
+/// Each time the pretend mic opens, the voice starts a phrase.
+fn lab_mic_rms(at: f32) -> Option<f32> {
+    LAB_MIC
+        .iter()
+        .find(|&&(from, to)| (from..to).contains(&at))
+        .map(|&(from, _)| pretend_mic_rms(at - from))
 }
 
 fn show_dictation(pill: &crate::native::pill::NativePill, pres: crate::native::pill::model::Pres) {
@@ -291,12 +319,20 @@ fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
         let mut run = 0;
         loop {
             cx.background_executor().timer(real(LEAD_IN_S)).await;
+            // Stepped every frame, so the pretend mic level moves as a real one does; the scene's
+            // clock is the animation clock, so frames that run late don't stretch it.
+            let mut steps = dictation_steps().into_iter().peekable();
+            let end = LAB_MIC.iter().map(|&(_, to)| to).fold(0.0, f32::max);
+            let start = motion::now();
             let mut at = 0.0;
-            for (when, pres) in dictation_steps() {
-                cx.background_executor().timer(real(when - at)).await;
-                at = when;
-                motion::trace_event(format!("lab:{pres:?}"));
-                let _ = cx.update(|_| show_dictation(&pill, pres));
+            while steps.peek().is_some() || at < end {
+                while let Some((_, pres)) = steps.next_if(|(when, _)| *when <= at) {
+                    motion::trace_event(format!("lab:{pres:?}"));
+                    let _ = cx.update(|_| show_dictation(&pill, pres));
+                }
+                let _ = cx.update(|_| pill.set_mic_rms(lab_mic_rms(at)));
+                cx.background_executor().timer(real(FRAME_S)).await;
+                at = motion::age(start);
             }
             cx.background_executor().timer(real(TAIL_S)).await;
             run += 1;

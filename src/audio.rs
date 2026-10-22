@@ -5,6 +5,8 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 const SAMPLE_RATE: u32 = 16_000;
+/// The pill's mic level covers this much of the newest audio: about one 30 fps frame.
+const LEVEL_WINDOW: usize = SAMPLE_RATE as usize * 32 / 1_000;
 
 #[derive(Clone, Debug)]
 pub struct RecordedAudio {
@@ -89,6 +91,14 @@ impl AudioRecorder {
         if self.prestarted.is_none() {
             self.prestarted = crate::transcribe::prestart();
         }
+    }
+
+    /// The RMS of the newest audio, for the pill's level line; 0 before the device delivers any.
+    pub fn rms(&self) -> f32 {
+        let Ok(samples) = self.samples.lock() else {
+            return 0.0;
+        };
+        rms_of(&samples[samples.len().saturating_sub(LEVEL_WINDOW)..])
     }
 
     /// The chosen microphone (`mic`), else the macOS default. A chosen device that is missing or
@@ -333,6 +343,13 @@ impl Downmix {
             }
         }
     }
+}
+
+fn rms_of(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 /// Reads a 16 kHz mono WAV (as written by `scrawl-helper audio`) back into a recording.
