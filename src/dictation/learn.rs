@@ -132,12 +132,6 @@ impl Settle {
         true
     }
 
-    /// The span vanished or emptied: a chat message sent, or the field cleared, which Accessibility
-    /// can't tell apart.
-    pub fn vanished(&self) -> bool {
-        self.gone
-    }
-
     /// The last span, once reads agree on it: two in a row, or `AGREEING_WHEN_GONE` when the span
     /// vanished.
     pub fn settled(self) -> Option<String> {
