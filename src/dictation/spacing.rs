@@ -55,7 +55,11 @@ fn leading_space(before: &str, selected: usize, text: &str) -> bool {
 fn closer(at: &Around, text: &str) -> Option<char> {
     let last = at.before.chars().next_back()?;
     let &(open, close) = OPENERS.iter().find(|&&(open, _)| open == last && CLOSES.contains(&open))?;
-    let closed_after = at.after?.trim_start().starts_with(close);
+    // Text right after the caret ("(see below)" with the caret after "(") already belongs to the
+    // bracket, so only a caret with nothing after it, or a space, gets a closer.
+    let after = at.after?;
+    let free = after.chars().next().is_none_or(char::is_whitespace);
+    let closed_after = !free || after.trim_start().starts_with(close);
     // The text's own pairs ("see (a) below") leave the field's bracket open.
     let closes_it = text.matches(close).count() > text.matches(open).count();
     (starts_word(text) && !closed_after && !closes_it).then_some(close)
@@ -104,6 +108,10 @@ mod tests {
         assert_eq!(fit("see below", &closed), "see below");
         let spaced_close = Around { before: "Notes (", selected: 0, after: Some("  )") };
         assert_eq!(fit("see below", &spaced_close), "see below");
+        let inside = Around { before: "(", selected: 0, after: Some("see ") };
+        assert_eq!(fit("Note this.", &inside), "Note this.", "the caret is inside an existing parenthetical");
+        let then_text = Around { before: "Notes (", selected: 0, after: Some(" more text") };
+        assert_eq!(fit("see below", &then_text), "see below)");
         let unread = Around { before: "Notes (", selected: 0, after: None };
         assert_eq!(fit("see below", &unread), "see below");
         assert_eq!(after("Notes (", "see (a) below"), "see (a) below)", "only the text's own closer counts");
