@@ -539,6 +539,9 @@ impl NativePill {
         if let Ok(mut st) = self.shared.state.lock() {
             st.model.wave.set_rms(rms);
         }
+        if self.display_link.is_none() {
+            self.shared.tick_main();
+        }
     }
 
     pub fn drain_actions(&self) -> Vec<PillAction> {

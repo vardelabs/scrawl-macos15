@@ -14,7 +14,9 @@ const FLOOR_DB: f32 = -52.0;
 const SPAN_DB: f32 = 34.0;
 const NOISE_RISE_DB_PER_S: f32 = 6.0;
 const NOISE_MARGIN_DB: f32 = 4.0;
-/// Where the noise estimate starts when the mic opens: low enough that the floor is `FLOOR_DB`.
+/// The noise estimate before the mic has heard the room: low enough that the floor is
+/// `FLOOR_DB`. It carries across dictations, since the room does, so the 250 ms the idle bar
+/// shows a hold's line is not spent relearning a fan.
 const QUIET_NOISE_DB: f32 = FLOOR_DB - NOISE_MARGIN_DB;
 /// A syllable lifts the line at once; it settles without flicker.
 const ATTACK_S: f32 = 0.04;
@@ -100,9 +102,6 @@ impl Default for Wave {
 impl Wave {
     /// The mic's RMS (16 kHz mono, -1..1), or `None` while it is closed.
     pub fn set_rms(&mut self, rms: Option<f32>) {
-        if self.db.is_none() && rms.is_some() {
-            self.noise_db = QUIET_NOISE_DB;
-        }
         self.db = rms.map(db_of_rms);
         // The new height is known now, not on the next `advance`: after a silence the pill has
         // stopped drawing, and only `is_moving` seeing the voice starts it again.
@@ -245,6 +244,19 @@ mod tests {
         wave.set_rms(Some(SPEECH));
         run(&mut wave, 0.1);
         assert!(wave.samples()[0] > 0.2, "{}", wave.samples()[0]);
+    }
+
+    #[test]
+    fn the_next_dictation_remembers_a_noisy_room() {
+        let mut wave = Wave::default();
+        wave.show(&Pres::DictationIdle);
+        wave.set_rms(Some(FAN));
+        run(&mut wave, 3.0);
+        wave.set_rms(None);
+        run(&mut wave, 5.0);
+        wave.set_rms(Some(FAN));
+        run(&mut wave, 0.25);
+        assert!(wave.samples()[0] < 0.01, "{}", wave.samples()[0]);
     }
 
     #[test]
