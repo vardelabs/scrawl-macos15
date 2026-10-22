@@ -751,14 +751,28 @@ fn lay_out(text: String, words: &[crate::model::WordTiming], formatter: Option<s
 /// keeps the text on the clipboard too, so nothing is lost.
 fn deliver(text: &str, restore_clipboard: bool) -> Outcome {
     let delivered = match route(crate::ax::focused_takes_text()) {
-        Route::Paste => crate::handoff::paste_text(text, restore_clipboard).map(|()| Outcome::Pasted),
+        Route::Paste => crate::handoff::paste_text(&spaced(text), restore_clipboard).map(|()| Outcome::Pasted),
         Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
-        Route::PasteAndKeep => crate::handoff::paste_text(text, false).map(|()| Outcome::Pasted),
+        Route::PasteAndKeep => crate::handoff::paste_text(&spaced(text), false).map(|()| Outcome::Pasted),
     };
     delivered.unwrap_or_else(|error| {
         scrawl_log(format!("Dictation: paste failed: {error:#}"));
         Outcome::Quiet
     })
+}
+
+/// UTF-16 units read before the insertion point: two characters, even past an emoji's pair.
+const BEFORE_UNITS: usize = 4;
+
+/// `text` with a space in front when it lands right after a word in the focused field, as a second
+/// dictation into one message does (`spacing::leading_space`). A field Accessibility can't read
+/// (some web and Electron editors) gets the text unchanged, rather than a guess.
+fn spaced(text: &str) -> String {
+    let before = crate::ax::FocusedText::current().and_then(|field| field.before_insertion(BEFORE_UNITS, MAX_FIELD_CHARS));
+    match before {
+        Some((before, selected)) if super::spacing::leading_space(&before, selected, text) => format!(" {text}"),
+        _ => text.to_owned(),
+    }
 }
 
 #[cfg(test)]

@@ -9,6 +9,8 @@ pub mod context;
 pub mod format;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod learn;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod spacing;
 
 #[cfg(target_os = "macos")]
 mod formatter;

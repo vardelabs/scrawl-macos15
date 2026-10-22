@@ -42,6 +42,27 @@ unsafe extern "C" {
     ) -> i32;
     fn AXUIElementGetPid(element: AxElement, pid: *mut i32) -> i32;
     fn AXUIElementGetTypeID() -> usize;
+    fn AXUIElementCopyParameterizedAttributeValue(
+        element: AxElement,
+        attribute: CFStringRef,
+        parameter: CFTypeRef,
+        out: *mut CFTypeRef,
+    ) -> i32;
+    fn AXValueCreate(kind: u32, value: *const c_void) -> CFTypeRef;
+    fn AXValueGetValue(value: CFTypeRef, kind: u32, out: *mut c_void) -> u8;
+}
+
+/// `kAXValueCFRangeType`.
+#[cfg(target_os = "macos")]
+const AX_VALUE_CF_RANGE: u32 = 4;
+
+/// A `CFRange`, in UTF-16 units as Accessibility counts text.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Default)]
+struct TextRange {
+    location: isize,
+    length: isize,
 }
 
 /// Longest label, identifier or file name kept.
@@ -125,6 +146,52 @@ impl FocusedText {
             return None;
         }
         string_attribute(self.0.0, "AXValue").filter(|text| text.chars().count() <= max_chars)
+    }
+
+    /// Up to `units` UTF-16 units of the text just before the insertion point (empty at the
+    /// field's start), and the length of the selection a paste would replace. `None` when the
+    /// field doesn't report a selection, or the text before it can't be read.
+    pub fn before_insertion(&self, units: usize, max_chars: usize) -> Option<(String, usize)> {
+        let selection = attribute(self.0.0, "AXSelectedTextRange")?;
+        let mut range = TextRange::default();
+        let read = unsafe {
+            AXValueGetValue(selection.0, AX_VALUE_CF_RANGE, (&raw mut range).cast())
+        };
+        if read == 0 || range.location < 0 || range.length < 0 {
+            return None;
+        }
+        let selected = range.length as usize;
+        if range.location == 0 {
+            return Some((String::new(), selected));
+        }
+        let from = range.location.saturating_sub(units as isize).max(0);
+        let before = TextRange { location: from, length: range.location - from };
+        // AXStringForRange copies only those characters; some fields answer only AXValue.
+        self.string_for_range(&before)
+            .or_else(|| {
+                let value: Vec<u16> = self.value(max_chars)?.encode_utf16().collect();
+                let slice = value.get(before.location as usize..range.location as usize)?;
+                Some(String::from_utf16_lossy(slice))
+            })
+            .map(|text| (text, selected))
+    }
+
+    fn string_for_range(&self, range: &TextRange) -> Option<String> {
+        let parameter = Owned(unsafe { AXValueCreate(AX_VALUE_CF_RANGE, (&raw const *range).cast()) });
+        if parameter.0.is_null() {
+            return None;
+        }
+        let key = CFString::from_static_string("AXStringForRange");
+        let mut out: CFTypeRef = std::ptr::null();
+        let status = unsafe {
+            AXUIElementCopyParameterizedAttributeValue(self.0.0, key.as_concrete_TypeRef(), parameter.0, &raw mut out)
+        };
+        if status != 0 || out.is_null() {
+            return None;
+        }
+        let text = unsafe { CFType::wrap_under_create_rule(out) }.downcast::<CFString>()?.to_string();
+        // A field that answers with less than was asked for (or nothing) isn't saying what is there.
+        (text.encode_utf16().count() == range.length as usize).then_some(text)
     }
 
     pub fn still_focused(&self) -> bool {
