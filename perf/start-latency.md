@@ -23,7 +23,7 @@ and absent MP4 are allowed for these intentionally zero-length sessions.
 Temporary recordings are checked for frames, nonempty WAV and decodable MP4, then
 deleted. No transcription, clipboard, hotkey registration, or persistent bundles.
 Requires granted screen/microphone permissions and `ffprobe`. The child runs under
-`caffeinate -du` so the display stays active for the capture (and only its lifetime).
+`caffeinate -i` (never `-d`/`-u`: those wake the display). It needs an awake screen someone is using: `perf/screen-guard.sh` refuses on the Studio, so run it on the MacBook Pro under `/tmp/pro-gui.lock`.
 Median, MAD, min/max and raw samples are recorded; startup acceptance is distinct
 from hardware readiness, so worker initialization and first-frame timing must also
 be watched when moving initialization off-thread.

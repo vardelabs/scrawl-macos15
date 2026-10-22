@@ -63,12 +63,14 @@ config = {}
 if os.path.exists(path):
     with open(path) as f:
         config = json.load(f)
-config.update({
+# An update runs this again, so a choice made in Settings since the first install stays.
+for key, value in {
     "transcriber": "command",
     "transcribeCommand": [python, script, "{audio}"],
     "transcribePrestart": True,
     "formatCommand": [format_python, format_script],
-})
+}.items():
+    config.setdefault(key, value)
 with open(path, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")

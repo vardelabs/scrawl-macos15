@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# pgrep/pkill fail under some locales (C.UTF-8), which left the old app running.
+export LC_ALL=C
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # SCRAWL_APP_DIR builds the signed bundle somewhere else (staging for remote installs, see
 # install-app-remote.sh); SCRAWL_NO_LAUNCH=1 skips the ~/bin link and the restart.
 # SCRAWL_PROFILE=release builds optimised binaries, as package-prebuilt.sh does. SCRAWL_NO_SPARKLE=1
-# leaves Sparkle out, which disables Check for Updates. SCRAWL_BUILD_COMMIT stamps the built commit
-# into Info.plist as ScrawlForkCommit.
+# leaves Sparkle out. SCRAWL_BUILD_COMMIT stamps the built commit into Info.plist as
+# ScrawlForkCommit; a clean checkout stamps its HEAD by default.
 PROFILE="${SCRAWL_PROFILE:-debug}"
 case "${PROFILE}" in
   debug | release) ;;
@@ -48,6 +50,11 @@ if [[ -n "${SPARKLE_DIR}" && -d "${SPARKLE_DIR}/Sparkle.framework" ]]; then
   /usr/bin/ditto "${SPARKLE_DIR}/Sparkle.framework" "${FRAMEWORKS_DIR}/Sparkle.framework"
 fi
 
+# Check for Updates compares this commit with the newest release, so an unstamped build would be
+# offered an older release as if it were new.
+if [[ -z "${SCRAWL_BUILD_COMMIT:-}" ]] && git -C "${REPO_DIR}" diff --quiet HEAD 2>/dev/null; then
+  SCRAWL_BUILD_COMMIT="$(git -C "${REPO_DIR}" rev-parse HEAD)"
+fi
 BUILD_COMMIT_ENTRY=""
 if [[ -n "${SCRAWL_BUILD_COMMIT:-}" ]]; then
   BUILD_COMMIT_ENTRY="  <key>ScrawlForkCommit</key>
@@ -144,12 +151,27 @@ fi
 
 ln -sf "${MACOS_DIR}/scrawl" "${HOME}/bin/scrawl"
 
+scrawl_running() {
+  local status=0
+  pgrep -f "Scrawl.app/Contents/MacOS/scrawl" >/dev/null || status=$?
+  case "${status}" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) echo "pgrep failed (exit ${status}); can't tell whether the old Scrawl stopped" >&2; exit 1 ;;
+  esac
+}
+
 pkill -f "Scrawl.app/Contents/MacOS/scrawl" 2>/dev/null || true
 pkill -f "target/debug/scrawl" 2>/dev/null || true
-for _ in {1..20}; do
-  pgrep -f "Scrawl.app/Contents/MacOS/scrawl" >/dev/null || break
+for _ in {1..40}; do
+  scrawl_running || break
   sleep 0.05
 done
+if scrawl_running; then
+  pgrep -fl "Scrawl.app/Contents/MacOS/scrawl" >&2 || true
+  echo "the old Scrawl is still running; quit it and run this again" >&2
+  exit 1
+fi
 open -a "${APP_DIR}" || (sleep 0.3 && open -n -a "${APP_DIR}")
 sleep 0.3
 pgrep -fl "Scrawl.app/Contents/MacOS/scrawl"

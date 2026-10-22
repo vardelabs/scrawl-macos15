@@ -50,13 +50,14 @@ pub enum PillAction {
     SelectMode(SelectionMode),
     SwitchRecording(SelectionMode),
     RecordSelected,
-    Undo,
     Cancel,
     Finish,
     TogglePause,
     Paste(Option<[f32; 2]>),
     Inspect,
     DismissCompleted,
+    /// A session chip on the Completed island (smart routing), by position.
+    Route(usize),
     /// The pill's "Dictate" hint or a notice was clicked.
     MessageClicked,
     /// Record on the hovered idle bar: record the screen, as a tap of the shortcut does.

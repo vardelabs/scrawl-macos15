@@ -1,0 +1,18 @@
+# Leak shapes the scrub guard accepts in this public fork. Each value is one that upstream
+# (kitlangton/scrawl) publishes in its own examples, tests and routing fixtures, which the fork
+# carries unchanged so that syncs stay small.
+
+# Tailnet hosts in upstream's routing examples, tests and fixtures.
+value studio.example.ts.net
+value studio.taila8e7c7.ts.net
+
+# Tailscale and LAN addresses in upstream's README, setup-link and pairing examples.
+value 100.64.0.12
+value 10.0.0.2
+value 192.168.1.20
+value 192.168.1.4
+
+# Addresses in upstream's code and commit messages: a test URL's credentials, and the
+# Co-Authored-By trailer upstream's commits carry.
+value pw@app.example.com
+value noreply@anthropic.com

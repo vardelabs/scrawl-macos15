@@ -12,8 +12,11 @@ const summarize = (xs: number[]) => {
   const mid = median(xs);
   return { median: mid, mad: median(xs.map(x => Math.abs(x - mid))), min: Math.min(...xs), max: Math.max(...xs) };
 };
+const guard = Bun.spawnSync([resolve(import.meta.dir, "../perf/screen-guard.sh")], { stderr: "inherit" });
+if (guard.exitCode !== 0) process.exit(1);
 try {
-  const child = Bun.spawn(["caffeinate", "-du", binary], {
+  // -i keeps the Mac from idle-sleeping mid-run; never -d/-u, which wake the display.
+  const child = Bun.spawn(["caffeinate", "-i", binary], {
     env: { ...process.env, SCRAWL_BENCH_START: root, SCRAWL_BENCH_QUICK_STOP: quickStop ? "1" : "0" }, stdout: "pipe", stderr: "pipe",
   });
   const timeout = setTimeout(() => child.kill(), 120_000);

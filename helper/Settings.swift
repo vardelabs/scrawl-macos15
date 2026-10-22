@@ -77,8 +77,8 @@ struct SettingsTranscriber: Decodable, Equatable {
   var hexTitle = "Hex (not running)"
   var hexEnabled = false
   var models: [SettingsModelOption] = []
-  var commandTitle = "Command (not set up)"
-  var commandEnabled = false
+  /// The program's file name while `transcribeCommand` is usable.
+  var command: String?
   var speech: SpeechStatus?
 }
 
@@ -151,8 +151,8 @@ struct SettingsState: Decodable, Equatable {
   ]
   var microphone = SettingsMicrophone()
   var transcriber = SettingsTranscriber()
-  var playbackMode = "mute"
-  var playbackLevel = 20
+  var lowerPlayback = true
+  var playbackLevel = 0
   var videoExport = false
   var tapChooses = false
   var cropWindowCaptures = true
@@ -820,8 +820,8 @@ struct ShortcutRecorder: View {
     if let error = shortcut.error { return error }
     if shortcut.kind == "paste" { return "Pastes the last capture into the app in front." }
     return tapChooses
-      ? "Tap to choose what to record. Hold to switch modes."
-      : "Tap to record. Hold to choose what to record."
+      ? "Opens the picker to choose what to record. Press again to finish."
+      : "Records the screen. Press again to finish."
   }
 }
 
@@ -1068,11 +1068,25 @@ struct SettingsView: View {
     }
   }
 
+  /// The popup's mode from `lowerPlayback` and `playbackLevel`: a level of 0 mutes.
+  private var playbackMode: String {
+    !state.lowerPlayback ? "unchanged" : state.playbackLevel == 0 ? "mute" : "lower"
+  }
+
+  private func setPlaybackMode(_ mode: String) {
+    model.set("lowerPlayback", mode != "unchanged")
+    if mode == "mute" {
+      model.set("playbackLevel", 0)
+    } else if mode == "lower" && state.playbackLevel == 0 {
+      model.set("playbackLevel", 20)
+    }
+  }
+
   private var recording: some View {
     let t = state.transcriber
     var engines: [(id: String, title: String, enabled: Bool)] = [("apple", "Apple Speech", true)]
     engines.append(("hex", t.hexTitle, t.hexEnabled))
-    engines.append(("command", t.commandTitle, t.commandEnabled))
+    engines.append(("command", t.command == nil ? "Command (not set up)" : "Command", t.command != nil))
     let chosenModel = t.models.first(where: \.chosen)
     let engineTitle = switch t.engine {
     case "hex": "Hex"
@@ -1099,11 +1113,11 @@ struct SettingsView: View {
       Color.clear.frame(height: 20)
       SettingsGroup {
         SettingsRow(title: "Playback during recording") {
-          SettingsPopup(value: state.playbackMode == "mute" ? "Mute" : state.playbackMode == "lower" ? "Lower volume" : "Unchanged",
+          SettingsPopup(value: playbackMode == "mute" ? "Mute" : playbackMode == "lower" ? "Lower volume" : "Unchanged",
                         options: [("unchanged", "Unchanged", true), ("mute", "Mute", true), ("lower", "Lower volume", true)],
-                        selected: state.playbackMode) { model.set("playbackMode", $0) }
+                        selected: playbackMode) { setPlaybackMode($0) }
         }
-        if state.playbackMode == "lower" {
+        if playbackMode == "lower" {
           SettingsSeparator()
           SettingsRow(title: "Relative volume") {
             HStack {
@@ -1142,7 +1156,7 @@ struct SettingsView: View {
           }
         }
       }
-      SettingsCaption(text: t.engine == "command" || t.commandEnabled
+      SettingsCaption(text: t.engine == "command" || t.command != nil
         ? "Command runs the program in transcribeCommand (config.json) on each recording and reads its transcript. Apple Speech runs on this Mac and times each word."
         : t.hexEnabled || t.engine == "hex"
         ? "Apple Speech times each word. Hex uses a model you have in Hex, and its word times are estimates. Command is enabled once transcribeCommand in config.json names a program by its absolute path."
@@ -1369,6 +1383,7 @@ struct PermissionLine: View {
     case "microphone": "To hear you"
     case "accessibility": "For ⌘Z and \(paste)"
     case "camera": "To show a cabled iPhone"
+    case "speech-recognition": "To write down what you say"
     default: ""
     }
   }
@@ -1379,6 +1394,7 @@ struct PermissionLine: View {
     case "microphone": (Color(red: 1, green: 0.62, blue: 0.3), Color(red: 0.95, green: 0.44, blue: 0.12))
     case "accessibility": (Color(red: 0.36, green: 0.66, blue: 1), Color(red: 0.16, green: 0.45, blue: 0.95))
     case "camera": (Color(red: 0.36, green: 0.82, blue: 0.56), Color(red: 0.16, green: 0.66, blue: 0.4))
+    case "speech-recognition": (Color(red: 1, green: 0.42, blue: 0.56), Color(red: 0.9, green: 0.24, blue: 0.4))
     default: (Color(white: 0.62), Color(white: 0.45))
     }
   }
@@ -1610,7 +1626,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     custom.shortcuts[0] = SettingsShortcut(kind: "record", title: "Record", label: "⌃⌥⌘R", key: "R", shift: false, control: true, option: true, command: true, isDefault: false)
     custom.login.on = true
     var lower = base
-    lower.playbackMode = "lower"
+    lower.playbackLevel = 20
     var hex = base
     hex.transcriber = SettingsTranscriber(engine: "hex", hexTitle: "Hex", hexEnabled: true, models: [
       SettingsModelOption(id: "parakeet-tdt-0.6b-v3", title: "Parakeet TDT v3", chosen: true),

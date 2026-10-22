@@ -3,9 +3,9 @@
 //   scrawl-helper devices                               cabled iPhones/iPads (USB registry) as JSON
 //   scrawl-helper mirror --out FILE.mov [--device ID] [--microphone UID --microphone-name NAME]
 //                                                       live mirror window + native recording (JSON lines)
-//   scrawl-helper transcribe FILE                       SpeechAnalyzer transcript with word timings
-//   scrawl-helper transcribe-stream                     the same while recording: PCM on stdin, JSON lines (LiveTranscribe.swift)
-//   scrawl-helper speech-model [--install]              the speech model's status; install it (JSON lines)
+//   scrawl-helper transcribe FILE [--locale ID]          SpeechAnalyzer transcript with word timings
+//   scrawl-helper transcribe-stream [--locale ID]        the same while recording: PCM on stdin, JSON lines (LiveTranscribe.swift)
+//   scrawl-helper speech-model [--install] [--locale ID] the speech model's status; install it (JSON lines)
 //   scrawl-helper frames MOVIE --out-dir DIR (--every MS | --at MS,MS…) [--max-edge PX]
 //   scrawl-helper audio MOVIE OUT.wav                   16 kHz mono PCM of every audio track, mixed
 //   scrawl-helper probe MOVIE                           duration and video size
@@ -16,6 +16,7 @@
 //   scrawl-helper permission-panel --permission P [--from X,Y,W,H]   drag-to-allow card (PermissionPanel.swift)
 //   scrawl-helper onboarding [--shortcut L] [--render DIR]   the welcome window (Onboarding.swift)
 //   scrawl-helper settings [--pane P] [--render DIR]         the Settings window (Settings.swift)
+//   scrawl-helper fork-update --repo OWNER/NAME [--self-test|--render DIR]  the fork's updater window (ForkUpdate.swift)
 //
 // Every timestamp in the output is integer milliseconds. Scrawl drives the long-running
 // `mirror` command over stdin (`stop`, `cancel`) and reads its events from stdout.
@@ -118,12 +119,12 @@ case "mirror":
   )
 case "transcribe":
   guard arguments.count >= 2 else { fail("transcribe needs a file") }
-  runAsync { emit(try await Transcriber.transcribe(URL(filePath: arguments[1]))) }
+  runAsync { emit(try await Transcriber.transcribe(URL(filePath: arguments[1]), preferred: option("--locale", in: arguments))) }
 case "transcribe-stream":
-  runAsync { try await LiveTranscriber.run() }
+  runAsync { try await LiveTranscriber.run(preferred: option("--locale", in: arguments)) }
 case "speech-model":
   let install = arguments.contains("--install")
-  runAsync { await SpeechModelCommand.run(install: install) }
+  runAsync { await SpeechModel.run(install: install, preferred: option("--locale", in: arguments)) }
 case "frames":
   guard arguments.count >= 2, let dir = option("--out-dir", in: arguments) else {
     fail("frames needs MOVIE --out-dir DIR (--every MS | --at MS,MS…)")
@@ -176,11 +177,13 @@ case "playback-volume":
   runPlaybackVolume(arguments: Array(arguments.dropFirst()))
 case "settings":
   SettingsWindow.run(arguments: arguments)
+case "fork-update":
+  MainActor.assumeIsolated { ForkUpdate.run(arguments: arguments) }
 case "qr":
   guard arguments.count >= 2, let qr = renderQR(arguments[1]) else {
     fail("qr needs a text argument")
   }
   emit(["qr": qr])
 default:
-  fail("usage: scrawl-helper devices|mirror|transcribe|transcribe-stream|speech-model|frames|audio|probe|export|join|shrink|permission-panel|permissions|sck-probe|onboarding|settings|qr …")
+  fail("usage: scrawl-helper devices|mirror|transcribe|transcribe-stream|speech-model|frames|audio|probe|export|join|shrink|permission-panel|permissions|sck-probe|onboarding|settings|fork-update|qr …")
 }

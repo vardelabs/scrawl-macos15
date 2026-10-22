@@ -728,9 +728,14 @@ mod tests {
     fn logger_snapshots_at_start_and_right_after_a_request() {
         let request = Arc::new(AtomicBool::new(false));
         let logger = WindowLogger::start(frame(), Instant::now(), Arc::clone(&request));
-        thread::sleep(Duration::from_millis(150));
         request.store(true, Ordering::Release);
-        thread::sleep(Duration::from_millis(150));
+        // A slow window list (a loaded CI runner) can hold the worker for a while, so wait for
+        // the request to be taken instead of sleeping a fixed time. Once it's taken, the snapshot
+        // it asked for is under way and `stop` joins it.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while request.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
         assert!(!request.load(Ordering::Acquire), "the request was taken");
         let log = logger.stop();
         assert!(log.snapshot_calls >= 2, "{} snapshots", log.snapshot_calls);

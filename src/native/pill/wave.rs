@@ -322,11 +322,11 @@ mod tests {
             press: 0.0,
             enabled: true,
         };
-        let recording = |mic| Pres::Recording { chips: false, has_iphone: false, stroke_count: 0, pausable: true, mic };
+        let recording = |mic| Pres::Recording { chips: false, has_iphone: false, pausable: true, mic };
         for (pres, shows) in [
             (recording(true), true),
             (recording(false), false),
-            (Pres::Paused { stroke_count: 0 }, false),
+            (Pres::Paused, false),
         ] {
             let mut wave = Wave::default();
             wave.show(&pres);

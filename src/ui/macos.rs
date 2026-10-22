@@ -106,6 +106,11 @@ pub(super) fn window_drag_region(region: Div) -> Div {
     })
 }
 
+/// A control inside a `window_drag_region` gets its clicks as it is.
+pub(super) fn drag_region_control<E>(control: E) -> E {
+    control
+}
+
 /// AppKit opens the menu itself (refreshed in menuNeedsUpdate:).
 pub(super) fn poll_status_bar() {}
 
@@ -201,12 +206,11 @@ pub(super) fn hand_back_keys(cx: &mut App) {
     }
 }
 
-pub(super) fn start_updates() {
-    crate::sparkle::start();
-}
+/// Sparkle's feed is Kit's, so the fork never starts it: `fork_update` checks instead.
+pub(super) fn start_updates() {}
 
 pub(super) fn check_for_updates() {
-    crate::sparkle::check_for_updates();
+    crate::fork_update::check();
 }
 
 pub(super) fn open_overlay(
