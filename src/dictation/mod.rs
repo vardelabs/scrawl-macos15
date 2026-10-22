@@ -13,6 +13,8 @@ pub mod layout;
 pub mod learn;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod notices;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod spacing;
 
 #[cfg(target_os = "macos")]
 mod formatter;

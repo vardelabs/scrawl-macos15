@@ -829,14 +829,31 @@ fn lay_out(
 /// keeps the text on the clipboard too, so nothing is lost.
 fn deliver(text: &str, restore_clipboard: bool, laid_out: Option<&'static str>) -> Outcome {
     let delivered = match route(crate::ax::focused_takes_text()) {
-        Route::Paste => crate::handoff::paste_text(text, restore_clipboard).map(|()| Outcome::Pasted(laid_out)),
+        Route::Paste => crate::handoff::paste_text(&fitted(text), restore_clipboard).map(|()| Outcome::Pasted(laid_out)),
         Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
-        Route::PasteAndKeep => crate::handoff::paste_text(text, false).map(|()| Outcome::Pasted(laid_out)),
+        Route::PasteAndKeep => crate::handoff::paste_text(&fitted(text), false).map(|()| Outcome::Pasted(laid_out)),
     };
     delivered.unwrap_or_else(|error| {
         scrawl_log(format!("Dictation: paste failed: {error:#}"));
         Outcome::Quiet
     })
+}
+
+/// UTF-16 units read on each side of the insertion point: two characters, even past an emoji's
+/// pair.
+const AROUND_UNITS: usize = 4;
+
+/// `text` fitted to the focused field (`spacing::fit`): a space in front when it lands right after
+/// a word, and the closer of an opening bracket it lands right after. A field Accessibility can't
+/// read (some web and Electron editors) gets the text unchanged, rather than a guess.
+fn fitted(text: &str) -> String {
+    let field = crate::ax::FocusedText::current();
+    match field.and_then(|field| field.around_insertion(AROUND_UNITS, MAX_FIELD_CHARS)) {
+        Some((before, selected, after)) => {
+            super::spacing::fit(text, &super::spacing::Around { before: &before, selected, after: after.as_deref() })
+        }
+        None => text.to_owned(),
+    }
 }
 
 #[cfg(test)]
