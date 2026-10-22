@@ -13,13 +13,12 @@ struct TileUniforms {
 
 // kind == 0: analytic rounded rect / circle (`rect` in canvas pt, `param.x` = corner radius)
 // kind == 1: textured quad from `atlas` (`rect` in canvas pt, `uv_rect` = [u0, v0, u1, v1] in 0..1)
-// kind == 2: rounded rect, left corners `uv_rect.x` and right corners `uv_rect.y`, filled with a
-//            left-to-right gradient from `color` to `color2` (the recording controls capsule)
+// kind == 2: rounded rect with left corners `uv_rect.x` and right corners `uv_rect.y` (a button of
+//            the recording controls capsule)
 struct TilePrim {
     float4 rect;      // x, y, w, h in canvas points
     float4 uv_rect;   // u0, v0, u1, v1 (kind 1), (radius, 0, 0, 0) (kind 0), (left r, right r, 0, 0) (kind 2)
     float4 color;     // premultiplied or straight RGBA (r, g, b, a)
-    float4 color2;    // kind 2's right-hand colour
     uint kind;
     uint _pad0;
     uint _pad1;
@@ -32,7 +31,6 @@ struct TileVertexOut {
     float2 uv;
     float4 rect;
     float4 color;
-    float4 color2;
     float radius;
     float radius_right;
     uint kind;
@@ -64,7 +62,6 @@ vertex TileVertexOut pill_tile_vertex(
     out.uv = mix(prim.uv_rect.xy, prim.uv_rect.zw, c);
     out.rect = prim.rect;
     out.color = prim.color;
-    out.color2 = prim.color2;
     out.radius = prim.uv_rect.x;
     out.radius_right = prim.uv_rect.y;
     out.kind = prim.kind;
@@ -92,10 +89,8 @@ fragment float4 pill_tile_fragment(
         float2 q = abs(in.pt - center) - (half_sz - float2(r));
         float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
         float cov = clamp(0.5 - sdf * u.scale, 0.0, 1.0);
-        float t = clamp((in.pt.x - in.rect.x) / max(in.rect.z, 1e-3), 0.0, 1.0);
-        float4 c = mix(in.color, in.color2, t);
-        float a = c.a * cov;
-        return float4(c.rgb * a, a);
+        float a = in.color.a * cov;
+        return float4(in.color.rgb * a, a);
     } else {
         constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
         float4 tex = atlas.sample(s, in.uv);
