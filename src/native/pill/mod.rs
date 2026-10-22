@@ -138,7 +138,7 @@ struct WaveLineUniform {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct WaveUniforms {
-    lines: [WaveLineUniform; 2],
+    line: WaveLineUniform,
     meta: [f32; 4],
     samples: [f32; wave::SAMPLES],
 }
@@ -1015,18 +1015,14 @@ impl PillRuntimeState {
 
 }
 
-/// The level lines `frame` draws, with `wave`'s samples and motion.
+/// The level line `frame` draws, with `wave`'s samples and motion.
 fn wave_uniforms(frame: &FrameState, wave: &wave::Wave) -> WaveUniforms {
-    let mut lines = [WaveLineUniform::default(); 2];
-    for (slot, line) in lines.iter_mut().zip(&frame.waves) {
-        *slot = WaveLineUniform {
+    WaveUniforms {
+        line: frame.wave.map_or_else(WaveLineUniform::default, |line| WaveLineUniform {
             rect: line.rect,
             meta: [line.alpha, line.blur, line.stroke, line.wavelength],
-        };
-    }
-    WaveUniforms {
-        lines,
-        meta: [frame.waves.len().min(2) as f32, wave.scroll(), wave.phase(), 0.0],
+        }),
+        meta: [f32::from(u8::from(frame.wave.is_some())), wave.scroll(), wave.phase(), 0.0],
         samples: wave.samples(),
     }
 }

@@ -933,8 +933,8 @@ pub struct FrameState {
     pub content_blur: f32,
     pub content_alpha: f32,
     pub elems: Vec<FrameElem>,
-    /// Dictation's mic level line (`wave`), drawn over the elements.
-    pub waves: Vec<WaveLine>,
+    /// The mic level line (`wave`), drawn over the elements.
+    pub wave: Option<WaveLine>,
 }
 
 impl FrameState {
@@ -950,7 +950,7 @@ impl FrameState {
         for elem in &mut self.elems {
             elem.rect[1] += dy;
         }
-        for wave in &mut self.waves {
+        if let Some(wave) = self.wave.as_mut() {
             wave.rect[1] += dy;
         }
     }
@@ -1729,9 +1729,7 @@ impl PillModel {
         }
 
         let lead = elems.iter().find(|e| e.id == ElemId::Lead);
-        let waves = self
-            .wave
-            .lines(&shape, lead, self.metrics.clock_width(&self.clock));
+        let wave = self.wave.line(lead, self.metrics.clock_width(&self.clock));
         let mut frame = FrameState {
             t: self.t,
             shape,
@@ -1747,7 +1745,7 @@ impl PillModel {
             content_blur: max_blur,
             content_alpha: max_alpha,
             elems,
-            waves,
+            wave,
         };
         let ghost_dy = frame.ghost.as_ref().map_or(0.0, |g| self.anchor_dy(g.b));
         frame.shift_down(self.anchor_dy(frame.shape.b), ghost_dy);

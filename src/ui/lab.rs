@@ -144,9 +144,8 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
     ]
 }
 
-/// When the pretend mic is open, in animation seconds: a hold on the idle bar that never grows
-/// the pill (as a `⌃⌥` shortcut does), then the hands-free dictation.
-const LAB_MIC: [(f32, f32); 2] = [(0.3, 1.0), (2.4, 5.0)];
+/// When the pretend mic is open, in animation seconds: the hands-free dictation.
+const LAB_MIC: [(f32, f32); 1] = [(2.4, 5.0)];
 
 /// A screen recording's controls, recording and paused, at animation seconds.
 fn controls_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
