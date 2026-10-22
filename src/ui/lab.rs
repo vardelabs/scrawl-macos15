@@ -49,6 +49,9 @@ pub enum Scene {
     Dismiss,
     /// Dictation's own pill: idle bar, hover hint, hands-free, processing, a notice, idle again.
     Dictation,
+    /// A screen recording's controls: recording, paused, recording again, each held still for
+    /// renders.
+    Controls,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -73,6 +76,7 @@ impl Scene {
             Self::Cancel => "cancel",
             Self::Dismiss => "dismiss",
             Self::Dictation => "dictation",
+            Self::Controls => "controls",
         }
     }
 
@@ -114,7 +118,7 @@ impl Scene {
             ],
             Self::Cancel => vec![(0.0, Step::Tap), (1.2, Step::Cancel)],
             Self::Dismiss => vec![(0.0, Step::Open), (1.2, Step::Dismiss)],
-            Self::Dictation => Vec::new(),
+            Self::Dictation | Self::Controls => Vec::new(),
         }
     }
 }
@@ -144,6 +148,34 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
 /// the pill (as a `⌃⌥` shortcut does), then the hands-free dictation.
 const LAB_MIC: [(f32, f32); 2] = [(0.3, 1.0), (2.4, 5.0)];
 
+/// A screen recording's controls, recording and paused, at animation seconds.
+fn controls_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
+    use crate::native::pill::model::Pres;
+    let recording = Pres::Recording {
+        chips: false,
+        has_iphone: false,
+        pausable: true,
+        mic: true,
+    };
+    vec![
+        (0.0, recording.clone()),
+        (2.5, Pres::Paused),
+        (5.0, recording),
+    ]
+}
+
+/// The controls scene's mic is open while it records, not while it is paused.
+const CONTROLS_MIC: [(f32, f32); 2] = [(0.0, 2.5), (5.0, 7.5)];
+
+/// The states and pretend-mic windows of a scene that drives a pill of its own.
+fn direct_scene(scene: Scene) -> Option<(Vec<(f32, crate::native::pill::model::Pres)>, &'static [(f32, f32)])> {
+    match scene {
+        Scene::Dictation => Some((dictation_steps(), &LAB_MIC)),
+        Scene::Controls => Some((controls_steps(), &CONTROLS_MIC)),
+        _ => None,
+    }
+}
+
 /// A pretend voice for the level line: syllables about 3 a second, in phrases with pauses.
 fn synthetic_level(t: f32) -> f32 {
     use std::f32::consts::TAU;
@@ -159,8 +191,8 @@ pub(super) fn pretend_mic_rms(t: f32) -> f32 {
 }
 
 /// Each time the pretend mic opens, the voice starts a phrase.
-fn lab_mic_rms(at: f32) -> Option<f32> {
-    LAB_MIC
+fn lab_mic_rms(windows: &[(f32, f32)], at: f32) -> Option<f32> {
+    windows
         .iter()
         .find(|&&(from, to)| (from..to).contains(&at))
         .map(|&(from, _)| pretend_mic_rms(at - from))
@@ -270,8 +302,8 @@ pub fn run(options: Options) {
 
         let scene = options.scene;
         let repeat = options.repeat;
-        if scene == Scene::Dictation {
-            run_dictation(repeat, centre, cx);
+        if let Some((steps, mic)) = direct_scene(scene) {
+            run_direct(steps, mic, repeat, centre, cx);
             return;
         }
         cx.spawn(async move |cx| {
@@ -303,8 +335,15 @@ pub fn run(options: Options) {
     });
 }
 
-/// The dictation scene drives a pill of its own, so its states play without a capture.
-fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
+/// The dictation and controls scenes drive a pill of their own, so their states play without
+/// dictation or a capture.
+fn run_direct(
+    scene_steps: Vec<(f32, crate::native::pill::model::Pres)>,
+    mic: &'static [(f32, f32)],
+    repeat: u32,
+    centre: [f64; 2],
+    cx: &mut App,
+) {
     let pill = match crate::native::pill::NativePill::open() {
         Ok(pill) => {
             pill.place_at_bottom(centre);
@@ -321,8 +360,8 @@ fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
             cx.background_executor().timer(real(LEAD_IN_S)).await;
             // Stepped every frame, so the pretend mic level moves as a real one does; the scene's
             // clock is the animation clock, so frames that run late don't stretch it.
-            let mut steps = dictation_steps().into_iter().peekable();
-            let end = LAB_MIC.iter().map(|&(_, to)| to).fold(0.0, f32::max);
+            let mut steps = scene_steps.clone().into_iter().peekable();
+            let end = mic.iter().map(|&(_, to)| to).fold(0.0, f32::max);
             let start = motion::now();
             let mut at = 0.0;
             while steps.peek().is_some() || at < end {
@@ -330,7 +369,7 @@ fn run_dictation(repeat: u32, centre: [f64; 2], cx: &mut App) {
                     motion::trace_event(format!("lab:{pres:?}"));
                     let _ = cx.update(|_| show_dictation(&pill, pres));
                 }
-                let _ = cx.update(|_| pill.set_mic_rms(lab_mic_rms(at)));
+                let _ = cx.update(|_| pill.set_mic_rms(lab_mic_rms(mic, at)));
                 cx.background_executor().timer(real(FRAME_S)).await;
                 at = motion::age(start);
             }

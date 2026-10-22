@@ -48,6 +48,8 @@ pub enum IconKind {
     Iphone,
     Close,
     Check,
+    Pause,
+    Play,
 }
 
 impl IconKind {
@@ -121,11 +123,6 @@ pub fn measure_metrics() -> Metrics {
         screen: measure_text_pt("Screen", HUD_TEXT, WEIGHT_MEDIUM, false),
         iphone: measure_text_pt("iPhone", HUD_TEXT, WEIGHT_MEDIUM, false),
         record: measure_text_pt("Record", HUD_TEXT, WEIGHT_SEMIBOLD, false),
-        cancel: measure_text_pt("Cancel", HUD_TEXT, WEIGHT_MEDIUM, false),
-        finish: measure_text_pt("Finish", HUD_TEXT, WEIGHT_SEMIBOLD, false),
-        pause: measure_text_pt("Pause", HUD_TEXT, WEIGHT_MEDIUM, false),
-        resume: measure_text_pt("Resume", HUD_TEXT, WEIGHT_MEDIUM, false),
-        paused: measure_text_pt("Paused", HUD_TEXT, WEIGHT_SEMIBOLD, false),
         processing: measure_text_pt("Processing…", HUD_TEXT, WEIGHT_SEMIBOLD, false),
         paste: measure_text_pt("Paste", HUD_TEXT, WEIGHT_SEMIBOLD, false),
         inspect: measure_text_pt("Inspect", HUD_TEXT, WEIGHT_MEDIUM, false),
@@ -279,6 +276,33 @@ fn rasterize_icon(kind: IconKind, size_pt: f32, scale: f32) -> (u32, u32, [f32; 
             ctx.add_line_to_point(cx, cy);
             ctx.stroke_path();
         }
+        IconKind::Pause => {
+            // Round-capped strokes as thick as the bars, so the ends are rounded.
+            ctx.set_line_width(4.0 * s);
+            line_seg(&ctx, 8.5, 6.5, 8.5, 17.5);
+            line_seg(&ctx, 15.5, 6.5, 15.5, 17.5);
+        }
+        IconKind::Play => {
+            // A filled triangle with the stroke's round join softening its corners, nudged right
+            // so it sits optically centred.
+            ctx.set_rgb_fill_color(1.0, 1.0, 1.0, 1.0);
+            ctx.set_line_width(2.0 * s);
+            let (ax, ay) = map(8.5, 6.0);
+            let (bx, by) = map(18.0, 12.0);
+            let (cx, cy) = map(8.5, 18.0);
+            ctx.begin_path();
+            ctx.move_to_point(ax, ay);
+            ctx.add_line_to_point(bx, by);
+            ctx.add_line_to_point(cx, cy);
+            ctx.close_path();
+            ctx.fill_path();
+            ctx.begin_path();
+            ctx.move_to_point(ax, ay);
+            ctx.add_line_to_point(bx, by);
+            ctx.add_line_to_point(cx, cy);
+            ctx.close_path();
+            ctx.stroke_path();
+        }
     }
     ctx.flush();
     (
@@ -359,6 +383,8 @@ impl GlyphAtlas {
             (IconKind::Iphone, 14.0),
             (IconKind::Close, 12.0),
             (IconKind::Check, 13.0),
+            (IconKind::Pause, 13.0),
+            (IconKind::Play, 13.0),
         ] {
             let (w, h, size_pt, bytes) = rasterize_icon(kind, size_pt, scale);
             let sprite = atlas.pack(w, h, size_pt, &bytes);
@@ -371,11 +397,6 @@ impl GlyphAtlas {
             ("Screen", HUD_TEXT, WEIGHT_MEDIUM),
             ("iPhone", HUD_TEXT, WEIGHT_MEDIUM),
             ("Record", HUD_TEXT, WEIGHT_SEMIBOLD),
-            ("Cancel", HUD_TEXT, WEIGHT_MEDIUM),
-            ("Finish", HUD_TEXT, WEIGHT_SEMIBOLD),
-            ("Pause", HUD_TEXT, WEIGHT_MEDIUM),
-            ("Resume", HUD_TEXT, WEIGHT_MEDIUM),
-            ("Paused", HUD_TEXT, WEIGHT_SEMIBOLD),
             ("Processing…", HUD_TEXT, WEIGHT_SEMIBOLD),
             ("Paste", HUD_TEXT, WEIGHT_SEMIBOLD),
             ("Inspect", HUD_TEXT, WEIGHT_MEDIUM),
