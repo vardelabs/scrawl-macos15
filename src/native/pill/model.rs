@@ -354,10 +354,12 @@ pub enum ElemId {
     Pause = 17,
     Confirm = 18,
     Message = 19,
+    /// Undo beside a notice of something dictation learned.
+    Undo = 20,
 }
 
 impl ElemId {
-    pub const COUNT: usize = 20;
+    pub const COUNT: usize = 21;
     pub const ROUTES: [ElemId; 2] = [Self::Route0, Self::Route1];
     pub const ALL: [ElemId; Self::COUNT] = [
         Self::Lead,
@@ -380,6 +382,7 @@ impl ElemId {
         Self::Pause,
         Self::Confirm,
         Self::Message,
+        Self::Undo,
     ];
 
     pub const fn trace_key(self) -> &'static str {
@@ -404,6 +407,7 @@ impl ElemId {
             Self::Pause => "pause",
             Self::Confirm => "confirm",
             Self::Message => "message",
+            Self::Undo => "undo",
         }
     }
 
@@ -452,6 +456,7 @@ impl ElemId {
             Self::Pause => "Pause or resume",
             Self::Confirm => "Paste dictation",
             Self::Message => "Dictation",
+            Self::Undo => "Undo",
         }
     }
 }
@@ -485,9 +490,11 @@ pub enum Pres {
     },
     /// Dictation is on and idle: a small bar that stays on screen, as Wispr Flow's does.
     DictationIdle,
-    /// One line from dictation: a notice (with a check) such as "Copied to the clipboard".
+    /// One line from dictation: a notice (with a check) such as "Copied to the clipboard", with
+    /// Undo when it reports something dictation learned.
     Message {
         label: String,
+        undo: bool,
     },
     /// The idle bar hovered: "Dictate ⌃⌥" and Record.
     Hint {
@@ -539,7 +546,7 @@ impl Pres {
             ) => a == b && ra == rb,
             (Self::Dictating { latched: a }, Self::Dictating { latched: b }) => a == b,
             (Self::DictationIdle, Self::DictationIdle) => true,
-            (Self::Message { label: a }, Self::Message { label: b }) => a == b,
+            (Self::Message { label: a, undo: ua }, Self::Message { label: b, undo: ub }) => a == b && ua == ub,
             (Self::Hint { dictate: a }, Self::Hint { dictate: b }) => a == b,
             _ => false,
         }
@@ -557,6 +564,7 @@ pub struct Metrics {
     pub processing: f32,
     pub paste: f32,
     pub inspect: f32,
+    pub undo: f32,
     pub clock_000: f32,
     pub clock_0000: f32,
 }
@@ -572,6 +580,7 @@ impl Default for Metrics {
             processing: 78.0,
             paste: 36.0,
             inspect: 47.0,
+            undo: 34.0,
             clock_000: 29.0,
             clock_0000: 37.0,
         }
@@ -704,9 +713,12 @@ pub fn layout_of(
         Pres::DictationIdle => {
             return (Layout::centered(DICTATION_IDLE_W, DICTATION_IDLE_H), Vec::new());
         }
-        Pres::Message { .. } => {
+        Pres::Message { undo, .. } => {
             let w = CHIP_H + labels.completed + NOTICE_TRAIL;
             raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
+            if *undo {
+                raw.push((ElemId::Undo, Metrics::chip_width(m.undo), CHIP_CORE_ROUND, 0.0, true));
+            }
         }
         Pres::Hint { .. } => {
             let w = 2.0 * CHIP_PX + labels.completed;

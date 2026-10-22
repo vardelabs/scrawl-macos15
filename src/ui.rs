@@ -1983,6 +1983,7 @@ impl ScrawlCoordinator {
         if free && let Some(pill) = &self.native_pill {
             input.hovered = pill.pointer_on_pill();
             input.clicks = pill.drain_actions();
+            input.shown = true;
         }
         let record = input.clicks.iter().any(|c| matches!(c, PillAction::RecordScreen));
         input.clicks.retain(|c| !matches!(c, PillAction::RecordScreen));
@@ -2079,7 +2080,7 @@ impl ScrawlCoordinator {
             PillAction::DismissCompleted => self.dismiss_completed_bundle(cx),
             PillAction::Route(index) => self.choose_route(index, cx),
             // Dictation's states never show while a capture owns the capsule.
-            PillAction::MessageClicked => {}
+            PillAction::MessageClicked | PillAction::Undo => {}
             PillAction::RecordScreen if !self.is_recording() => self.record_from_pill(cx),
             PillAction::RecordScreen => {}
         }

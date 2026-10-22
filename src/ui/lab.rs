@@ -126,8 +126,9 @@ impl Scene {
 /// The dictation pill's states at animation seconds, shown on a pill of its own.
 fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
     use crate::native::pill::model::Pres;
-    let message = |label: &str| Pres::Message {
+    let message = |label: &str, undo: bool| Pres::Message {
         label: label.to_owned(),
+        undo,
     };
     vec![
         (0.0, Pres::DictationIdle),
@@ -139,8 +140,11 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
         ),
         (2.4, Pres::Dictating { latched: true }),
         (5.0, Pres::Processing),
-        (5.8, message("Copied to the clipboard")),
-        (7.6, Pres::DictationIdle),
+        (5.8, message("Copied to the clipboard", false)),
+        (7.6, message("Formatted as a list", false)),
+        (9.4, message("Added \u{201c}Klose\u{201d} to your dictionary", true)),
+        (11.2, message("Learned your formatting", true)),
+        (13.0, Pres::DictationIdle),
     ]
 }
 

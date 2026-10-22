@@ -71,6 +71,20 @@ pub fn remember(mut examples: Vec<Example>, new: Example) -> Vec<Example> {
     examples
 }
 
+/// `examples` without `learned`, and with `replaced`, the example of the same dictation it took
+/// the place of, added back through `remember`, so the budget still holds: an oldest example that
+/// saving `learned` trimmed stays gone, and one may be trimmed again. Once `learned` is gone (a
+/// later layout of the same dictation, or Forget), nothing changes: bringing `replaced` back then
+/// would undo something else.
+pub fn unlearn(mut examples: Vec<Example>, learned: &Example, replaced: Option<Example>) -> Vec<Example> {
+    let before = examples.len();
+    examples.retain(|e| e != learned);
+    match replaced {
+        Some(replaced) if examples.len() < before => remember(examples, replaced),
+        _ => examples,
+    }
+}
+
 pub fn default_path() -> PathBuf {
     path_beside(&crate::handoff::default_config_path())
 }
@@ -201,6 +215,21 @@ mod tests {
         let big = remember(examples, numbered(0, 2_950));
         assert!(big.len() < MAX_EXAMPLES && big.iter().map(|e| e.dictated.len() + e.laid_out.len()).sum::<usize>() <= MAX_TOTAL_CHARS);
         assert_eq!(remember(Vec::new(), numbered(1, 10_000)).len(), 1, "the newest stays, even alone over budget");
+    }
+
+    #[test]
+    fn undoing_a_layout_puts_back_the_one_it_replaced() {
+        let old = Example { dictated: "One. Two.".into(), laid_out: "One.\n\nTwo.".into() };
+        let new = Example { laid_out: "- One.\n- Two.".into(), ..old.clone() };
+        let other = numbered(1, 3);
+        let learned = remember(vec![other.clone(), old.clone()], new.clone());
+        assert_eq!(learned, [other.clone(), new.clone()]);
+        assert_eq!(unlearn(learned.clone(), &new, Some(old.clone())), [other.clone(), old.clone()]);
+        assert_eq!(unlearn(learned.clone(), &new, None), [other.clone()]);
+        let newer = Example { laid_out: "1. One.\n2. Two.".into(), ..new.clone() };
+        let relearned = remember(learned, newer.clone());
+        assert_eq!(unlearn(relearned.clone(), &new, Some(old.clone())), relearned, "a later layout took its place");
+        assert!(unlearn(Vec::new(), &new, Some(old)).is_empty(), "forgotten");
     }
 
     #[test]

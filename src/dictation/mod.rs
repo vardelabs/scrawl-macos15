@@ -12,6 +12,8 @@ pub mod layout;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod learn;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod notices;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod spacing;
 
 #[cfg(target_os = "macos")]
@@ -71,6 +73,7 @@ pub struct Dictation;
 pub struct PillInput {
     pub hovered: bool,
     pub clicks: Vec<crate::native::pill::PillAction>,
+    pub shown: bool,
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -133,6 +133,7 @@ struct SettingsDictation: Decodable, Equatable {
   var formatting = true
   var formattingAvailable = false
   var learn = true
+  var notices = true
   var learnedLayouts = 0
   var removeFillers = true
   var words: [String] = []
@@ -1040,6 +1041,10 @@ struct SettingsView: View {
         SettingsSeparator()
         SettingsRow(title: "Learn from my edits") {
           SettingsSwitch(on: d.learn) { model.set("dictationLearn", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Show what dictation learns") {
+          SettingsSwitch(on: d.notices) { model.set("dictationNotices", $0) }
         }
         SettingsSeparator()
         SettingsRow(title: d.learnedLayouts == 1 ? "1 layout learned" : "\(d.learnedLayouts) layouts learned") {

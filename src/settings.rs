@@ -680,6 +680,8 @@ pub struct DictationView {
     pub formatting_available: bool,
     /// Words learned from edits to pasted text.
     pub learn: bool,
+    /// Notices in the pill of what dictation learned or how it laid text out.
+    pub notices: bool,
     /// Layouts learned from edits to laid-out text (`dictation::layout`), shown to the formatter.
     pub learned_layouts: usize,
     pub remove_fillers: bool,
@@ -970,6 +972,7 @@ fn dictation_view(
         formatting: config.dictation_formatting.unwrap_or(true),
         formatting_available: crate::handoff::format_command_in(config).is_some(),
         learn: config.dictation_learn.unwrap_or(true),
+        notices: config.dictation_notices.unwrap_or(true),
         learned_layouts: crate::dictation::layout::load_from(&crate::dictation::layout::path_beside(config_path)).len(),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
@@ -1372,7 +1375,7 @@ impl Panel {
             (
                 "autoSend" | "videoExport" | "lowerPlayback" | "tapChooses" | "cropWindowCaptures"
                 | "dictation" | "dictationRestoreClipboard" | "dictationPill"
-                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn"
+                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices"
                 | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => {
@@ -2128,6 +2131,8 @@ mod tests {
         set(&mut panel, &mut host, "dictationCodeFormatting", false.into());
         set(&mut panel, &mut host, "dictationFormatting", false.into());
         set(&mut panel, &mut host, "dictationLearn", false.into());
+        assert!(panel.view(&host).dictation.notices, "notices are on by default");
+        set(&mut panel, &mut host, "dictationNotices", false.into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥⌘".into());
         set(&mut panel, &mut host, "dictationShortcut", "⌥".into());
         let view = panel.view(&host).dictation;
@@ -2137,6 +2142,7 @@ mod tests {
         assert!(!view.code_formatting);
         assert!(!view.formatting && !view.formatting_available);
         assert!(!view.learn);
+        assert!(!view.notices);
         assert_eq!(view.shortcut, "⌥⌘");
     }
 

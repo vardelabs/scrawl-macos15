@@ -544,6 +544,9 @@ pub struct Config {
     /// Adds names and terms the user types over pasted dictation to the dictionary (default on).
     #[serde(default)]
     pub dictation_learn: Option<bool>,
+    /// Says in the pill what dictation learned from an edit or how it laid text out (default on).
+    #[serde(default)]
+    pub dictation_notices: Option<bool>,
     /// Smart routing's settings (`routing::look`).
     #[serde(default)]
     pub routing: Option<RoutingConfig>,
@@ -850,6 +853,8 @@ pub struct DictationConfig {
     /// The formatter to run, when formatting is on and `formatCommand` is usable.
     pub format: Option<Vec<String>>,
     pub learn: bool,
+    /// Say in the pill what dictation learned or how it laid text out.
+    pub notices: bool,
 }
 
 /// `formatCommand` when it can run: an argv whose first entry is an absolute path, as the app
@@ -870,6 +875,7 @@ pub fn dictation() -> DictationConfig {
         code: config.dictation_code_formatting.unwrap_or(true),
         format,
         learn: config.dictation_learn.unwrap_or(true),
+        notices: config.dictation_notices.unwrap_or(true),
     }
 }
 
