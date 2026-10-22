@@ -85,6 +85,8 @@ def learned_examples(path: str) -> list:
             examples = json.load(file).get("examples", [])
     except (OSError, ValueError, AttributeError):
         return []
+    if not isinstance(examples, list):
+        return []
     pairs = [
         (e["dictated"], e["laidOut"])
         for e in examples
