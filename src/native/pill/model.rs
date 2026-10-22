@@ -924,7 +924,7 @@ pub struct FrameState {
     pub is_completed: bool,
     pub is_paused: bool,
     /// The recording controls capsule holds Pause between Cancel and Finish, so their inner
-    /// ends are square even while Pause is still fading in.
+    /// ends stay inner while Pause fades in and while all three fade out after Finish or Cancel.
     pub pausable_controls: bool,
     /// A dictation notice, whose label leads with a check.
     pub is_notice: bool,
@@ -1741,7 +1741,7 @@ impl PillModel {
             pausable_controls: matches!(
                 self.geo_pres,
                 Pres::Recording { pausable: true, .. } | Pres::Paused
-            ),
+            ) || elems.iter().any(|e| e.id == ElemId::Pause),
             is_notice: matches!(self.geo_pres, Pres::Message { .. }),
             is_idle: matches!(self.geo_pres, Pres::DictationIdle),
             content_blur: max_blur,
@@ -2403,6 +2403,28 @@ mod tests {
         assert!(lead_w(true) >= line_end, "the line fits after the clock");
         assert!(lead_w(false) < line_end, "a lead without the Mac mic keeps its own width");
     }
+    #[test]
+    fn the_controls_capsule_keeps_its_three_buttons_while_finish_fades_them() {
+        let mut m = PillModel::new(Metrics::default());
+        m.set_pres(Pres::Recording {
+            chips: false,
+            has_iphone: false,
+            pausable: true,
+            mic: false,
+        });
+        for _ in 0..120 {
+            m.advance(1.0 / 120.0);
+        }
+        m.set_pres(Pres::Processing);
+        // Past the collapse wait, so the geometry is already `Processing`'s.
+        for _ in 0..8 {
+            m.advance(1.0 / 120.0);
+        }
+        let f = m.frame();
+        assert!(f.elems.iter().any(|e| e.id == ElemId::Pause), "Pause is still fading out");
+        assert!(f.pausable_controls, "Cancel and Finish keep their inner ends");
+    }
+
     #[test]
     fn a_paused_recording_keeps_its_capsule_and_its_clock() {
         let m = Metrics::default();

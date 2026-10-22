@@ -1266,7 +1266,7 @@ fn emit_control(
         if first { end_r } else { CONTROL_INNER_R },
         if last { end_r } else { CONTROL_INNER_R },
     ];
-    // Half the gap comes off each side of a join, so the pill's black shows between buttons.
+    // Half the gap comes off each side of a join, so the pill's own fill shows between buttons.
     let inset_l = if first { 0.0 } else { CONTROL_GAP * 0.5 };
     let inset_r = if last { 0.0 } else { CONTROL_GAP * 0.5 };
     let fill = |out: &mut Vec<TilePrim>, color: [f32; 4]| {
