@@ -52,6 +52,13 @@ unsafe extern "C" {
     fn AXValueGetValue(value: CFTypeRef, kind: u32, out: *mut c_void) -> u8;
 }
 
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringGetLength(string: CFTypeRef) -> isize;
+    fn CFStringGetCharacters(string: CFTypeRef, range: TextRange, buffer: *mut u16);
+}
+
 /// `kAXValueCFRangeType`.
 #[cfg(target_os = "macos")]
 const AX_VALUE_CF_RANGE: u32 = 4;
@@ -59,7 +66,7 @@ const AX_VALUE_CF_RANGE: u32 = 4;
 /// A `CFRange`, in UTF-16 units as Accessibility counts text.
 #[cfg(target_os = "macos")]
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct TextRange {
     location: isize,
     length: isize,
@@ -148,10 +155,11 @@ impl FocusedText {
         string_attribute(self.0.0, "AXValue").filter(|text| text.chars().count() <= max_chars)
     }
 
-    /// Up to `units` UTF-16 units of the text just before the insertion point (empty at the
-    /// field's start), and the length of the selection a paste would replace. `None` when the
-    /// field doesn't report a selection, or the text before it can't be read.
-    pub fn before_insertion(&self, units: usize, max_chars: usize) -> Option<(String, usize)> {
+    /// The text around the insertion point: up to `units` UTF-16 units before it (empty at the
+    /// field's start), the length of the selection a paste would replace, and up to `units` after
+    /// the selection (empty at the field's end; `None` when it can't be read). `None` when the field
+    /// doesn't report a selection, or the text before it can't be read.
+    pub fn around_insertion(&self, units: usize, max_chars: usize) -> Option<(String, usize, Option<String>)> {
         let selection = attribute(self.0.0, "AXSelectedTextRange")?;
         let mut range = TextRange::default();
         let read = unsafe {
@@ -160,20 +168,35 @@ impl FocusedText {
         if read == 0 || range.location < 0 || range.length < 0 {
             return None;
         }
-        let selected = range.length as usize;
-        if range.location == 0 {
-            return Some((String::new(), selected));
-        }
         let from = range.location.saturating_sub(units as isize).max(0);
-        let before = TextRange { location: from, length: range.location - from };
-        // AXStringForRange copies only those characters; some fields answer only AXValue.
-        self.string_for_range(&before)
-            .or_else(|| {
-                let value: Vec<u16> = self.value(max_chars)?.encode_utf16().collect();
-                let slice = value.get(before.location as usize..range.location as usize)?;
-                Some(String::from_utf16_lossy(slice))
-            })
-            .map(|text| (text, selected))
+        let before = self.text_in(TextRange { location: from, length: range.location - from }, max_chars)?;
+        let end = range.location + range.length;
+        let total = self.length();
+        let after = match total {
+            Some(total) if end >= total => Some(String::new()),
+            _ => self.text_in(TextRange { location: end, length: units as isize }, max_chars),
+        };
+        Some((before, range.length as usize, after))
+    }
+
+    fn length(&self) -> Option<isize> {
+        let count = attribute(self.0.0, "AXNumberOfCharacters")?;
+        let count = unsafe { CFType::wrap_under_get_rule(count.0) };
+        count.downcast::<core_foundation::number::CFNumber>()?.to_i64().map(|n| n as isize)
+    }
+
+    /// The text in `range`, cut short at the field's end. AXStringForRange copies only those
+    /// characters; some fields answer only AXValue.
+    fn text_in(&self, range: TextRange, max_chars: usize) -> Option<String> {
+        if range.length == 0 {
+            return Some(String::new());
+        }
+        self.string_for_range(&range).or_else(|| {
+            let value: Vec<u16> = self.value(max_chars)?.encode_utf16().collect();
+            let start = range.location as usize;
+            let slice = value.get(start..(start + range.length as usize).min(value.len()))?;
+            Some(String::from_utf16_lossy(slice))
+        })
     }
 
     fn string_for_range(&self, range: &TextRange) -> Option<String> {
@@ -189,9 +212,13 @@ impl FocusedText {
         if status != 0 || out.is_null() {
             return None;
         }
-        let text = unsafe { CFType::wrap_under_create_rule(out) }.downcast::<CFString>()?.to_string();
-        // A field that answers with less than was asked for (or nothing) isn't saying what is there.
-        (text.encode_utf16().count() == range.length as usize).then_some(text)
+        let out = unsafe { CFType::wrap_under_create_rule(out) }.downcast::<CFString>()?;
+        // UTF-16, decoded lossily: a range that starts inside an emoji's surrogate pair holds half
+        // of it, which CFString's own UTF-8 conversion asserts on.
+        let length = unsafe { CFStringGetLength(out.as_CFTypeRef()) };
+        let mut units = vec![0u16; length.max(0) as usize];
+        unsafe { CFStringGetCharacters(out.as_CFTypeRef(), TextRange { location: 0, length }, units.as_mut_ptr()) };
+        Some(String::from_utf16_lossy(&units))
     }
 
     pub fn still_focused(&self) -> bool {
