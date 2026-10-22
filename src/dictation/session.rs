@@ -277,7 +277,9 @@ impl Dictation {
         self.take_learned();
         // Clicks arrive every tick, so one made while dictation was off can't start it later.
         let clicks = pill.clicks;
-        if clicks.iter().any(|c| matches!(c, PillAction::Undo)) {
+        // An Undo just after a notice went was aimed at it, not at the notice that took its place.
+        let settled = self.notices.gone().is_none_or(|at| at.elapsed() >= CLICK_GRACE);
+        if settled && clicks.iter().any(|c| matches!(c, PillAction::Undo)) {
             self.undo();
         }
         if self.settings.enabled {
