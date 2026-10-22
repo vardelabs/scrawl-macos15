@@ -154,12 +154,18 @@ fn synthetic_level(t: f32) -> f32 {
     (0.75 * syllables.powf(0.7) * phrase).min(1.0)
 }
 
+/// The pretend voice's RMS `t` seconds into a phrase, for the level line of a pretend dictation
+/// or recording.
+pub(super) fn pretend_mic_rms(t: f32) -> f32 {
+    crate::native::pill::wave::rms_of_height(synthetic_level(t))
+}
+
 /// Each time the pretend mic opens, the voice starts a phrase.
 fn lab_mic_rms(at: f32) -> Option<f32> {
     LAB_MIC
         .iter()
         .find(|&&(from, to)| (from..to).contains(&at))
-        .map(|&(from, _)| crate::native::pill::wave::rms_of_height(synthetic_level(at - from)))
+        .map(|&(from, _)| pretend_mic_rms(at - from))
 }
 
 fn show_dictation(pill: &crate::native::pill::NativePill, pres: crate::native::pill::model::Pres) {

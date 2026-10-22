@@ -111,9 +111,10 @@ impl Wave {
         self.mic.to(f32::from(u8::from(rms.is_some())), FADE);
     }
 
-    /// Only dictation's own states carry the line: a capture's lead never does.
+    /// Dictation and a screen capture recording the Mac's mic carry the line; a paused or an
+    /// iPhone capture doesn't.
     pub fn show(&mut self, pres: &Pres) {
-        let listening = matches!(pres, Pres::Dictating { .. });
+        let listening = matches!(pres, Pres::Dictating { .. } | Pres::Recording { mic: true, .. });
         let idle = matches!(pres, Pres::DictationIdle);
         self.listening.to(f32::from(u8::from(listening)), FADE);
         self.idle.to(f32::from(u8::from(idle)), FADE);
@@ -296,6 +297,35 @@ mod tests {
         assert!(!wave.is_moving());
         wave.set_rms(Some(SPEECH));
         assert!(wave.is_moving(), "the voice restarts drawing before the next frame");
+    }
+
+    #[test]
+    fn a_screen_recording_shows_the_line_and_an_iphone_or_paused_one_does_not() {
+        let shape = Silhouette { l: 200.0, r: 440.0, t: 22.0, b: 62.0, radius: 20.0, alpha: 1.0, blur: 0.0 };
+        let lead = FrameElem {
+            id: super::super::model::ElemId::Lead,
+            rect: [204.0, 26.0, 125.0, 32.0],
+            base_size: [125.0, 32.0],
+            alpha: 1.0,
+            blur: 0.0,
+            scale: 1.0,
+            active: 0.0,
+            hover: 0.0,
+            press: 0.0,
+            enabled: true,
+        };
+        let recording = |mic| Pres::Recording { chips: false, has_iphone: false, stroke_count: 0, pausable: true, mic };
+        for (pres, shows) in [
+            (recording(true), true),
+            (recording(false), false),
+            (Pres::Paused { stroke_count: 0 }, false),
+        ] {
+            let mut wave = Wave::default();
+            wave.show(&pres);
+            wave.set_rms(Some(SPEECH));
+            run(&mut wave, 0.5);
+            assert_eq!(!wave.lines(&shape, Some(&lead), 29.0).is_empty(), shows, "{pres:?}");
+        }
     }
 
     #[test]

@@ -466,6 +466,8 @@ pub enum Pres {
         stroke_count: usize,
         /// A screen capture, which can pause (an iPhone one can't).
         pausable: bool,
+        /// The Mac's microphone records, so the lead shows its level line (`wave`).
+        mic: bool,
     },
     /// A recording on hold: the clock stands still and Resume takes Pause's place.
     Paused {
@@ -509,15 +511,17 @@ impl Pres {
                     chips: a,
                     has_iphone: ia,
                     pausable: pa,
+                    mic: ma,
                     ..
                 },
                 Self::Recording {
                     chips: b,
                     has_iphone: ib,
                     pausable: pb,
+                    mic: mb,
                     ..
                 },
-            ) => a == b && (ia == ib || !*a) && (pa == pb || *a),
+            ) => a == b && (ia == ib || !*a) && (pa == pb || *a) && ma == mb,
             (
                 Self::Selecting {
                     mode: ma,
@@ -680,6 +684,11 @@ fn push_controls(
     }
 }
 
+/// A lead with the mic level line after its clock.
+fn listening_lead_w(m: &Metrics, clock: &str) -> f32 {
+    CLOCK_X + m.clock_width(clock) + 2.0 * LISTENING_GAP + LISTENING_W
+}
+
 /// Computes the resting capsule bounds and item boxes for `pres`.
 pub fn layout_of(
     pres: &Pres,
@@ -743,9 +752,13 @@ pub fn layout_of(
             has_iphone,
             stroke_count,
             pausable,
+            mic,
         } => {
-            let clock_w = m.clock_width(clock);
-            let lead_w = CHIP_H + clock_w + LEAD_TRAIL;
+            let lead_w = if *mic {
+                listening_lead_w(m, clock)
+            } else {
+                CHIP_H + m.clock_width(clock) + LEAD_TRAIL
+            };
             raw.push((ElemId::Lead, lead_w, CHIP_CORE_ROUND, 0.0, true));
             raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
             if *chips {
@@ -771,7 +784,7 @@ pub fn layout_of(
             push_controls(&mut raw, Some(m.resume), *stroke_count, m);
         }
         Pres::Dictating { latched } => {
-            let lead_w = CLOCK_X + m.clock_width(clock) + 2.0 * LISTENING_GAP + LISTENING_W;
+            let lead_w = listening_lead_w(m, clock);
             if *latched {
                 raw.push((ElemId::Close, CHIP_H, CHIP_CORE_ROUND, 0.0, true));
             }
@@ -1889,6 +1902,7 @@ mod tests {
                         has_iphone: false,
                         stroke_count: 0,
                         pausable: true,
+                        mic: false,
                     },
                 ),
                 (
@@ -1910,6 +1924,7 @@ mod tests {
                         has_iphone: false,
                         stroke_count: 0,
                         pausable: true,
+                        mic: false,
                     },
                 ),
                 (
@@ -1931,6 +1946,7 @@ mod tests {
                         has_iphone: false,
                         stroke_count: 0,
                         pausable: true,
+                        mic: false,
                     },
                 ),
                 (
@@ -1940,6 +1956,7 @@ mod tests {
                         has_iphone: false,
                         stroke_count: 1,
                         pausable: true,
+                        mic: false,
                     },
                 ),
                 (2.4, Pres::Hidden),
@@ -1985,6 +2002,7 @@ mod tests {
                         has_iphone: true,
                         stroke_count: 0,
                         pausable: true,
+                        mic: false,
                     },
                 ),
                 (3.6, Pres::Hidden),
@@ -1998,6 +2016,7 @@ mod tests {
                         has_iphone: false,
                         stroke_count: 0,
                         pausable: true,
+                        mic: false,
                     },
                 ),
                 (
@@ -2007,6 +2026,7 @@ mod tests {
                         has_iphone: false,
                         stroke_count: 0,
                         pausable: true,
+                        mic: false,
                     },
                 ),
                 (2.0, Pres::Processing),
@@ -2051,6 +2071,7 @@ mod tests {
             has_iphone: false,
             stroke_count: 0,
             pausable: true,
+            mic: false,
         });
         for _ in 0..8 {
             m.advance(FRAME_DT);
@@ -2081,12 +2102,14 @@ mod tests {
                 has_iphone: false,
                 stroke_count: 0,
                 pausable: true,
+                mic: false,
             },
             Pres::Recording {
                 chips: false,
                 has_iphone: false,
                 stroke_count: 2,
                 pausable: true,
+                mic: false,
             },
             Pres::Selecting {
                 mode: SelectionMode::Area,
@@ -2153,6 +2176,7 @@ mod tests {
             has_iphone: false,
             stroke_count: 0,
             pausable: true,
+            mic: false,
         });
         let mut saw_sharp_before_opaque = false;
         for _ in 0..120 {
@@ -2174,6 +2198,7 @@ mod tests {
             has_iphone: false,
             stroke_count: 0,
             pausable: true,
+            mic: false,
         });
         let mut peak_travel_blur = 0.0_f32;
         for _ in 0..120 {
@@ -2208,6 +2233,7 @@ mod tests {
             has_iphone: false,
             stroke_count: 0,
             pausable: true,
+            mic: false,
         });
         let target_w = m.r.target - m.l.target;
         m.advance(FRAME_DT);
@@ -2285,6 +2311,7 @@ mod tests {
             has_iphone: false,
             stroke_count: 0,
             pausable: true,
+            mic: false,
         });
         let target_w = m.r.target - m.l.target;
         let mut first: Vec<(ElemId, f32)> = Vec::new();
@@ -2322,6 +2349,7 @@ mod tests {
             has_iphone: false,
             stroke_count: 0,
             pausable: true,
+            mic: false,
         });
         for _ in 0..60 {
             m.advance(FRAME_DT);
@@ -2348,6 +2376,19 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_lead_makes_room_for_the_level_line_only_with_the_mac_mic() {
+        let m = Metrics::default();
+        let lead_w = |mic| {
+            let pres = Pres::Recording { chips: false, has_iphone: false, stroke_count: 0, pausable: true, mic };
+            let (_, items) = layout_of(&pres, "0:03", 0.0, &m);
+            items.iter().find(|i| i.id == ElemId::Lead).unwrap().rect[2]
+        };
+        let line_end = CLOCK_X + m.clock_000 + LISTENING_GAP + LISTENING_W;
+        assert!(lead_w(true) >= line_end, "the line fits after the clock");
+        assert!(lead_w(false) < line_end, "an iPhone capture's lead keeps its own width");
+    }
+
+    #[test]
     fn a_paused_recording_keeps_its_controls_and_widens_its_lead_for_the_label() {
         let m = Metrics::default();
         let recording = Pres::Recording {
@@ -2355,6 +2396,7 @@ mod tests {
             has_iphone: false,
             stroke_count: 1,
             pausable: true,
+            mic: false,
         };
         let (_, rec) = layout_of(&recording, "0:42", 0.0, &m);
         let (_, paused) = layout_of(&Pres::Paused { stroke_count: 1 }, "0:42", 0.0, &m);
@@ -2382,6 +2424,7 @@ mod tests {
             has_iphone: true,
             stroke_count: 0,
             pausable: false,
+            mic: false,
         };
         let (_, phone) = layout_of(&phone, "0:42", 0.0, &m);
         assert!(

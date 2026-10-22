@@ -230,9 +230,10 @@ struct WaveUniforms {
     float samples[WAVE_SAMPLES]; // live level, then history newest first, 0..1
 };
 
-// The newest level sits at the centre (q = 0) and older ones ripple outward.
+// The newest level sits at the centre (q = 0) and older ones ripple outward: a level moves out
+// with `scroll` between pushes, and lands where the push puts it.
 inline float wave_level(constant WaveUniforms &w, float q) {
-    float idx = clamp(q + w.meta.y, 0.0, float(WAVE_SAMPLES) - 1.001);
+    float idx = clamp(q - w.meta.y, 0.0, float(WAVE_SAMPLES) - 1.001);
     int i = int(floor(idx));
     float f = idx - float(i);
     return mix(w.samples[i], w.samples[i + 1], f * f * (3.0 - 2.0 * f));
