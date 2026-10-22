@@ -170,7 +170,8 @@ impl FocusedText {
         }
         let from = range.location.saturating_sub(units as isize).max(0);
         let before = self.text_in(TextRange { location: from, length: range.location - from }, max_chars)?;
-        let end = range.location + range.length;
+        // The range comes from another app: one that overflows says nothing about the field.
+        let end = range.location.checked_add(range.length)?;
         let total = self.length();
         let after = match total {
             Some(total) if end >= total => Some(String::new()),
@@ -194,7 +195,7 @@ impl FocusedText {
         self.string_for_range(&range).or_else(|| {
             let value: Vec<u16> = self.value(max_chars)?.encode_utf16().collect();
             let start = range.location as usize;
-            let slice = value.get(start..(start + range.length as usize).min(value.len()))?;
+            let slice = value.get(start..start.saturating_add(range.length as usize).min(value.len()))?;
             Some(String::from_utf16_lossy(slice))
         })
     }
