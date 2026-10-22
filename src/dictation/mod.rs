@@ -71,6 +71,7 @@ pub struct Dictation;
 pub struct PillInput {
     pub hovered: bool,
     pub clicks: Vec<crate::native::pill::PillAction>,
+    pub shown: bool,
 }
 
 #[cfg(not(target_os = "macos"))]

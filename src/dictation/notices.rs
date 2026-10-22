@@ -43,6 +43,16 @@ impl Notices {
         }
     }
 
+    /// Puts where a dictation went ("Copied to the clipboard") ahead of what earlier edits
+    /// taught, past the cap: it is about the text the user is looking for now. A notice it
+    /// displaces shows again in full afterwards.
+    pub fn push_first(&mut self, text: impl Into<String>) {
+        if let Some(front) = self.queue.front_mut() {
+            front.until = None;
+        }
+        self.queue.push_front(Notice { text: text.into(), undo: None, until: None });
+    }
+
     /// The notice the pill shows now, when `visible` (nothing else holds the pill), starting its
     /// clock the first time it shows; an expired one goes first. While hidden, a notice that
     /// already showed and has no Undo goes, since the user moved on from what it reported, and one
@@ -150,6 +160,25 @@ mod tests {
         assert_eq!(notices.dismiss(t0).and_then(|n| n.undo), Some(Undo::Word("Nova".into())));
         assert!(!notices.showing());
         assert!(notices.dismiss(t0).is_none());
+    }
+
+    #[test]
+    fn where_the_text_went_jumps_the_queue_and_the_cap() {
+        let t0 = Instant::now();
+        let mut notices = Notices::default();
+        for n in 0..MAX_WAITING {
+            notices.push(added_word(&n.to_string()), Some(Undo::Word(n.to_string())));
+        }
+        texts(&mut notices, true, t0);
+        notices.push_first("Copied to the clipboard");
+        assert_eq!(texts(&mut notices, true, t0 + Duration::from_secs(1)).as_deref(), Some("Copied to the clipboard"));
+        let after = t0 + Duration::from_secs(1) + NOTICE_FOR;
+        assert_eq!(texts(&mut notices, true, after).as_deref(), Some("Added “0” to your dictionary"), "the displaced notice comes back");
+        assert_eq!(
+            texts(&mut notices, true, after + NOTICE_FOR - Duration::from_millis(1)).as_deref(),
+            Some("Added “0” to your dictionary"),
+            "in full"
+        );
     }
 
     #[test]

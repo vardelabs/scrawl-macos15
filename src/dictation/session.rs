@@ -220,6 +220,8 @@ struct Learned {
 pub struct PillInput {
     pub hovered: bool,
     pub clicks: Vec<PillAction>,
+    /// The pill shows dictation now; a capture's island (its Completed card too) takes it.
+    pub shown: bool,
 }
 
 impl Default for Dictation {
@@ -279,7 +281,7 @@ impl Dictation {
         let clicks = pill.clicks;
         // An Undo just after a notice went was aimed at it, not at the notice that took its place.
         let settled = self.notices.gone().is_none_or(|at| at.elapsed() >= CLICK_GRACE);
-        if settled && clicks.iter().any(|c| matches!(c, PillAction::Undo)) {
+        if settled && self.notices.showing() && clicks.iter().any(|c| matches!(c, PillAction::Undo)) {
             self.undo();
         }
         if self.settings.enabled {
@@ -288,7 +290,7 @@ impl Dictation {
             // Off, the pill can still show the last dictation's notice; a click dismisses it.
             self.notices.dismiss(Instant::now());
         }
-        let free = self.working.is_none() && self.started.is_none() && !capture_busy;
+        let free = pill.shown && self.working.is_none() && self.started.is_none() && !capture_busy;
         let notice = self.notices.current(free, Instant::now()).map(|n| (n.text.clone(), n.undo.is_some()));
         presentation(&PillState {
             working: self.working.is_some(),
@@ -439,7 +441,7 @@ impl Dictation {
             other => other.notice(),
         };
         if let Some(text) = text {
-            self.notices.push(text, None);
+            self.notices.push_first(text);
         }
     }
 
@@ -483,6 +485,8 @@ impl Dictation {
         }
         if self.settings.notices {
             for word in added {
+                // As `learn_word` stored it, so Undo's exact match finds it.
+                let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
                 self.notices.push(super::notices::added_word(&word), Some(super::notices::Undo::Word(word)));
             }
         }
