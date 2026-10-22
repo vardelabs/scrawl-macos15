@@ -424,12 +424,11 @@ impl Dictation {
     fn take_learned(&mut self) {
         let learned: Vec<Learned> = self.learned_rx.try_iter().collect();
         let saving = self.settings.learn && self.settings.format.is_some();
-        let generation = super::layout::generation();
         let mut words = Vec::new();
-        for Learned { words: respelled, layout, generation: at } in learned {
+        for Learned { words: respelled, layout, generation } in learned {
             words.push(respelled);
-            if let Some(example) = layout.filter(|_| saving && at == generation) {
-                save_layout(example);
+            if let Some(example) = layout.filter(|_| saving) {
+                save_layout(example, generation);
             }
         }
         let words: Vec<String> = words
@@ -622,11 +621,15 @@ fn learned_notice(words: &[String]) -> Option<String> {
 /// A field longer than this (a whole document) is not watched.
 const MAX_FIELD_CHARS: usize = 200_000;
 
-/// Saves a layout learned from an edit among the newest (`layout::remember`).
-fn save_layout(example: super::layout::Example) {
+/// Saves a layout learned from a paste in `generation`, unless a Forget came since; checked under
+/// the lock Forget holds, so none can come between the check and the save.
+fn save_layout(example: super::layout::Example, generation: u64) {
     use super::layout;
     let path = layout::default_path();
     let _editing = layout::edit_lock();
+    if layout::generation() != generation {
+        return;
+    }
     match layout::save_to(&path, layout::remember(layout::load_from(&path), example)) {
         Ok(()) => scrawl_log("Dictation: learned a layout from an edit"),
         Err(error) => scrawl_log(format!("Dictation: could not save a learned layout: {error:#}")),
