@@ -13,9 +13,11 @@ struct TileUniforms {
 
 // kind == 0: analytic rounded rect / circle (`rect` in canvas pt, `param.x` = corner radius)
 // kind == 1: textured quad from `atlas` (`rect` in canvas pt, `uv_rect` = [u0, v0, u1, v1] in 0..1)
+// kind == 2: rounded rect with left corners `uv_rect.x` and right corners `uv_rect.y` (a button of
+//            the recording controls capsule)
 struct TilePrim {
     float4 rect;      // x, y, w, h in canvas points
-    float4 uv_rect;   // u0, v0, u1, v1 (for kind == 1) or (radius, 0, 0, 0) (for kind == 0)
+    float4 uv_rect;   // u0, v0, u1, v1 (kind 1), (radius, 0, 0, 0) (kind 0), (left r, right r, 0, 0) (kind 2)
     float4 color;     // premultiplied or straight RGBA (r, g, b, a)
     uint kind;
     uint _pad0;
@@ -30,6 +32,7 @@ struct TileVertexOut {
     float4 rect;
     float4 color;
     float radius;
+    float radius_right;
     uint kind;
 };
 
@@ -46,7 +49,7 @@ vertex TileVertexOut pill_tile_vertex(
     TilePrim prim = prims[iid];
     float2 c = corners[vid];
     // For analytic shapes, expand quad by 1.5 pt so anti-aliased edges never clip.
-    float pad = (prim.kind == 0u) ? 1.5 : 0.0;
+    float pad = (prim.kind != 1u) ? 1.5 : 0.0;
     float2 p = prim.rect.xy - float2(pad) + c * (prim.rect.zw + float2(2.0 * pad));
     float2 ndc = float2(
         (p.x / u.canvas_size.x) * 2.0 - 1.0,
@@ -60,6 +63,7 @@ vertex TileVertexOut pill_tile_vertex(
     out.rect = prim.rect;
     out.color = prim.color;
     out.radius = prim.uv_rect.x;
+    out.radius_right = prim.uv_rect.y;
     out.kind = prim.kind;
     return out;
 }
@@ -73,6 +77,15 @@ fragment float4 pill_tile_fragment(
         float2 center = in.rect.xy + in.rect.zw * 0.5;
         float2 half_sz = in.rect.zw * 0.5;
         float r = min(in.radius, min(half_sz.x, half_sz.y));
+        float2 q = abs(in.pt - center) - (half_sz - float2(r));
+        float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+        float cov = clamp(0.5 - sdf * u.scale, 0.0, 1.0);
+        float a = in.color.a * cov;
+        return float4(in.color.rgb * a, a);
+    } else if (in.kind == 2u) {
+        float2 center = in.rect.xy + in.rect.zw * 0.5;
+        float2 half_sz = in.rect.zw * 0.5;
+        float r = min(in.pt.x < center.x ? in.radius : in.radius_right, min(half_sz.x, half_sz.y));
         float2 q = abs(in.pt - center) - (half_sz - float2(r));
         float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
         float cov = clamp(0.5 - sdf * u.scale, 0.0, 1.0);
@@ -323,7 +336,7 @@ fragment float4 pill_composite_fragment(
     if (is_glass < 0.5 && u.has_ghost != 0u && u.ghost_meta.y > 0.001) {
         float g_sdf = rrect_sdf(p, u.ghost_rect, u.ghost_meta.x);
         float g_cov = clamp(0.5 - g_sdf * u.scale, 0.0, 1.0);
-        float g_a = 0.96 * u.ghost_meta.y * g_cov;
+        float g_a = u.ghost_meta.y * g_cov;
         out = blend_over(out, float4(bg_rgb * g_a, g_a));
     }
 
@@ -335,8 +348,9 @@ fragment float4 pill_composite_fragment(
     float in_cov = smoothstep(half_band, -half_band, sdf);
     if (in_cov > 0.001) {
         if (is_glass < 0.5) {
-            // The idle dictation bar is see-through, as Wispr Flow's is.
-            float fill_a = mix(0.96, 0.5, u.ghost_meta.w) * shape_alpha * in_cov;
+            // The idle dictation bar is see-through, as Wispr Flow's is. Every other state is
+            // opaque: at 96% a window's dark text behind the pill showed through as faint glyphs.
+            float fill_a = mix(1.0, 0.5, u.ghost_meta.w) * shape_alpha * in_cov;
             out = blend_over(out, float4(bg_rgb * fill_a, fill_a));
         }
 

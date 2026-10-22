@@ -47,6 +47,18 @@ use crate::ui::{SelectionMode, motion};
 const OFFSCREEN_W_PT: f32 = 960.0;
 const OFFSCREEN_H_PT: f32 = 256.0;
 const TILE_PAD_PT: f32 = 20.0;
+/// The recording controls capsule: a faint light base, each button tinted with its colour (red
+/// Cancel, orange Pause, green Finish, OKLCH 0.56 to 0.68 lightness) and its icon in a light
+/// shade of the same hue. The buttons stand apart by `CONTROL_GAP`, their inner corners rounded
+/// by `CONTROL_INNER_R`.
+const CONTROL_BASE: [f32; 4] = [1.0, 1.0, 1.0, 0.07];
+const CONTROL_TINT_A: f32 = 0.22;
+const CONTROL_TINTS: [[f32; 3]; 3] = [[0.770, 0.248, 0.242], [0.848, 0.500, 0.094], [0.165, 0.593, 0.330]];
+const CONTROL_ICONS: [[f32; 3]; 3] = [[1.0, 0.608, 0.576], [0.977, 0.665, 0.376], [0.498, 0.832, 0.593]];
+/// A paused capture's bars and frozen clock, in the Pause button's orange.
+const PAUSED_ORANGE: [f32; 4] = [0.977, 0.665, 0.376, 1.0];
+const CONTROL_GAP: f32 = 1.5;
+const CONTROL_INNER_R: f32 = 1.5;
 
 unsafe extern "C" {
     static _dispatch_main_q: c_void;
@@ -133,6 +145,8 @@ struct WaveUniforms {
 
 struct PillViewIvars {
     action_tx: flume::Sender<PillAction>,
+    /// A paused capture, so VoiceOver says so: the frozen clock replaced the "Paused" label.
+    paused: Arc<AtomicBool>,
 }
 
 define_class!(
@@ -179,14 +193,23 @@ define_class!(
 
         #[unsafe(method_id(accessibilityLabel))]
         fn accessibility_label(&self) -> Retained<NSString> {
-            NSString::from_str("Scrawl Recording Controls")
+            if self.ivars().paused.load(Ordering::Relaxed) {
+                NSString::from_str("Scrawl Recording Controls, Paused")
+            } else {
+                NSString::from_str("Scrawl Recording Controls")
+            }
         }
     }
 );
 
 impl ScrawlPillView {
-    fn new(mtm: MainThreadMarker, frame: NSRect, action_tx: flume::Sender<PillAction>) -> Retained<Self> {
-        let this = mtm.alloc::<Self>().set_ivars(PillViewIvars { action_tx });
+    fn new(
+        mtm: MainThreadMarker,
+        frame: NSRect,
+        action_tx: flume::Sender<PillAction>,
+        paused: Arc<AtomicBool>,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(PillViewIvars { action_tx, paused });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 }
@@ -302,6 +325,7 @@ struct PillRuntimeState {
     press_down_elem: Option<ElemId>,
     paste_drag_start_screen: Option<[f32; 2]>,
     action_tx: flume::Sender<PillAction>,
+    paused: Arc<AtomicBool>,
 }
 
 // Accessed only on the main thread (guarded by `MainThreadMarker::new()` in `tick_main`).
@@ -364,7 +388,8 @@ impl NativePill {
             NSPoint::new(0.0, 0.0),
             NSSize::new(f64::from(PANEL_W), f64::from(PANEL_H)),
         );
-        let root_view = ScrawlPillView::new(mtm, local_bounds, action_tx.clone());
+        let paused = Arc::new(AtomicBool::new(false));
+        let root_view = ScrawlPillView::new(mtm, local_bounds, action_tx.clone(), Arc::clone(&paused));
         root_view.setWantsLayer(true);
 
         // Optional AppKit Liquid Glass view (`NSGlassEffectView` on macOS 26+).
@@ -418,6 +443,7 @@ impl NativePill {
                 press_down_elem: None,
                 paste_drag_start_screen: None,
                 action_tx,
+                paused,
             }),
             tick_queued: AtomicBool::new(false),
             alive: AtomicBool::new(true),
@@ -529,6 +555,8 @@ impl NativePill {
                 labels.completed = st.pipelines.atlas.update_completed(label).size_pt[0];
                 st.model.set_label_widths(labels, &snapshot.pres);
             }
+            st.paused
+                .store(matches!(snapshot.pres, Pres::Paused), Ordering::Relaxed);
             if st.model.pres != snapshot.pres {
                 let was_hidden = st.model.is_fully_hidden();
                 st.model.set_pres(snapshot.pres);
@@ -1037,6 +1065,7 @@ impl MetalPipelines {
                 frame.t,
                 frame.is_paused,
                 frame.is_notice,
+                frame.pausable_controls,
                 &mut prims,
             );
 
@@ -1210,6 +1239,76 @@ impl MetalPipelines {
     }
 }
 
+/// One icon button of the recording controls capsule: the capsule's two ends are fully rounded,
+/// and each button's inner corners slightly. `pausable` says whether Pause sits between Cancel
+/// and Finish.
+fn emit_control(
+    atlas: &GlyphAtlas,
+    elem: &model::FrameElem,
+    [ox, oy]: [f32; 2],
+    paused: bool,
+    pausable: bool,
+    out: &mut Vec<TilePrim>,
+) {
+    let ids = model::control_ids(pausable);
+    let Some(index) = ids.iter().position(|id| *id == elem.id) else {
+        return;
+    };
+    let [bw, bh] = elem.base_size;
+    let end_r = bh * 0.5;
+    let (first, last) = (index == 0, index + 1 == ids.len());
+    let radii = [
+        if first { end_r } else { CONTROL_INNER_R },
+        if last { end_r } else { CONTROL_INNER_R },
+    ];
+    // Half the gap comes off each side of a join, so the pill's own fill shows between buttons.
+    let inset_l = if first { 0.0 } else { CONTROL_GAP * 0.5 };
+    let inset_r = if last { 0.0 } else { CONTROL_GAP * 0.5 };
+    let fill = |out: &mut Vec<TilePrim>, color: [f32; 4]| {
+        out.push(TilePrim {
+            rect: [ox + inset_l, oy, bw - inset_l - inset_r, bh],
+            uv_rect: [radii[0], radii[1], 0.0, 0.0],
+            color,
+            kind: 2,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        });
+    };
+    let hue = match elem.id {
+        ElemId::Cancel => 0,
+        ElemId::Pause => 1,
+        _ => 2,
+    };
+    let [r, g, b] = CONTROL_TINTS[hue];
+    fill(out, CONTROL_BASE);
+    fill(out, [r, g, b, CONTROL_TINT_A]);
+    let shade = 0.10 * elem.hover - 0.10 * elem.press;
+    if shade.abs() > 0.002 {
+        let tone = if shade > 0.0 { 1.0 } else { 0.0 };
+        fill(out, [tone, tone, tone, shade.abs()]);
+    }
+
+    let icon = match elem.id {
+        ElemId::Cancel => IconKind::Close,
+        ElemId::Pause if paused => IconKind::Play,
+        ElemId::Pause => IconKind::Pause,
+        _ => IconKind::Check,
+    };
+    let ic = atlas.icon(icon);
+    let [iw, ih] = ic.size_pt;
+    let [ir, ig, ib] = CONTROL_ICONS[hue];
+    out.push(TilePrim {
+        rect: [ox + (bw - iw) * 0.5, oy + (bh - ih) * 0.5, iw, ih],
+        uv_rect: ic.uv,
+        color: [ir, ig, ib, 1.0],
+        kind: 1,
+        _pad0: 0,
+        _pad1: 0,
+        _pad2: 0,
+    });
+}
+
 fn emit_elem_prims(
     atlas: &GlyphAtlas,
     is_glass: bool,
@@ -1218,6 +1317,7 @@ fn emit_elem_prims(
     t: f32,
     paused: bool,
     notice: bool,
+    pausable_controls: bool,
     out: &mut Vec<TilePrim>,
 ) {
     let [bw, bh] = elem.base_size;
@@ -1297,10 +1397,12 @@ fn emit_elem_prims(
                 [fg, fg, fg, 1.0],
             );
         }
-        ElemId::Record | ElemId::Finish | ElemId::Paste => {
+        ElemId::Cancel | ElemId::Pause | ElemId::Finish => {
+            emit_control(atlas, elem, [ox, oy], paused, pausable_controls, out);
+        }
+        ElemId::Record | ElemId::Paste => {
             let label = match elem.id {
                 ElemId::Record => "Record",
-                ElemId::Finish => "Finish",
                 ElemId::Paste => "Paste",
                 _ => unreachable!(),
             };
@@ -1316,35 +1418,22 @@ fn emit_elem_prims(
             if is_glass {
                 push_shape(out, [ox, oy, bw, bh], bh * 0.5, [0.06, 0.07, 0.10, 0.24]);
             }
-            // Two still amber bars where the red dot breathes.
-            let amber = [0.988, 0.722, 0.235, 1.0];
+            // Two still bars where the red dot breathes, and the frozen clock, in the Pause
+            // button's orange.
             for x in [11.0, 17.0] {
-                push_shape(out, [ox + x, oy + 10.0, 4.0, 12.0], 1.5, amber);
+                push_shape(out, [ox + x, oy + 10.0, 4.0, 12.0], 1.5, PAUSED_ORANGE);
             }
-            let label = atlas.label("Paused");
-            let x = ox + CHIP_H - 2.0;
-            push_sprite(
-                out,
-                [
-                    x,
-                    oy + (CHIP_H - label.size_pt[1]) * 0.5,
-                    label.size_pt[0],
-                    label.size_pt[1],
-                ],
-                label.uv,
-                amber,
-            );
             let tx = atlas.clock_sprite;
             push_sprite(
                 out,
                 [
-                    x + label.size_pt[0] + model::PAUSED_GAP,
+                    ox + CHIP_H - 2.0,
                     oy + (CHIP_H - tx.size_pt[1]) * 0.5,
                     tx.size_pt[0],
                     tx.size_pt[1],
                 ],
                 tx.uv,
-                [0.72, 0.72, 0.74, 1.0],
+                PAUSED_ORANGE,
             );
         }
         ElemId::Lead => {
@@ -1411,13 +1500,8 @@ fn emit_elem_prims(
             };
             push_sprite(out, center_text(tx), tx.uv, [fg, fg, fg, 1.0]);
         }
-        ElemId::Cancel | ElemId::Inspect | ElemId::Pause => {
-            let label = match elem.id {
-                ElemId::Cancel => "Cancel",
-                ElemId::Pause if paused => "Resume",
-                ElemId::Pause => "Pause",
-                _ => "Inspect",
-            };
+        ElemId::Inspect => {
+            let label = "Inspect";
             if is_glass {
                 let smoke_a = 0.20 + 0.12 * elem.hover + 0.06 * elem.press;
                 push_shape(out, [ox, oy, bw, bh], bh * 0.5, [0.06, 0.07, 0.10, smoke_a]);

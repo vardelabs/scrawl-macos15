@@ -49,6 +49,8 @@ pub const CHIP_H: f32 = ISLAND_H - 2.0 * ISLAND_INSET; // 32.0
 pub const CHIP_RADIUS: f32 = CHIP_H * 0.5; // 16.0
 pub const CHIP_PX: f32 = 12.0;
 pub const CHIP_GAP: f32 = 2.0;
+/// One icon button of the recording controls capsule (Cancel, Pause, Finish).
+pub const CONTROL_W: f32 = 40.0;
 pub const DIVIDER_MX: f32 = 6.0;
 pub const DIVIDER_W: f32 = 1.0 + 2.0 * DIVIDER_MX; // 13.0
 pub const LEAD_TRAIL: f32 = 8.0;
@@ -552,11 +554,6 @@ pub struct Metrics {
     pub screen: f32,
     pub iphone: f32,
     pub record: f32,
-    pub cancel: f32,
-    pub finish: f32,
-    pub pause: f32,
-    pub resume: f32,
-    pub paused: f32,
     pub processing: f32,
     pub paste: f32,
     pub inspect: f32,
@@ -572,11 +569,6 @@ impl Default for Metrics {
             screen: 44.0,
             iphone: 43.0,
             record: 46.0,
-            cancel: 44.0,
-            finish: 38.0,
-            pause: 38.0,
-            resume: 52.0,
-            paused: 47.0,
             processing: 78.0,
             paste: 36.0,
             inspect: 47.0,
@@ -667,23 +659,27 @@ impl Default for LabelWidths {
     }
 }
 
-/// Between "Paused" and the stopped clock in the paused Lead.
-pub const PAUSED_GAP: f32 = 6.0;
-
-/// A recording's controls: Pause (or Resume, `pause_label_w` wide) if it can pause, Cancel,
-/// Finish.
-fn push_controls(
-    raw: &mut Vec<(ElemId, f32, f32, f32, bool)>,
-    pause_label_w: Option<f32>,
-    m: &Metrics,
-) {
-    let pause = pause_label_w.map(|w| (ElemId::Pause, w));
-    for (id, label_w) in pause
-        .into_iter()
-        .chain([(ElemId::Cancel, m.cancel), (ElemId::Finish, m.finish)])
-    {
-        raw.push((id, Metrics::chip_width(label_w), CHIP_CORE_ROUND, 0.0, true));
+/// A recording's controls: one capsule of icon buttons, Cancel, Pause (or Resume) if it can
+/// pause, and Finish.
+fn push_controls(raw: &mut Vec<(ElemId, f32, f32, f32, bool)>, pausable: bool) {
+    for id in control_ids(pausable) {
+        raw.push((*id, CONTROL_W, CHIP_CORE_ROUND, 0.0, true));
     }
+}
+
+/// The recording controls' icon buttons, left to right, which share one capsule.
+pub fn control_ids(pausable: bool) -> &'static [ElemId] {
+    if pausable {
+        &[ElemId::Cancel, ElemId::Pause, ElemId::Finish]
+    } else {
+        &[ElemId::Cancel, ElemId::Finish]
+    }
+}
+
+/// Buttons of the controls capsule sit edge to edge; everything else is `CHIP_GAP` apart.
+fn gap_between(a: ElemId, b: ElemId) -> f32 {
+    let in_capsule = |id| matches!(id, ElemId::Cancel | ElemId::Pause | ElemId::Finish);
+    if in_capsule(a) && in_capsule(b) { 0.0 } else { CHIP_GAP }
 }
 
 /// A lead with the mic level line after its clock.
@@ -757,8 +753,9 @@ pub fn layout_of(
                 CHIP_H + m.clock_width(clock) + LEAD_TRAIL
             };
             raw.push((ElemId::Lead, lead_w, CHIP_CORE_ROUND, 0.0, true));
-            raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
+            // The mode chips sit behind a rule; the controls capsule stands apart on its own.
             if *chips {
+                raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
                 for &seg in SelectionMode::available(*has_iphone) {
                     raw.push((
                         ElemId::from_mode(seg),
@@ -771,14 +768,13 @@ pub fn layout_of(
                 raw.push((ElemId::DividerClose, DIVIDER_W, 0.0, 0.0, false));
                 raw.push((ElemId::Close, CHIP_H, CHIP_CORE_ROUND, 0.0, true));
             } else {
-                push_controls(&mut raw, pausable.then_some(m.pause), m);
+                push_controls(&mut raw, *pausable);
             }
         }
         Pres::Paused => {
-            let lead_w = CHIP_H + m.paused + PAUSED_GAP + m.clock_width(clock) + LEAD_TRAIL;
+            let lead_w = CHIP_H + m.clock_width(clock) + LEAD_TRAIL;
             raw.push((ElemId::Lead, lead_w, CHIP_CORE_ROUND, 0.0, true));
-            raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
-            push_controls(&mut raw, Some(m.resume), m);
+            push_controls(&mut raw, true);
         }
         Pres::Dictating { latched } => {
             let lead_w = listening_lead_w(m, clock);
@@ -825,8 +821,8 @@ pub fn layout_of(
         }
     }
 
-    let inner_w: f32 =
-        raw.iter().map(|(_, w, ..)| *w).sum::<f32>() + raw.len().saturating_sub(1) as f32 * CHIP_GAP;
+    let gaps: Vec<f32> = raw.windows(2).map(|pair| gap_between(pair[0].0, pair[1].0)).collect();
+    let inner_w: f32 = raw.iter().map(|(_, w, ..)| *w).sum::<f32>() + gaps.iter().sum::<f32>();
     let outer_w = inner_w + 2.0 * ISLAND_INSET;
     let lay = Layout::centered(outer_w, ISLAND_H);
     let last = raw.len().saturating_sub(1);
@@ -844,7 +840,7 @@ pub fn layout_of(
                 active,
                 enabled,
             };
-            x += w + CHIP_GAP;
+            x += w + gaps.get(rank).copied().unwrap_or(0.0);
             item
         })
         .collect();
@@ -927,6 +923,9 @@ pub struct FrameState {
     pub ghost: Option<Silhouette>,
     pub is_completed: bool,
     pub is_paused: bool,
+    /// The recording controls capsule holds Pause between Cancel and Finish, so their inner
+    /// ends stay inner while Pause fades in and while all three fade out after Finish or Cancel.
+    pub pausable_controls: bool,
     /// A dictation notice, whose label leads with a check.
     pub is_notice: bool,
     /// The always-on dictation bar, drawn see-through with a light rim, as Wispr Flow's is.
@@ -1737,6 +1736,10 @@ impl PillModel {
             ghost,
             is_completed: matches!(self.geo_pres, Pres::Completed { .. }),
             is_paused: matches!(self.geo_pres, Pres::Paused),
+            pausable_controls: matches!(
+                self.geo_pres,
+                Pres::Recording { pausable: true, .. } | Pres::Paused
+            ) || elems.iter().any(|e| e.id == ElemId::Pause),
             is_notice: matches!(self.geo_pres, Pres::Message { .. }),
             is_idle: matches!(self.geo_pres, Pres::DictationIdle),
             content_blur: max_blur,
@@ -2330,7 +2333,7 @@ mod tests {
     }
 
     #[test]
-    fn recording_controls_are_pause_cancel_and_finish() {
+    fn recording_controls_are_cancel_pause_and_finish() {
         let pres = Pres::Recording {
             chips: false,
             has_iphone: false,
@@ -2342,48 +2345,10 @@ mod tests {
         let ids: Vec<ElemId> = items.iter().map(|i| i.id).collect();
         assert_eq!(
             ids,
-            [
-                ElemId::Lead,
-                ElemId::DividerLead,
-                ElemId::Pause,
-                ElemId::Cancel,
-                ElemId::Finish
-            ]
+            [ElemId::Lead, ElemId::Cancel, ElemId::Pause, ElemId::Finish]
         );
         let last = items.last().unwrap().rect;
         assert!((layout.r - (last[0] + last[2]) - ISLAND_INSET).abs() < 0.5);
-    }
-
-    #[test]
-    fn a_paused_recording_keeps_its_controls_and_widens_its_lead_for_the_label() {
-        let m = Metrics::default();
-        let recording = Pres::Recording {
-            chips: false,
-            has_iphone: false,
-            pausable: true,
-            mic: false,
-        };
-        let (_, rec) = layout_of(&recording, "0:42", LabelWidths::default(), &m);
-        let (_, paused) = layout_of(&Pres::Paused, "0:42", LabelWidths::default(), &m);
-        let ids = |items: &[LayoutItem]| items.iter().map(|i| i.id).collect::<Vec<_>>();
-        assert_eq!(ids(&rec), ids(&paused), "Pause turns into Resume in place");
-        let phone = Pres::Recording {
-            chips: false,
-            has_iphone: true,
-            pausable: false,
-            mic: false,
-        };
-        let (_, phone) = layout_of(&phone, "0:42", LabelWidths::default(), &m);
-        assert!(
-            !ids(&phone).contains(&ElemId::Pause),
-            "an iPhone capture can't pause"
-        );
-        assert!((paused[0].rect[2] - rec[0].rect[2] - (m.paused + PAUSED_GAP)).abs() < 0.01);
-        assert!(
-            paused[2].rect[2] > rec[2].rect[2],
-            "Resume is wider than Pause"
-        );
-        assert!(!Pres::Paused.same_layout(&recording));
     }
 
     #[test]
@@ -2436,4 +2401,61 @@ mod tests {
         assert!(lead_w(true) >= line_end, "the line fits after the clock");
         assert!(lead_w(false) < line_end, "a lead without the Mac mic keeps its own width");
     }
+    #[test]
+    fn the_controls_capsule_keeps_its_three_buttons_while_finish_fades_them() {
+        let mut m = PillModel::new(Metrics::default());
+        m.set_pres(Pres::Recording {
+            chips: false,
+            has_iphone: false,
+            pausable: true,
+            mic: false,
+        });
+        for _ in 0..120 {
+            m.advance(1.0 / 120.0);
+        }
+        m.set_pres(Pres::Processing);
+        // Past the collapse wait, so the geometry is already `Processing`'s.
+        for _ in 0..8 {
+            m.advance(1.0 / 120.0);
+        }
+        let f = m.frame();
+        assert!(f.elems.iter().any(|e| e.id == ElemId::Pause), "Pause is still fading out");
+        assert!(f.pausable_controls, "Cancel and Finish keep their inner ends");
+    }
+
+    #[test]
+    fn a_paused_recording_keeps_its_capsule_and_its_clock() {
+        let m = Metrics::default();
+        let recording = Pres::Recording {
+            chips: false,
+            has_iphone: false,
+            pausable: true,
+            mic: false,
+        };
+        let labels = LabelWidths::default();
+        let (_, rec) = layout_of(&recording, "0:42", labels, &m);
+        let (_, paused) = layout_of(&Pres::Paused, "0:42", labels, &m);
+        let ids = |items: &[LayoutItem]| items.iter().map(|i| i.id).collect::<Vec<_>>();
+        assert_eq!(ids(&rec), ids(&paused), "Pause turns into Resume in place");
+        assert!(
+            (paused[0].rect[2] - rec[0].rect[2]).abs() < 0.01,
+            "the paused lead keeps the clock in place of a label"
+        );
+        for pair in rec[1..].windows(2) {
+            assert!(
+                (pair[0].rect[0] + pair[0].rect[2] - pair[1].rect[0]).abs() < 0.01,
+                "the capsule's buttons sit edge to edge"
+            );
+        }
+        let phone = Pres::Recording {
+            chips: false,
+            has_iphone: true,
+            pausable: false,
+            mic: false,
+        };
+        let (_, phone) = layout_of(&phone, "0:42", labels, &m);
+        assert_eq!(ids(&phone)[1..], [ElemId::Cancel, ElemId::Finish], "an iPhone capture can't pause");
+        assert!(!Pres::Paused.same_layout(&recording));
+    }
 }
+
