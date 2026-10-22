@@ -47,7 +47,7 @@ impl Notices {
     /// Puts where a dictation went ("Copied to the clipboard") ahead of what earlier edits
     /// taught: it is about the text the user is looking for now. It replaces any such notice
     /// still waiting, which a pill that never shows (`nativePill` off) would otherwise pile up,
-    /// and takes the place of the oldest learned notice past the cap. A notice it displaces shows
+    /// and past the cap drops the newest learned notice, as `push` does. A notice it displaces shows
     /// again in full afterwards.
     pub fn push_first(&mut self, text: impl Into<String>) {
         self.queue.retain(|n| n.undo.is_some());
@@ -201,6 +201,8 @@ mod tests {
         notices.push_first("Didn't catch that");
         assert_eq!(notices.queue.len(), MAX_WAITING);
         assert_eq!(notices.queue[0].text, "Didn't catch that");
+        assert_eq!(notices.queue[1].text, added_word("0"), "the oldest learned notice stays");
+        assert_eq!(notices.queue.back().unwrap().text, added_word("4"), "the newest past the cap goes");
     }
 
     #[test]
