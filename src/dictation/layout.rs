@@ -72,12 +72,14 @@ pub fn remember(mut examples: Vec<Example>, new: Example) -> Vec<Example> {
 }
 
 /// `examples` without `learned`, and with `replaced`, the example of the same dictation it took
-/// the place of, back.
+/// the place of, back. Once `learned` is gone (a later layout of the same dictation, or Forget),
+/// nothing changes: bringing `replaced` back then would undo something else.
 pub fn unlearn(mut examples: Vec<Example>, learned: &Example, replaced: Option<Example>) -> Vec<Example> {
+    let before = examples.len();
     examples.retain(|e| e != learned);
     match replaced {
-        Some(replaced) => remember(examples, replaced),
-        None => examples,
+        Some(replaced) if examples.len() < before => remember(examples, replaced),
+        _ => examples,
     }
 }
 
@@ -220,8 +222,12 @@ mod tests {
         let other = numbered(1, 3);
         let learned = remember(vec![other.clone(), old.clone()], new.clone());
         assert_eq!(learned, [other.clone(), new.clone()]);
-        assert_eq!(unlearn(learned.clone(), &new, Some(old.clone())), [other.clone(), old]);
-        assert_eq!(unlearn(learned, &new, None), [other]);
+        assert_eq!(unlearn(learned.clone(), &new, Some(old.clone())), [other.clone(), old.clone()]);
+        assert_eq!(unlearn(learned.clone(), &new, None), [other.clone()]);
+        let newer = Example { laid_out: "1. One.\n2. Two.".into(), ..new.clone() };
+        let relearned = remember(learned, newer.clone());
+        assert_eq!(unlearn(relearned.clone(), &new, Some(old.clone())), relearned, "a later layout took its place");
+        assert!(unlearn(Vec::new(), &new, Some(old)).is_empty(), "forgotten");
     }
 
     #[test]
