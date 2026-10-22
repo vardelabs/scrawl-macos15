@@ -680,6 +680,8 @@ pub struct DictationView {
     pub formatting_available: bool,
     /// Words learned from edits to pasted text.
     pub learn: bool,
+    /// Layouts learned from edits to laid-out text (`dictation::layout`), shown to the formatter.
+    pub learned_layouts: usize,
     pub remove_fillers: bool,
     pub words: Vec<String>,
     /// The `words` learned from edits, marked in the list.
@@ -968,6 +970,7 @@ fn dictation_view(
         formatting: config.dictation_formatting.unwrap_or(true),
         formatting_available: crate::handoff::format_command_in(config).is_some(),
         learn: config.dictation_learn.unwrap_or(true),
+        learned_layouts: crate::dictation::layout::load_from(&crate::dictation::layout::path_beside(config_path)).len(),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
         learned: dictionary.learned,
@@ -1111,6 +1114,8 @@ pub enum Action {
     },
     /// "Edit as Text…": the dictionary file in a text editor.
     EditDictionary,
+    /// Forget the layouts learned from edits.
+    ForgetLayouts,
     Close,
 }
 
@@ -1264,6 +1269,14 @@ impl Panel {
             }
             Action::EditDictionary => {
                 Effect::EditDictionary(crate::dictionary::path_beside(&host.config_path()))
+            }
+            Action::ForgetLayouts => {
+                let layouts = crate::dictation::layout::path_beside(&host.config_path());
+                let _editing = crate::dictation::layout::edit_lock();
+                if let Err(error) = crate::dictation::layout::forget(&layouts) {
+                    crate::capture::scrawl_log(format!("Dictation: {error:#}"));
+                }
+                Effect::None
             }
             Action::Close => {
                 self.stop_recording(host);
@@ -2046,6 +2059,21 @@ mod tests {
             act(&mut panel, &mut host, r#"{"action":"edit-dictionary"}"#),
             Effect::EditDictionary(dir.0.join("dictionary.json"))
         );
+    }
+
+    #[test]
+    fn the_dictation_pane_counts_and_forgets_learned_layouts() {
+        use crate::dictation::layout::{self, Example};
+        let dir = TempDir::new("layouts");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        assert_eq!(panel.view(&host).dictation.learned_layouts, 0);
+        let example = Example { dictated: "One. Two.".into(), laid_out: "One.\n\nTwo.".into() };
+        layout::save_to(&dir.0.join("format-examples.json"), vec![example]).unwrap();
+        assert_eq!(panel.view(&host).dictation.learned_layouts, 1);
+        panel.on(serde_json::from_str(r#"{"action":"forget-layouts"}"#).unwrap(), &mut host);
+        assert_eq!(panel.view(&host).dictation.learned_layouts, 0);
+        assert!(!dir.0.join("format-examples.json").exists());
     }
 
     #[test]

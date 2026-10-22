@@ -205,9 +205,15 @@ pub struct Dictation {
     notice: Option<Notice>,
     /// When the last notice went, for `CLICK_GRACE`.
     notice_gone: Option<Instant>,
-    /// Respellings from the edit watcher, checked and saved on this thread (`take_learned`).
-    learned_tx: flume::Sender<Vec<super::learn::Respelling>>,
-    learned_rx: flume::Receiver<Vec<super::learn::Respelling>>,
+    /// What the edit watcher learned, checked and saved on this thread (`take_learned`).
+    learned_tx: flume::Sender<Learned>,
+    learned_rx: flume::Receiver<Learned>,
+}
+
+/// What one paste's edits taught: respelled words, and a new layout of the formatter's text.
+struct Learned {
+    words: Vec<super::learn::Respelling>,
+    layout: Option<super::layout::Example>,
 }
 
 /// What the shared pill reports to dictation while dictation is what it shows.
@@ -412,11 +418,14 @@ impl Dictation {
     }
 
     /// Keeps the respellings the spell checker doesn't know, adds them to the dictionary, and
-    /// says so in the pill.
+    /// says so in the pill; saves learned layouts while the formatter is on.
     fn take_learned(&mut self) {
-        let words: Vec<String> = self
-            .learned_rx
-            .try_iter()
+        let (words, layouts): (Vec<_>, Vec<_>) = self.learned_rx.try_iter().map(|l| (l.words, l.layout)).unzip();
+        if self.settings.learn && self.settings.format.is_some() {
+            layouts.into_iter().flatten().for_each(save_layout);
+        }
+        let words: Vec<String> = words
+            .into_iter()
             .flatten()
             .filter(|(was, now)| self.settings.learn && spell_checker_unknown(now) && !spell_checker_typo(was, now))
             .map(|(_, now)| now)
@@ -551,7 +560,7 @@ fn transcribe_and_paste(
     screen: Option<(flume::Receiver<Vec<String>>, Instant)>,
     backticks: bool,
     formatter: Option<super::formatter::Formatter>,
-    learn: Option<flume::Sender<Vec<super::learn::Respelling>>>,
+    learn: Option<flume::Sender<Learned>>,
 ) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
@@ -574,6 +583,8 @@ fn transcribe_and_paste(
     };
     // Estimated timings spread words across the speech, so their gaps are not pauses.
     let timed: &[crate::model::WordTiming] = if transcript.estimated { &[] } else { &transcript.words };
+    // What the formatter is asked to lay out, so an edit of its layout can be learned from.
+    let dictated = (formatter.is_some() && super::format::worth_formatting(&text)).then(|| text.clone());
     let text = lay_out(text, timed, formatter);
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
@@ -588,7 +599,7 @@ fn transcribe_and_paste(
     }
     let outcome = deliver(&text, restore_clipboard);
     if let (Outcome::Pasted, Some(learned)) = (&outcome, learn) {
-        watch_edits(text, learned);
+        watch_edits(text, dictated, learned);
     }
     outcome
 }
@@ -603,10 +614,23 @@ fn learned_notice(words: &[String]) -> Option<String> {
 /// A field longer than this (a whole document) is not watched.
 const MAX_FIELD_CHARS: usize = 200_000;
 
+/// Saves a layout learned from an edit among the newest (`layout::remember`).
+fn save_layout(example: super::layout::Example) {
+    use super::layout;
+    let path = layout::default_path();
+    let _editing = layout::edit_lock();
+    match layout::save_to(&path, layout::remember(layout::load_from(&path), example)) {
+        Ok(()) => scrawl_log("Dictation: learned a layout from an edit"),
+        Err(error) => scrawl_log(format!("Dictation: could not save a learned layout: {error:#}")),
+    }
+}
+
 /// Watches the field the text was pasted into and sends the words the user respelled (`learn`)
 /// once focus leaves the field, after `LEARN_FOR`, or when the field empties (a chat message
-/// sent); the UI thread checks them against the spell checker (`take_learned`).
-fn watch_edits(pasted: String, candidates: flume::Sender<Vec<super::learn::Respelling>>) {
+/// sent); the UI thread checks them against the spell checker (`take_learned`). With `dictated`,
+/// the formatter's input, a change of layout alone is sent too (`layout::example`), unless the
+/// span vanished: a field the user cleared reads the same as a sent message.
+fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Sender<Learned>) {
     let spawned = std::thread::Builder::new().name("scrawl-dictation-learn".into()).spawn(move || {
         std::thread::sleep(PASTE_SETTLE);
         let read = |field: &crate::ax::FocusedText| field.value(MAX_FIELD_CHARS);
@@ -625,10 +649,14 @@ fn watch_edits(pasted: String, candidates: flume::Sender<Vec<super::learn::Respe
         // it can't agree with a read a moment before. A window closed at the send reads as gone.
         std::thread::sleep(LEARN_EVERY);
         settle.read(read(&field).as_deref().and_then(|value| super::learn::edited_span(&paste, value)));
+        let vanished = settle.vanished();
         let Some(edited) = settle.settled() else { return };
         let words = super::learn::learned(&paste.text, &edited);
-        if !words.is_empty() {
-            let _ = candidates.send(words);
+        let layout = dictated
+            .filter(|_| !vanished)
+            .and_then(|dictated| super::layout::example(&dictated, &paste.text, &edited, &words));
+        if !words.is_empty() || layout.is_some() {
+            let _ = candidates.send(Learned { words, layout });
         }
     });
     if let Err(error) = spawned {

@@ -133,6 +133,7 @@ struct SettingsDictation: Decodable, Equatable {
   var formatting = true
   var formattingAvailable = false
   var learn = true
+  var learnedLayouts = 0
   var removeFillers = true
   var words: [String] = []
   var learned: [String] = []
@@ -1000,7 +1001,7 @@ struct SettingsView: View {
   private var dictation: some View {
     let d = state.dictation
     let usage = d.available
-      ? "Hold \(d.shortcut) and talk; let go and the text is pasted where you type. Double tap \(d.shortcut), or click the pill, for hands-free, then press it again or ✓ to paste. Esc cancels."
+      ? "Hold \(d.shortcut) while you talk. Let go to paste where you're typing.\nFor hands-free, double-tap \(d.shortcut) or click the pill. Press \(d.shortcut) again or click ✓ to paste.\nPress Esc to cancel."
       : "Dictation works on macOS."
     return VStack(spacing: 0) {
       SettingsGroup {
@@ -1037,11 +1038,15 @@ struct SettingsView: View {
           SettingsSwitch(on: d.formatting && d.formattingAvailable, enabled: d.formattingAvailable) { model.set("dictationFormatting", $0) }
         }
         SettingsSeparator()
-        SettingsRow(title: "Learn words from my edits") {
+        SettingsRow(title: "Learn from my edits") {
           SettingsSwitch(on: d.learn) { model.set("dictationLearn", $0) }
         }
+        SettingsSeparator()
+        SettingsRow(title: d.learnedLayouts == 1 ? "1 layout learned" : "\(d.learnedLayouts) layouts learned") {
+          SettingsButton(title: "Forget", enabled: d.learnedLayouts > 0) { model.act("forget-layouts") }
+        }
       }
-      SettingsCaption(text: "Names you fix after a paste join Words ✨. Paragraphs and lists need formatCommand set up. Microphone and transcription settings are in Recording.")
+      SettingsCaption(text: learningCaption(formatterReady: d.formattingAvailable))
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
@@ -1066,6 +1071,15 @@ struct SettingsView: View {
       }
       SettingsCaption(text: "When Scrawl hears the words on the left, it writes the ones on the right.")
     }
+  }
+
+  /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
+  /// already says what it does.
+  private func learningCaption(formatterReady: Bool) -> String {
+    let formatter = formatterReady
+      ? "Paragraphs and lists you rearrange teach the formatter your layout."
+      : "Paragraphs and lists are off because the formatter model isn't installed. Run the installer again to set it up."
+    return "Words marked ✨ were learned from your corrections to pasted text. \(formatter)\nThe microphone and transcription model are set in Recording."
   }
 
   /// The popup's mode from `lowerPlayback` and `playbackLevel`: a level of 0 mutes.
@@ -1674,6 +1688,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     dictating.dictation.on = true
     dictating.dictation.words = ["Ferris", "Varde Labs", "Parakeet", "Klose"]
     dictating.dictation.learned = ["Klose"]
+    dictating.dictation.learnedLayouts = 3
     dictating.dictation.replacements = [
       SettingsReplacement(heard: "feris", write: "Ferris"),
       SettingsReplacement(heard: "var de labs", write: "Varde Labs"),

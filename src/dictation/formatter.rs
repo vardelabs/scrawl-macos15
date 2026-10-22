@@ -22,12 +22,15 @@ struct Reply {
 }
 
 impl Formatter {
-    /// Starts `command` (an argv whose first entry is an absolute path) with `SCRAWL_PRESTART=1`.
+    /// Starts `command` (an argv whose first entry is an absolute path) with `SCRAWL_PRESTART=1`
+    /// and `SCRAWL_FORMAT_EXAMPLES`, the layouts learned from the user's edits (`layout`), which
+    /// it reads while the user talks.
     pub fn prestart(command: &[String]) -> anyhow::Result<Self> {
         let (program, args) = command.split_first().ok_or_else(|| anyhow::anyhow!("formatCommand is empty"))?;
         let child = Command::new(program)
             .args(args)
             .env("SCRAWL_PRESTART", "1")
+            .env("SCRAWL_FORMAT_EXAMPLES", super::layout::default_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
