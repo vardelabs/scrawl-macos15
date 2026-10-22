@@ -33,8 +33,15 @@ struct File {
 
 /// The last dictation, kept in memory so the pill can copy it with history off too.
 static LAST: Mutex<Option<String>> = Mutex::new(None);
-/// Saving and clearing each hold this, so a Clear never races a save back into place.
+/// Saving and clearing each hold this, so the two never interleave.
 static EDIT: Mutex<()> = Mutex::new(());
+/// Bumped by each Clear. A dictation finished before a Clear and recorded after it carries an
+/// older generation and is never kept, since Clear means forget what was said.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
 
 fn edit_lock() -> std::sync::MutexGuard<'static, ()> {
     EDIT.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -94,9 +101,13 @@ fn save_to(path: &Path, entries: Vec<Entry>) -> Result<()> {
     })
 }
 
-/// Keeps a pasted dictation: as the last, and on disk at `path` when `keep` (`dictationHistory`).
-pub fn record(path: &Path, text: &str, at_ms: u64, keep: bool) -> Result<()> {
+/// Keeps a pasted dictation: as the last, and on disk at `path` when `keep` (`dictationHistory`);
+/// not at all once a Clear came since `generation`, taken when the dictation ended.
+pub fn record(path: &Path, text: &str, at_ms: u64, keep: bool, generation: u64) -> Result<()> {
     let _editing = edit_lock();
+    if self::generation() != generation {
+        return Ok(());
+    }
     *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(text.to_owned());
     if !keep {
         return Ok(());
@@ -113,6 +124,7 @@ pub fn last(path: &Path) -> Option<String> {
 /// Forgets the last and deletes the file at `path`; none saved is no error.
 pub fn clear(path: &Path) -> Result<()> {
     let _editing = edit_lock();
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -160,11 +172,12 @@ mod tests {
         assert_eq!(path.file_name().unwrap(), "dictation-history.json");
         clear(&path).unwrap();
         assert_eq!(last(&path), None);
-        record(&path, "Only in memory.", 1, false).unwrap();
+        record(&path, "Only in memory.", 1, false, generation()).unwrap();
         assert!(!path.exists(), "history off writes nothing");
         assert_eq!(last(&path).as_deref(), Some("Only in memory."));
-        record(&path, "First.", 2, true).unwrap();
-        record(&path, "Second.", 3, true).unwrap();
+        record(&path, "First.", 2, true, generation()).unwrap();
+        let before_clear = generation();
+        record(&path, "Second.", 3, true, before_clear).unwrap();
         assert_eq!(load_from(&path).iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["First.", "Second."]);
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o600);
@@ -172,6 +185,9 @@ mod tests {
         assert_eq!(last(&path).as_deref(), Some("Second."), "after a restart, the newest on disk");
         clear(&path).unwrap();
         assert!(!path.exists());
+        assert_eq!(last(&path), None);
+        record(&path, "Finished before the Clear.", 4, true, before_clear).unwrap();
+        assert!(!path.exists(), "a dictation in flight at Clear is not kept");
         assert_eq!(last(&path), None);
         std::fs::write(&path, "not json").unwrap();
         assert!(load_from(&path).is_empty());

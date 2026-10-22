@@ -585,7 +585,8 @@ impl Dictation {
             return;
         };
         let restore = self.settings.restore_clipboard;
-        let keep = self.settings.history;
+        // The generation as the dictation ends, so a Clear while it transcribes keeps it out.
+        let keep = (self.settings.history, super::history::generation());
         let formatter = self.formatter.take();
         let learn = self.settings.learn.then(|| self.learned_tx.clone());
         let backticks = self.settings.code && !prose_app();
@@ -638,7 +639,7 @@ fn transcribe_and_paste(
     backticks: bool,
     formatter: Option<super::formatter::Formatter>,
     learn: Option<flume::Sender<Learned>>,
-    keep: bool,
+    keep: (bool, u64),
 ) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
@@ -678,7 +679,7 @@ fn transcribe_and_paste(
     let outcome = deliver(&text, restore_clipboard, laid_out);
     if matches!(outcome, Outcome::Pasted(_) | Outcome::Copied) {
         let at = crate::now_epoch_ms();
-        if let Err(error) = super::history::record(&super::history::default_path(), &text, at, keep) {
+        if let Err(error) = super::history::record(&super::history::default_path(), &text, at, keep.0, keep.1) {
             scrawl_log(format!("Dictation: could not keep the dictation: {error:#}"));
         }
     }
