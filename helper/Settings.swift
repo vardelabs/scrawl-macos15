@@ -135,7 +135,7 @@ struct SettingsDictation: Decodable, Equatable {
   var learn = true
   var notices = true
   var history = true
-  var recent = 0
+  var canClear = false
   var learnedLayouts = 0
   var removeFillers = true
   var words: [String] = []
@@ -1051,7 +1051,7 @@ struct SettingsView: View {
         SettingsSeparator()
         SettingsRow(title: "Keep recent dictations") {
           HStack(spacing: 8) {
-            SettingsButton(title: "Clear", enabled: d.recent > 0) { model.act("clear-dictations") }
+            SettingsButton(title: "Clear", enabled: d.canClear) { model.act("clear-dictations") }
             SettingsSwitch(on: d.history) { model.set("dictationHistory", $0) }
           }
         }
