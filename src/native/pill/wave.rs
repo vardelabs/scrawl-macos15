@@ -18,6 +18,9 @@ const NOISE_MARGIN_DB: f32 = 4.0;
 /// `FLOOR_DB`. It carries across dictations, since the room does, so the 250 ms the idle bar
 /// shows a hold's line is not spent relearning a fan.
 const QUIET_NOISE_DB: f32 = FLOOR_DB - NOISE_MARGIN_DB;
+/// No room is this quiet: it is a recorder before its device delivers audio, or a muted mic, and
+/// it would wipe the room's noise estimate.
+const DIGITAL_SILENCE_DB: f32 = -100.0;
 /// A syllable lifts the line at once; it settles without flicker.
 const ATTACK_S: f32 = 0.04;
 const RELEASE_S: f32 = 0.14;
@@ -124,7 +127,9 @@ impl Wave {
     pub fn advance(&mut self, dt: f32, reduced: bool) {
         self.target = match self.db {
             Some(db) => {
-                self.noise_db = db.min(self.noise_db + NOISE_RISE_DB_PER_S * dt);
+                if db > DIGITAL_SILENCE_DB {
+                    self.noise_db = db.min(self.noise_db + NOISE_RISE_DB_PER_S * dt);
+                }
                 height_of(db, self.noise_db)
             }
             None => 0.0,
@@ -255,6 +260,9 @@ mod tests {
         run(&mut wave, 3.0);
         wave.set_rms(None);
         run(&mut wave, 5.0);
+        // A new recorder reads silent until its device delivers audio.
+        wave.set_rms(Some(0.0));
+        run(&mut wave, 0.2);
         wave.set_rms(Some(FAN));
         run(&mut wave, 0.25);
         assert!(wave.samples()[0] < 0.01, "{}", wave.samples()[0]);

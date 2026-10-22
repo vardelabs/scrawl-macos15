@@ -2385,7 +2385,7 @@ mod tests {
         };
         let line_end = CLOCK_X + m.clock_000 + LISTENING_GAP + LISTENING_W;
         assert!(lead_w(true) >= line_end, "the line fits after the clock");
-        assert!(lead_w(false) < line_end, "an iPhone capture's lead keeps its own width");
+        assert!(lead_w(false) < line_end, "a lead without the Mac mic keeps its own width");
     }
 
     #[test]
