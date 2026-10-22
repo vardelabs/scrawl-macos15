@@ -450,12 +450,11 @@ impl Dictation {
     fn take_learned(&mut self) {
         let learned: Vec<Learned> = self.learned_rx.try_iter().collect();
         let saving = self.settings.learn && self.settings.format.is_some();
-        let generation = super::layout::generation();
         let mut words = Vec::new();
-        for Learned { words: respelled, layout, generation: at } in learned {
+        for Learned { words: respelled, layout, generation } in learned {
             words.push(respelled);
-            if let Some(example) = layout.filter(|_| saving && at == generation)
-                && let Some(replaced) = save_layout(&example)
+            if let Some(example) = layout.filter(|_| saving)
+                && let Some(replaced) = save_layout(&example, generation)
                 && self.settings.notices
             {
                 let undo = super::notices::Undo::Layout(example, replaced);
@@ -649,12 +648,16 @@ fn transcribe_and_paste(
 /// A field longer than this (a whole document) is not watched.
 const MAX_FIELD_CHARS: usize = 200_000;
 
-/// Saves a layout learned from an edit among the newest (`layout::remember`).
-/// `Some` once saved, holding the example of the same dictation it replaced, for Undo.
-fn save_layout(example: &super::layout::Example) -> Option<Option<super::layout::Example>> {
+/// Saves a layout learned from a paste in `generation`, unless a Forget came since; checked under
+/// the lock Forget holds, so none can come between the check and the save. `Some` once saved,
+/// holding the example of the same dictation it replaced, for Undo.
+fn save_layout(example: &super::layout::Example, generation: u64) -> Option<Option<super::layout::Example>> {
     use super::layout;
     let path = layout::default_path();
     let _editing = layout::edit_lock();
+    if layout::generation() != generation {
+        return None;
+    }
     let examples = layout::load_from(&path);
     let replaced = examples.iter().find(|e| e.dictated == example.dictated).cloned();
     match layout::save_to(&path, layout::remember(examples, example.clone())) {
@@ -672,8 +675,8 @@ fn save_layout(example: &super::layout::Example) -> Option<Option<super::layout:
 /// Watches the field the text was pasted into and sends the words the user respelled (`learn`)
 /// once focus leaves the field, after `LEARN_FOR`, or when the field empties (a chat message
 /// sent); the UI thread checks them against the spell checker (`take_learned`). With `dictated`,
-/// the formatter's input, a change of layout alone is sent too (`layout::example`), unless the
-/// span vanished: a field the user cleared reads the same as a sent message.
+/// the formatter's input, a change of layout alone is sent too (`layout::example`), a sent
+/// message's included, under the same settling as words.
 fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Sender<Learned>) {
     let generation = super::layout::generation();
     let spawned = std::thread::Builder::new().name("scrawl-dictation-learn".into()).spawn(move || {
@@ -694,12 +697,9 @@ fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Send
         // it can't agree with a read a moment before. A window closed at the send reads as gone.
         std::thread::sleep(LEARN_EVERY);
         settle.read(read(&field).as_deref().and_then(|value| super::learn::edited_span(&paste, value)));
-        let vanished = settle.vanished();
         let Some(edited) = settle.settled() else { return };
         let words = super::learn::learned(&paste.text, &edited);
-        let layout = dictated
-            .filter(|_| !vanished)
-            .and_then(|dictated| super::layout::example(&dictated, &paste.text, &edited, &words));
+        let layout = dictated.and_then(|dictated| super::layout::example(&dictated, &paste.text, &edited, &words));
         if !words.is_empty() || layout.is_some() {
             let _ = candidates.send(Learned { words, layout, generation });
         }
