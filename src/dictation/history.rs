@@ -95,10 +95,15 @@ fn save_to(path: &Path, entries: Vec<Entry>) -> Result<()> {
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&temp)?, &json)?;
-    std::fs::rename(&temp, path).with_context(|| format!("Could not save {}", path.display())).inspect_err(|_| {
+    let written = options.open(&temp).and_then(|mut file| std::io::Write::write_all(&mut file, &json));
+    let saved = written
+        .map_err(anyhow::Error::from)
+        .and_then(|()| std::fs::rename(&temp, path).with_context(|| format!("Could not save {}", path.display())));
+    // A half-written temp file holds dictated text too.
+    if saved.is_err() {
         let _ = std::fs::remove_file(&temp);
-    })
+    }
+    saved
 }
 
 /// Keeps a pasted dictation: as the last, and on disk at `path` when `keep` (`dictationHistory`);
