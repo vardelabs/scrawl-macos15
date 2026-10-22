@@ -753,8 +753,9 @@ pub fn layout_of(
                 CHIP_H + m.clock_width(clock) + LEAD_TRAIL
             };
             raw.push((ElemId::Lead, lead_w, CHIP_CORE_ROUND, 0.0, true));
-            raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
+            // The mode chips sit behind a rule; the controls capsule stands apart on its own.
             if *chips {
+                raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
                 for &seg in SelectionMode::available(*has_iphone) {
                     raw.push((
                         ElemId::from_mode(seg),
@@ -773,7 +774,6 @@ pub fn layout_of(
         Pres::Paused => {
             let lead_w = CHIP_H + m.clock_width(clock) + LEAD_TRAIL;
             raw.push((ElemId::Lead, lead_w, CHIP_CORE_ROUND, 0.0, true));
-            raw.push((ElemId::DividerLead, DIVIDER_W, 0.0, 0.0, false));
             push_controls(&mut raw, true);
         }
         Pres::Dictating { latched } => {
@@ -2347,13 +2347,7 @@ mod tests {
         let ids: Vec<ElemId> = items.iter().map(|i| i.id).collect();
         assert_eq!(
             ids,
-            [
-                ElemId::Lead,
-                ElemId::DividerLead,
-                ElemId::Cancel,
-                ElemId::Pause,
-                ElemId::Finish
-            ]
+            [ElemId::Lead, ElemId::Cancel, ElemId::Pause, ElemId::Finish]
         );
         let last = items.last().unwrap().rect;
         assert!((layout.r - (last[0] + last[2]) - ISLAND_INSET).abs() < 0.5);
@@ -2427,7 +2421,7 @@ mod tests {
             (paused[0].rect[2] - rec[0].rect[2]).abs() < 0.01,
             "the paused lead keeps the clock in place of a label"
         );
-        for pair in rec[2..].windows(2) {
+        for pair in rec[1..].windows(2) {
             assert!(
                 (pair[0].rect[0] + pair[0].rect[2] - pair[1].rect[0]).abs() < 0.01,
                 "the capsule's buttons sit edge to edge"
@@ -2440,7 +2434,7 @@ mod tests {
             mic: false,
         };
         let (_, phone) = layout_of(&phone, "0:42", labels, &m);
-        assert_eq!(ids(&phone)[2..], [ElemId::Cancel, ElemId::Finish], "an iPhone capture can't pause");
+        assert_eq!(ids(&phone)[1..], [ElemId::Cancel, ElemId::Finish], "an iPhone capture can't pause");
         assert!(!Pres::Paused.same_layout(&recording));
     }
 }
