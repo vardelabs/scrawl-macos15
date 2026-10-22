@@ -335,10 +335,10 @@ impl Dictation {
                     scrawl_log(format!("Dictation: could not undo a learned word: {error:#}"));
                 }
             }
-            Undo::Layout(example) => {
+            Undo::Layout(learned, replaced) => {
                 let path = super::layout::default_path();
                 let _editing = super::layout::edit_lock();
-                let examples = super::layout::load_from(&path).into_iter().filter(|e| *e != example).collect();
+                let examples = super::layout::unlearn(super::layout::load_from(&path), &learned, replaced);
                 if let Err(error) = super::layout::save_to(&path, examples) {
                     scrawl_log(format!("Dictation: could not undo a learned layout: {error:#}"));
                 }
@@ -455,10 +455,11 @@ impl Dictation {
         for Learned { words: respelled, layout, generation: at } in learned {
             words.push(respelled);
             if let Some(example) = layout.filter(|_| saving && at == generation)
-                && save_layout(&example)
+                && let Some(replaced) = save_layout(&example)
                 && self.settings.notices
             {
-                self.notices.push(super::notices::LEARNED_LAYOUT, Some(super::notices::Undo::Layout(example)));
+                let undo = super::notices::Undo::Layout(example, replaced);
+                self.notices.push(super::notices::LEARNED_LAYOUT, Some(undo));
             }
         }
         let words: Vec<String> = words
@@ -649,18 +650,21 @@ fn transcribe_and_paste(
 const MAX_FIELD_CHARS: usize = 200_000;
 
 /// Saves a layout learned from an edit among the newest (`layout::remember`).
-fn save_layout(example: &super::layout::Example) -> bool {
+/// `Some` once saved, holding the example of the same dictation it replaced, for Undo.
+fn save_layout(example: &super::layout::Example) -> Option<Option<super::layout::Example>> {
     use super::layout;
     let path = layout::default_path();
     let _editing = layout::edit_lock();
-    match layout::save_to(&path, layout::remember(layout::load_from(&path), example.clone())) {
+    let examples = layout::load_from(&path);
+    let replaced = examples.iter().find(|e| e.dictated == example.dictated).cloned();
+    match layout::save_to(&path, layout::remember(examples, example.clone())) {
         Ok(()) => {
             scrawl_log("Dictation: learned a layout from an edit");
-            true
+            Some(replaced)
         }
         Err(error) => {
             scrawl_log(format!("Dictation: could not save a learned layout: {error:#}"));
-            false
+            None
         }
     }
 }

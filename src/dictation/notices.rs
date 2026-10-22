@@ -18,7 +18,8 @@ const MAX_WAITING: usize = 6;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Undo {
     Word(String),
-    Layout(super::layout::Example),
+    /// The layout learned, and the example of the same dictation it replaced.
+    Layout(super::layout::Example, Option<super::layout::Example>),
 }
 
 #[derive(Debug)]

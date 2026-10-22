@@ -71,6 +71,16 @@ pub fn remember(mut examples: Vec<Example>, new: Example) -> Vec<Example> {
     examples
 }
 
+/// `examples` without `learned`, and with `replaced`, the example of the same dictation it took
+/// the place of, back.
+pub fn unlearn(mut examples: Vec<Example>, learned: &Example, replaced: Option<Example>) -> Vec<Example> {
+    examples.retain(|e| e != learned);
+    match replaced {
+        Some(replaced) => remember(examples, replaced),
+        None => examples,
+    }
+}
+
 pub fn default_path() -> PathBuf {
     path_beside(&crate::handoff::default_config_path())
 }
@@ -201,6 +211,17 @@ mod tests {
         let big = remember(examples, numbered(0, 2_950));
         assert!(big.len() < MAX_EXAMPLES && big.iter().map(|e| e.dictated.len() + e.laid_out.len()).sum::<usize>() <= MAX_TOTAL_CHARS);
         assert_eq!(remember(Vec::new(), numbered(1, 10_000)).len(), 1, "the newest stays, even alone over budget");
+    }
+
+    #[test]
+    fn undoing_a_layout_puts_back_the_one_it_replaced() {
+        let old = Example { dictated: "One. Two.".into(), laid_out: "One.\n\nTwo.".into() };
+        let new = Example { laid_out: "- One.\n- Two.".into(), ..old.clone() };
+        let other = numbered(1, 3);
+        let learned = remember(vec![other.clone(), old.clone()], new.clone());
+        assert_eq!(learned, [other.clone(), new.clone()]);
+        assert_eq!(unlearn(learned.clone(), &new, Some(old.clone())), [other.clone(), old]);
+        assert_eq!(unlearn(learned, &new, None), [other]);
     }
 
     #[test]
