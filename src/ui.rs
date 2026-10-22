@@ -2052,6 +2052,10 @@ impl ScrawlCoordinator {
                     self.active_recording.as_ref().map(|rec| &rec.source),
                     Some(CaptureSource::Screen { .. })
                 ) && crate::capture::PAUSE_SUPPORTED,
+                mic: matches!(
+                    self.active_recording.as_ref().map(|rec| &rec.source),
+                    Some(CaptureSource::Screen { audio: Some(_), .. } | CaptureSource::Lab)
+                ),
             },
             IslandPhase::Processing => Pres::Processing,
             IslandPhase::Completed { inbox_count, .. } => Pres::Completed {
@@ -2099,6 +2103,21 @@ impl ScrawlCoordinator {
         }
     }
 
+    /// The Mac mic's level while a screen capture records it, for the capsule's level line. An
+    /// iPhone capture's narration comes from the phone, so it has none.
+    fn capture_mic_rms(&self) -> Option<f32> {
+        let rec = self.active_recording.as_ref()?;
+        match &rec.source {
+            CaptureSource::Screen {
+                session,
+                audio: Some(audio),
+                ..
+            } if !session.is_paused() => Some(audio.rms()),
+            CaptureSource::Lab => Some(lab::pretend_mic_rms(rec.started.elapsed().as_secs_f32())),
+            _ => None,
+        }
+    }
+
     /// Record on the hovered bar: what a tap of the record shortcut does.
     fn record_from_pill(&mut self, cx: &mut Context<Self>) {
         self.dictation_shown = None;
@@ -2134,6 +2153,7 @@ impl ScrawlCoordinator {
             pill.sync(snapshot.clone());
             self.dictation_shown = Some(snapshot);
         }
+        pill.set_mic_rms(self.dictation.mic_rms());
     }
 
     pub(crate) fn sync_native_pill(&mut self) {
@@ -2353,6 +2373,9 @@ impl ScrawlCoordinator {
     /// The UI loop's tick: advances the springs unless a new capsule window awaits its second
     /// frame (`island_await_frame`).
     pub fn island_tick(&mut self, cx: &mut Context<Self>) {
+        if let Some(pill) = &self.native_pill {
+            pill.set_mic_rms(self.capture_mic_rms());
+        }
         if self.island_await_frame {
             // Ask for the frame that ends the wait.
             cx.notify();

@@ -93,6 +93,10 @@ impl Dictation {
     pub fn is_live(&self) -> bool {
         false
     }
+
+    pub fn mic_rms(&self) -> Option<f32> {
+        None
+    }
 }
 
 #[cfg(test)]
