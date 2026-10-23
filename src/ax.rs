@@ -248,11 +248,12 @@ impl PasteSpot {
         Some(Self { pid, window: element_attribute(app.0, "AXFocusedWindow") })
     }
 
+    /// The same app and the same window. A window Accessibility can't name never matches, since
+    /// focus could have moved between two of the app's windows without a key or click.
     pub fn same_as(&self, other: &Self) -> bool {
         self.pid == other.pid
             && match (&self.window, &other.window) {
                 (Some(a), Some(b)) => (unsafe { core_foundation::base::CFEqual(a.0, b.0) }) != 0,
-                (None, None) => true,
                 _ => false,
             }
     }
