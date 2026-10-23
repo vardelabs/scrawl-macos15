@@ -64,6 +64,8 @@ pub enum PillAction {
     RecordScreen,
     /// Undo on a notice of something dictation learned.
     Undo,
+    /// Copy on the hovered idle bar: the last dictation onto the clipboard again.
+    CopyLast,
 }
 
 /// Coordinator state snapshot synced to `NativePill`.

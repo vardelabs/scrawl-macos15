@@ -60,6 +60,10 @@ struct Settings {
     learn: bool,
     /// Say in the pill what dictation learned or laid out (`dictationNotices`).
     notices: bool,
+    /// Keep recent dictations on disk (`dictationHistory`).
+    history: bool,
+    /// A dictation to copy again: this run's, or one on disk.
+    has_last: bool,
 }
 
 impl Settings {
@@ -89,6 +93,8 @@ impl Settings {
             format: config.format,
             learn: config.learn,
             notices: config.notices,
+            history: config.history,
+            has_last: super::history::last(&super::history::default_path()).is_some(),
         }
     }
 
@@ -136,6 +142,8 @@ struct PillState<'a> {
     pill: bool,
     hovered: bool,
     chord: &'a str,
+    /// A dictation the hint's Copy can copy.
+    copy: bool,
 }
 
 /// What the pill shows, most pressing first.
@@ -162,6 +170,7 @@ fn presentation(state: &PillState) -> Pres {
     if state.hovered {
         return Pres::Hint {
             dictate: format!("Dictate {}", state.chord),
+            copy: state.copy,
         };
     }
     Pres::DictationIdle
@@ -284,6 +293,9 @@ impl Dictation {
         if settled && self.notices.showing() && clicks.iter().any(|c| matches!(c, PillAction::Undo)) {
             self.undo();
         }
+        if clicks.iter().any(|c| matches!(c, PillAction::CopyLast)) {
+            self.copy_last();
+        }
         if self.settings.enabled {
             self.listen(telemetry, capture_busy, clicks);
         } else if clicks.iter().any(|c| matches!(c, PillAction::MessageClicked)) {
@@ -301,6 +313,7 @@ impl Dictation {
             pill: self.settings.pill,
             hovered: pill.hovered,
             chord: &self.settings.label,
+            copy: self.settings.has_last,
         })
     }
 
@@ -318,6 +331,29 @@ impl Dictation {
     /// The listening clock (`M:SS`) for the pill.
     pub fn clock(&self) -> String {
         crate::model::format_clock(self.started.map_or(0, |at| at.elapsed().as_millis() as u64))
+    }
+
+    /// Copy on the hint: the last dictation onto the clipboard again, for one lost to a clipboard
+    /// something else overwrote.
+    pub fn copy_last(&mut self) {
+        if let Some(text) = super::history::last(&super::history::default_path()) {
+            self.copy(&text);
+        }
+    }
+
+    /// Recent Dictations in the menu bar: the dictation pasted at `at_ms` onto the clipboard.
+    pub fn copy_recent(&mut self, at_ms: u64) {
+        let entries = super::history::load_from(&super::history::default_path());
+        if let Some(entry) = entries.into_iter().find(|entry| entry.at_ms == at_ms) {
+            self.copy(&entry.text);
+        }
+    }
+
+    fn copy(&mut self, text: &str) {
+        match crate::handoff::copy_string_to_clipboard(text) {
+            Ok(()) => self.notices.push_first("Copied"),
+            Err(error) => scrawl_log(format!("Dictation: could not copy a dictation: {error:#}")),
+        }
     }
 
     /// Undo on the notice: takes back what it reports dictation learned.
@@ -549,6 +585,8 @@ impl Dictation {
             return;
         };
         let restore = self.settings.restore_clipboard;
+        // The generation as the dictation ends, so a Clear while it transcribes keeps it out.
+        let keep = (self.settings.history, super::history::generation());
         let formatter = self.formatter.take();
         let learn = self.settings.learn.then(|| self.learned_tx.clone());
         let backticks = self.settings.code && !prose_app();
@@ -571,7 +609,7 @@ impl Dictation {
             .spawn(move || {
                 let outcome = match recorder.stop() {
                     Ok(audio) if audio.duration_ms >= MIN_AUDIO_MS => {
-                        transcribe_and_paste(&audio, restore, screen, backticks, formatter, learn)
+                        transcribe_and_paste(&audio, restore, screen, backticks, formatter, learn, keep)
                     }
                     Ok(_) => Outcome::Quiet,
                     Err(error) => {
@@ -601,6 +639,7 @@ fn transcribe_and_paste(
     backticks: bool,
     formatter: Option<super::formatter::Formatter>,
     learn: Option<flume::Sender<Learned>>,
+    keep: (bool, u64),
 ) -> Outcome {
     let started = Instant::now();
     let wav = std::env::temp_dir().join(format!("scrawl-dictation-{}.wav", std::process::id()));
@@ -638,6 +677,12 @@ fn transcribe_and_paste(
         return Outcome::NoSpeech;
     }
     let outcome = deliver(&text, restore_clipboard, laid_out);
+    if matches!(outcome, Outcome::Pasted(_) | Outcome::Copied) {
+        let at = crate::now_epoch_ms();
+        if let Err(error) = super::history::record(&super::history::default_path(), &text, at, keep.0, keep.1) {
+            scrawl_log(format!("Dictation: could not keep the dictation: {error:#}"));
+        }
+    }
     if let (Outcome::Pasted(_), Some(learned)) = (&outcome, learn) {
         watch_edits(text, dictated, learned);
     }
@@ -870,6 +915,7 @@ mod tests {
             pill: true,
             hovered: false,
             chord: "⌃⌥",
+            copy: false,
         }
     }
 
@@ -878,8 +924,11 @@ mod tests {
         assert_eq!(presentation(&idle()), Pres::DictationIdle);
         let hint = Pres::Hint {
             dictate: "Dictate ⌃⌥".into(),
+            copy: false,
         };
         assert_eq!(presentation(&PillState { hovered: true, ..idle() }), hint);
+        let copy = Pres::Hint { dictate: "Dictate ⌃⌥".into(), copy: true };
+        assert_eq!(presentation(&PillState { hovered: true, copy: true, ..idle() }), copy);
         let copied = PillState { notice: Some(("Copied to the clipboard", false)), hovered: true, ..idle() };
         assert!(matches!(presentation(&copied), Pres::Message { undo: false, .. }));
         let learned = PillState { notice: Some(("Learned your formatting", true)), ..idle() };

@@ -8,6 +8,8 @@ pub mod context;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod format;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod history;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod layout;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod learn;
@@ -104,6 +106,8 @@ impl Dictation {
     pub fn mic_rms(&self) -> Option<f32> {
         None
     }
+
+    pub fn copy_recent(&mut self, _at_ms: u64) {}
 }
 
 #[cfg(test)]

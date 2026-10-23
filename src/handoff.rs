@@ -547,6 +547,9 @@ pub struct Config {
     /// Says in the pill what dictation learned from an edit or how it laid text out (default on).
     #[serde(default)]
     pub dictation_notices: Option<bool>,
+    /// Keeps recent dictations on disk for the menu bar's Recent Dictations (default on).
+    #[serde(default)]
+    pub dictation_history: Option<bool>,
     /// Smart routing's settings (`routing::look`).
     #[serde(default)]
     pub routing: Option<RoutingConfig>,
@@ -855,6 +858,8 @@ pub struct DictationConfig {
     pub learn: bool,
     /// Say in the pill what dictation learned or how it laid text out.
     pub notices: bool,
+    /// Keep recent dictations on disk (`dictation::history`).
+    pub history: bool,
 }
 
 /// `formatCommand` when it can run: an argv whose first entry is an absolute path, as the app
@@ -876,6 +881,7 @@ pub fn dictation() -> DictationConfig {
         format,
         learn: config.dictation_learn.unwrap_or(true),
         notices: config.dictation_notices.unwrap_or(true),
+        history: config.dictation_history.unwrap_or(true),
     }
 }
 

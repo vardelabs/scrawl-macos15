@@ -432,6 +432,14 @@ objc2::define_class!(
             let _ = self.ivars().sender.try_send(MenuAction::CheckForUpdates);
         }
 
+        #[unsafe(method(copyDictation:))]
+        fn copy_dictation(&self, sender: &NSMenuItem) {
+            let at_ms = sender.tag();
+            if at_ms >= 0 {
+                let _ = self.ivars().sender.try_send(MenuAction::CopyDictation(at_ms as u64));
+            }
+        }
+
         #[unsafe(method(quitApp:))]
         fn quit_app(&self, _sender: &AnyObject) {
             let _ = self.ivars().sender.try_send(MenuAction::Quit);
@@ -453,6 +461,9 @@ objc2::define_class!(
         #[unsafe(method(menuNeedsUpdate:))]
         fn menu_needs_update(&self, menu: &NSMenu) {
             rebuild_inbox_menu_items(menu, self);
+            if let Some(item) = menu.itemWithTag(RECENT_DICTATIONS_MENU_TAG) {
+                rebuild_recent_dictations(&item, self);
+            }
             if let Some(item) = menu.itemWithTag(RECORD_MENU_TAG) {
                 item.setTitle(&NSString::from_str(&record_menu_title()));
             }
@@ -467,6 +478,35 @@ objc2::define_class!(
 const INBOX_MENU_TAG: isize = 0x5c4a;
 /// Tag on **Export Last Capture as Video…**, shown only with `"videoExport": true`.
 const EXPORT_VIDEO_MENU_TAG: isize = 0x5c4e;
+/// Tag on **Recent Dictations**, hidden while there are none.
+const RECENT_DICTATIONS_MENU_TAG: isize = 0x5c4f;
+
+/// Fills **Recent Dictations** with the newest dictations kept on disk, newest first; each item's
+/// tag is when it was pasted, which `copyDictation:` copies.
+fn rebuild_recent_dictations(item: &NSMenuItem, target: &ScrawlMenuTarget) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let entries = crate::dictation::history::load_from(&crate::dictation::history::default_path());
+    item.setHidden(entries.is_empty() || !crate::handoff::dictation().history);
+    let submenu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Recent Dictations"));
+    let now = crate::now_epoch_ms();
+    for entry in entries.iter().rev().take(crate::dictation::history::MENU_ENTRIES) {
+        let row = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(&crate::dictation::history::label(entry, now)),
+                Some(sel!(copyDictation:)),
+                &NSString::new(),
+            )
+        };
+        unsafe { row.setTarget(Some(target)) };
+        row.setTag(entry.at_ms as isize);
+        submenu.addItem(&row);
+    }
+    item.setSubmenu(Some(&submenu));
+}
+
 /// Tag on **Record Screen**, whose title carries the record shortcut.
 const RECORD_MENU_TAG: isize = 0x5c4d;
 
@@ -628,6 +668,17 @@ pub(super) fn install_status_bar() -> Option<flume::Receiver<MenuAction>> {
         item.setTag(EXPORT_VIDEO_MENU_TAG);
         item.setHidden(!crate::handoff::video_export());
     }
+    let recent = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str("Recent Dictations"),
+            None,
+            &NSString::new(),
+        )
+    };
+    recent.setTag(RECENT_DICTATIONS_MENU_TAG);
+    rebuild_recent_dictations(&recent, &target);
+    menu.addItem(&recent);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     add("Settings…", sel!(openSettings:));
     if let Some(item) = menu.itemAtIndex(menu.numberOfItems() - 1) {

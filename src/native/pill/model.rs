@@ -356,10 +356,12 @@ pub enum ElemId {
     Message = 19,
     /// Undo beside a notice of something dictation learned.
     Undo = 20,
+    /// Copy the last dictation, on the hovered idle bar.
+    CopyLast = 21,
 }
 
 impl ElemId {
-    pub const COUNT: usize = 21;
+    pub const COUNT: usize = 22;
     pub const ROUTES: [ElemId; 2] = [Self::Route0, Self::Route1];
     pub const ALL: [ElemId; Self::COUNT] = [
         Self::Lead,
@@ -383,6 +385,7 @@ impl ElemId {
         Self::Confirm,
         Self::Message,
         Self::Undo,
+        Self::CopyLast,
     ];
 
     pub const fn trace_key(self) -> &'static str {
@@ -408,6 +411,7 @@ impl ElemId {
             Self::Confirm => "confirm",
             Self::Message => "message",
             Self::Undo => "undo",
+            Self::CopyLast => "copy-last",
         }
     }
 
@@ -457,6 +461,7 @@ impl ElemId {
             Self::Confirm => "Paste dictation",
             Self::Message => "Dictation",
             Self::Undo => "Undo",
+            Self::CopyLast => "Copy last dictation",
         }
     }
 }
@@ -496,9 +501,10 @@ pub enum Pres {
         label: String,
         undo: bool,
     },
-    /// The idle bar hovered: "Dictate ⌃⌥" and Record.
+    /// The idle bar hovered: "Dictate ⌃⌥", Record, and Copy once there is a dictation to copy.
     Hint {
         dictate: String,
+        copy: bool,
     },
 }
 
@@ -547,7 +553,7 @@ impl Pres {
             (Self::Dictating { latched: a }, Self::Dictating { latched: b }) => a == b,
             (Self::DictationIdle, Self::DictationIdle) => true,
             (Self::Message { label: a, undo: ua }, Self::Message { label: b, undo: ub }) => a == b && ua == ub,
-            (Self::Hint { dictate: a }, Self::Hint { dictate: b }) => a == b,
+            (Self::Hint { dictate: a, copy: ca }, Self::Hint { dictate: b, copy: cb }) => a == b && ca == cb,
             _ => false,
         }
     }
@@ -720,9 +726,12 @@ pub fn layout_of(
                 raw.push((ElemId::Undo, Metrics::chip_width(m.undo), CHIP_CORE_ROUND, 0.0, true));
             }
         }
-        Pres::Hint { .. } => {
+        Pres::Hint { copy, .. } => {
             let w = 2.0 * CHIP_PX + labels.completed;
             raw.push((ElemId::Message, w, CHIP_CORE_ROUND, 0.0, true));
+            if *copy {
+                raw.push((ElemId::CopyLast, CHIP_H, CHIP_CORE_ROUND, 0.0, true));
+            }
             raw.push((
                 ElemId::Record,
                 Metrics::chip_width(m.record),

@@ -50,6 +50,8 @@ pub enum IconKind {
     Check,
     Pause,
     Play,
+    /// Two overlapping sheets, as SF Symbols' `doc.on.doc`.
+    Copy,
 }
 
 impl IconKind {
@@ -277,6 +279,11 @@ fn rasterize_icon(kind: IconKind, size_pt: f32, scale: f32) -> (u32, u32, [f32; 
             ctx.add_line_to_point(cx, cy);
             ctx.stroke_path();
         }
+        IconKind::Copy => {
+            ctx.set_line_width(2.0 * s);
+            rrect(&ctx, 8.5, 3.5, 12.0, 13.0, 2.5);
+            rrect(&ctx, 3.5, 8.0, 12.0, 13.0, 2.5);
+        }
         IconKind::Pause => {
             // Round-capped strokes as thick as the bars, so the ends are rounded.
             ctx.set_line_width(4.0 * s);
@@ -386,6 +393,7 @@ impl GlyphAtlas {
             (IconKind::Check, 13.0),
             (IconKind::Pause, 13.0),
             (IconKind::Play, 13.0),
+            (IconKind::Copy, 14.0),
         ] {
             let (w, h, size_pt, bytes) = rasterize_icon(kind, size_pt, scale);
             let sprite = atlas.pack(w, h, size_pt, &bytes);
