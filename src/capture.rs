@@ -560,8 +560,13 @@ pub fn region_target(
     }
 }
 
+/// Whether a capture in `mode` will crop its keyframes, by the same test the keyframe step uses.
+pub fn crops_keyframes(mode: CaptureMode) -> bool {
+    crate::handoff::crops_mode(mode) && crate::autocrop::Settings::configured().is_some()
+}
+
 /// The recording's long edge for `target`. Keyframe crops are cut from the recording, so a capture
-/// that crops (`crops`, from `handoff::crops_mode`) needs enough pixels for a crop to a quarter of
+/// that crops (`crops`, from `crops_keyframes`) needs enough pixels for a crop to a quarter of
 /// the screen to stay sharp. A cropped window wider than that, as on an ultrawide display, records
 /// at its own point size up to `CROPPED_WINDOW_EDGE_MAX`.
 pub fn video_long_edge(target: &TargetInfo, crops: bool) -> f64 {

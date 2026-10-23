@@ -653,7 +653,7 @@ pub fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
         ..
     } = sampler;
     let long_edge =
-        crate::capture::video_long_edge(&target, crate::handoff::crops_mode(target.mode));
+        crate::capture::video_long_edge(&target, crate::capture::crops_keyframes(target.mode));
     let mut recorder = match Recorder::new(&target, video_output_path.as_deref(), long_edge) {
         Ok(recorder) => Some(recorder),
         Err(error) => {

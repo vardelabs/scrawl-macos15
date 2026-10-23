@@ -1329,7 +1329,7 @@ fn build_sck_filter_and_config(
     }?;
 
     let long_edge =
-        crate::capture::video_long_edge(target, crate::handoff::crops_mode(target.mode));
+        crate::capture::video_long_edge(target, crate::capture::crops_keyframes(target.mode));
     Some((filter, sck_config(target, long_edge)))
 }
 
