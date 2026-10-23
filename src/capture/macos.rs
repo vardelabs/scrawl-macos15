@@ -54,6 +54,7 @@ const EVENT_LEFT_MOUSE_UP: u32 = 2;
 const EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
 const EVENT_RIGHT_MOUSE_UP: u32 = 4;
 const EVENT_KEY_DOWN: u32 = 10;
+const EVENT_OTHER_MOUSE_DOWN: u32 = 25;
 const EVENT_SCROLL_WHEEL: u32 = 22;
 const EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = u32::MAX - 1;
 const EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = u32::MAX;
@@ -182,6 +183,7 @@ unsafe extern "C" {
     fn CGEventTapEnable(tap: *mut c_void, enable: bool);
     fn CGEventTapIsEnabled(tap: *mut c_void) -> bool;
     fn CGEventSourceButtonState(state_id: u32, button: u32) -> bool;
+    fn CGEventSourceCounterForEventType(state_id: u32, event_type: u32) -> u32;
     fn CGEventCreate(source: *const c_void) -> EventRef;
     fn CGEventCreateMouseEvent(
         source: *const c_void,
@@ -1859,6 +1861,17 @@ pub fn wait_for_modifiers_released(max_wait_ms: u64) {
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Key and mouse-button presses the system has seen since login, Scrawl's own synthetic ones
+/// included (one per key `post_synthetic_cmd_v` posts).
+pub fn input_presses() -> u64 {
+    const HID_SYSTEM_STATE: u32 = 1;
+    const PRESSES: [u32; 4] = [EVENT_KEY_DOWN, EVENT_LEFT_MOUSE_DOWN, EVENT_RIGHT_MOUSE_DOWN, EVENT_OTHER_MOUSE_DOWN];
+    PRESSES
+        .iter()
+        .map(|&kind| u64::from(unsafe { CGEventSourceCounterForEventType(HID_SYSTEM_STATE, kind) }))
+        .sum()
 }
 
 pub fn post_synthetic_cmd_v() {

@@ -1,8 +1,9 @@
 //! How a dictation fits the text around where it is pasted. A second dictation into one field gets
 //! a space after the first ("dictation?" then " Also"), as Wispr Flow adds it, and one pasted
 //! right after an opening bracket closes it ("Notes (" then "see below.)"). Pure, so it is tested
-//! without a Mac; `session` reads the field over Accessibility, and pastes the text unchanged when
-//! it can't.
+//! without a Mac; `session` reads the field over Accessibility. A field it can't read (an Electron
+//! app's) is taken to end with Scrawl's last paste while that is provably still true
+//! (`after_last_paste`); otherwise the text is pasted unchanged.
 
 /// Brackets and quotes that open, with their closers: text after one belongs to it ("(Also").
 const OPENERS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('“', '”'), ('<', '>'), ('‘', '’'), ('«', '»')];
@@ -30,6 +31,21 @@ pub fn fit(text: &str, at: &Around) -> String {
         Some(close) => format!("{space}{}{close}", text.trim_end()),
         None => format!("{space}{text}"),
     }
+}
+
+/// How long a paste into a field Accessibility can't read is remembered.
+pub const LAST_PASTE_FOR: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The text before the insertion point in a field Accessibility can't read, when it is still the
+/// end of Scrawl's last paste, `last`: the paste went to the same window, no key or mouse button
+/// has been pressed since (`presses_since`), and it was recent.
+pub fn after_last_paste(
+    last: char,
+    same_spot: bool,
+    presses_since: u64,
+    age: std::time::Duration,
+) -> Option<String> {
+    (same_spot && presses_since == 0 && age < LAST_PASTE_FOR).then(|| last.to_string())
 }
 
 fn starts_word(text: &str) -> bool {
@@ -71,6 +87,19 @@ mod tests {
 
     fn after(before: &str, text: &str) -> String {
         fit(text, &Around { before, selected: 0, after: Some("") })
+    }
+
+    #[test]
+    fn an_unreadable_field_still_right_after_the_last_paste_gets_a_space() {
+        let recent = std::time::Duration::from_secs(5);
+        let before = after_last_paste('.', true, 0, recent).expect("still after the paste");
+        let text = fit("Next", &Around { before: &before, selected: 0, after: None });
+        assert_eq!(text, " Next");
+        assert_eq!(after_last_paste('.', false, 0, recent), None, "another window");
+        assert_eq!(after_last_paste('.', true, 1, recent), None, "a key or click since");
+        assert_eq!(after_last_paste('.', true, 0, LAST_PASTE_FOR), None, "too long ago");
+        let newline = after_last_paste('\n', true, 0, recent).expect("still after the paste");
+        assert_eq!(fit("Next", &Around { before: &newline, selected: 0, after: None }), "Next");
     }
 
     #[test]

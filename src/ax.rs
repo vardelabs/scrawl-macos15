@@ -227,6 +227,37 @@ impl FocusedText {
     }
 }
 
+/// The frontmost app and its focused window: where a paste landed, for a field Accessibility
+/// can't read (`dictation::session` keeps the last one).
+#[cfg(target_os = "macos")]
+pub struct PasteSpot {
+    pid: i32,
+    window: Option<Owned>,
+}
+
+// Holds an AXUIElement reference, used from one thread at a time, as `FocusedText` does.
+#[cfg(target_os = "macos")]
+unsafe impl Send for PasteSpot {}
+
+#[cfg(target_os = "macos")]
+impl PasteSpot {
+    pub fn current() -> Option<Self> {
+        let (pid, _, _) = crate::capture::frontmost_app_info()?;
+        let app = Owned(unsafe { AXUIElementCreateApplication(pid) });
+        unsafe { AXUIElementSetMessagingTimeout(app.0, MESSAGE_TIMEOUT_S) };
+        Some(Self { pid, window: element_attribute(app.0, "AXFocusedWindow") })
+    }
+
+    pub fn same_as(&self, other: &Self) -> bool {
+        self.pid == other.pid
+            && match (&self.window, &other.window) {
+                (Some(a), Some(b)) => (unsafe { core_foundation::base::CFEqual(a.0, b.0) }) != 0,
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn focused_element() -> Option<Owned> {
     let system = Owned(unsafe { AXUIElementCreateSystemWide() });
