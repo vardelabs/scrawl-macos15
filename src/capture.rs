@@ -560,6 +560,26 @@ pub fn region_target(
     }
 }
 
+/// The recording's long edge for `target`. Keyframe crops are cut from the recording, so a capture
+/// that crops (`crops`, from `handoff::crops_mode`) needs enough pixels for a crop to a quarter of
+/// the screen to stay sharp. A cropped window wider than that, as on an ultrawide display, records
+/// at its own point size up to `CROPPED_WINDOW_EDGE_MAX`.
+pub fn video_long_edge(target: &TargetInfo, crops: bool) -> f64 {
+    match target.mode {
+        CaptureMode::Display => CROPPED_EDGE,
+        CaptureMode::Window if crops => target
+            .frame
+            .width
+            .max(target.frame.height)
+            .clamp(CROPPED_EDGE, CROPPED_WINDOW_EDGE_MAX),
+        _ => UNCROPPED_EDGE,
+    }
+}
+
+const CROPPED_EDGE: f64 = 2560.0;
+const CROPPED_WINDOW_EDGE_MAX: f64 = 3840.0;
+const UNCROPPED_EDGE: f64 = 1280.0;
+
 /// The capture size for `target` with its long edge at most `long_edge` px (and at most its
 /// display's pixels: a 1x display isn't upscaled, and on Windows frames are pixels already,
 /// `MAX_CAPTURE_SCALE`).
@@ -2147,6 +2167,36 @@ mod tests {
         buffer.push(RgbaFrame::new(500, 4, 4, vec![0; 64]), false);
         buffer.drop_since(0);
         assert_eq!(buffer.len(), 1);
+    }
+
+    #[test]
+    fn cropped_window_captures_record_enough_pixels_to_zoom() {
+        let target = |mode, width, height| TargetInfo {
+            mode,
+            app: None,
+            bundle_id: None,
+            window_title: None,
+            window_id: None,
+            display_id: 1,
+            frame: TargetFrame {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height,
+                scale: 2.0,
+            },
+        };
+        let laptop_window = target(CaptureMode::Window, 1400.0, 900.0);
+        assert_eq!(video_long_edge(&laptop_window, true), 2560.0);
+        assert_eq!(video_long_edge(&laptop_window, false), 1280.0);
+        let ultrawide_window = target(CaptureMode::Window, 3600.0, 1400.0);
+        assert_eq!(video_long_edge(&ultrawide_window, true), 3600.0);
+        let huge_window = target(CaptureMode::Window, 7000.0, 2000.0);
+        assert_eq!(video_long_edge(&huge_window, true), 3840.0);
+        let screen = target(CaptureMode::Display, 3840.0, 1080.0);
+        assert_eq!(video_long_edge(&screen, false), 2560.0);
+        let region = target(CaptureMode::Region, 800.0, 600.0);
+        assert_eq!(video_long_edge(&region, true), 1280.0);
     }
 
     #[test]

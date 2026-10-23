@@ -1328,13 +1328,8 @@ fn build_sck_filter_and_config(
         None
     }?;
 
-    // Full-screen captures get auto-cropped to a window or region afterwards (`scrawl autocrop`),
-    // so they need enough pixels for a crop to a quarter of the screen to stay sharp.
-    let long_edge = if target.mode == CaptureMode::Display {
-        2560.0
-    } else {
-        1280.0
-    };
+    let long_edge =
+        crate::capture::video_long_edge(target, crate::handoff::crops_mode(target.mode));
     Some((filter, sck_config(target, long_edge)))
 }
 
