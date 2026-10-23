@@ -652,11 +652,8 @@ pub fn run_sampler(sampler: Sampler) -> Option<PathBuf> {
         video_offset_ms,
         ..
     } = sampler;
-    let long_edge = if target.mode == CaptureMode::Display {
-        2560.0
-    } else {
-        1280.0
-    };
+    let long_edge =
+        crate::capture::video_long_edge(&target, crate::capture::crops_keyframes(target.mode));
     let mut recorder = match Recorder::new(&target, video_output_path.as_deref(), long_edge) {
         Ok(recorder) => Some(recorder),
         Err(error) => {
