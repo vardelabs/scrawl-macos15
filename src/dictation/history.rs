@@ -2,8 +2,9 @@
 //! overwrote: the pill's Copy button copies the last, and the menu bar's Recent Dictations lists
 //! them. The last stays in memory for the button; with **Keep recent dictations**
 //! (`dictationHistory`, default on) the newest `MAX_ENTRIES` are also kept on disk, owner-only, in
-//! `~/Library/Application Support/scrawl/dictation-history.json`, so a quit or crash keeps them.
-//! Clear deletes the file and forgets the last.
+//! `~/Library/Application Support/scrawl/dictation-history.json`, so a quit or crash keeps them,
+//! and the last dictation's audio is kept beside it in `last-dictation.wav`, so a transcript that
+//! lost words can be checked against what was said. Clear deletes both and forgets the last.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -82,20 +83,29 @@ pub fn load_from(path: &Path) -> Vec<Entry> {
         .unwrap_or_default()
 }
 
-/// Writes a temp file and renames it over `path`, owner-only, since dictations can be private.
+/// The last dictation's audio, beside the history at `history`.
+pub fn audio_path(history: &Path) -> PathBuf {
+    history.with_file_name("last-dictation.wav")
+}
+
 fn save_to(path: &Path, entries: Vec<Entry>) -> Result<()> {
+    let mut json = serde_json::to_vec_pretty(&File { entries })?;
+    json.push(b'\n');
+    write_private(path, &json)
+}
+
+/// Writes a temp file and renames it over `path`, owner-only, since dictations can be private.
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    let mut json = serde_json::to_vec_pretty(&File { entries })?;
-    json.push(b'\n');
+    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
     let _ = std::fs::remove_file(&temp);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let written = options.open(&temp).and_then(|mut file| std::io::Write::write_all(&mut file, &json));
+    let written = options.open(&temp).and_then(|mut file| std::io::Write::write_all(&mut file, bytes));
     let saved = written
         .map_err(anyhow::Error::from)
         .and_then(|()| std::fs::rename(&temp, path).with_context(|| format!("Could not save {}", path.display())));
@@ -120,6 +130,18 @@ pub fn record(path: &Path, text: &str, at_ms: u64, keep: bool, generation: u64) 
     save_to(path, remember(load_from(path), Entry { at_ms, text: text.to_owned() }))
 }
 
+/// Keeps a dictation's audio as the last, beside the history at `history`, when `keep`; with
+/// history off, removes any kept before. Like `record`, keeps nothing once a Clear came since
+/// `generation`.
+pub fn keep_audio(history: &Path, wav: &[u8], keep: bool, generation: u64) -> Result<()> {
+    let _editing = edit_lock();
+    if self::generation() != generation {
+        return Ok(());
+    }
+    let path = audio_path(history);
+    if keep { write_private(&path, wav) } else { remove(&path) }
+}
+
 /// The last dictation: this run's, else the newest on disk at `path`.
 pub fn last(path: &Path) -> Option<String> {
     let kept = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
@@ -131,6 +153,12 @@ pub fn clear(path: &Path) -> Result<()> {
     let _editing = edit_lock();
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    let audio = remove(&audio_path(path));
+    remove(path).and(audio)
+}
+
+/// Deletes `path`; a missing file is no error.
+fn remove(path: &Path) -> Result<()> {
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             Err(error).with_context(|| format!("Could not remove {}", path.display()))
@@ -196,6 +224,22 @@ mod tests {
         assert_eq!(last(&path), None);
         std::fs::write(&path, "not json").unwrap();
         assert!(load_from(&path).is_empty());
+
+        let audio = audio_path(&path);
+        assert_eq!(audio.file_name().unwrap(), "last-dictation.wav");
+        keep_audio(&path, b"RIFF one", true, generation()).unwrap();
+        keep_audio(&path, b"RIFF two", true, generation()).unwrap();
+        assert_eq!(std::fs::read(&audio).unwrap(), b"RIFF two", "only the last is kept");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&audio).unwrap().permissions()) & 0o777, 0o600);
+        keep_audio(&path, b"RIFF off", false, generation()).unwrap();
+        assert!(!audio.exists(), "history off removes the kept audio");
+        keep_audio(&path, b"RIFF three", true, generation()).unwrap();
+        let before_clear = generation();
+        clear(&path).unwrap();
+        assert!(!audio.exists(), "Clear deletes the audio");
+        keep_audio(&path, b"RIFF in flight", true, before_clear).unwrap();
+        assert!(!audio.exists(), "audio in flight at Clear is not kept");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
