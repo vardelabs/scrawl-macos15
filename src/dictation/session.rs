@@ -921,7 +921,11 @@ fn lay_out(
     formatter: Option<super::formatter::Formatter>,
 ) -> (String, Option<&'static str>) {
     use super::format;
-    let Some(formatter) = formatter.filter(|_| format::worth_formatting(&text)) else { return (text, None) };
+    let Some(formatter) = formatter else { return (text, None) };
+    if !format::worth_formatting(&text) {
+        formatter.park();
+        return (text, None);
+    }
     let count = text.split_whitespace().count() as u32;
     let wait = (FORMAT_WAIT_BASE + FORMAT_WAIT_PER_WORD * count).min(FORMAT_WAIT_MAX);
     let started = Instant::now();

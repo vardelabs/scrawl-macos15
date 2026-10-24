@@ -141,6 +141,9 @@ pub fn prestart() -> Option<crate::command_transcriber::Prestarted> {
     let program = crate::handoff::transcribe_command()
         .ok()
         .filter(|program| program.prestarts())?;
+    if let Some(parked) = PARKED.take().filter(|parked| parked.runs(&program) && parked.alive()) {
+        return Some(parked);
+    }
     program
         .prestart()
         .inspect_err(|failure| {
@@ -149,6 +152,21 @@ pub fn prestart() -> Option<crate::command_transcriber::Prestarted> {
             ))
         })
         .ok()
+}
+
+/// A command transcriber started after the last transcription, its model already loaded, for the
+/// next recording to take (`prestart`).
+static PARKED: crate::park::Park<crate::command_transcriber::Prestarted> = crate::park::Park::new();
+
+/// Starts the next recording's transcriber now, so its model loads before that recording begins.
+fn park_next(program: crate::command_transcriber::Program) {
+    if !program.prestarts() {
+        return;
+    }
+    std::thread::spawn(move || match program.prestart() {
+        Ok(prestarted) => PARKED.put(prestarted, crate::park::PARK_FOR),
+        Err(failure) => crate::capture::scrawl_log(format!("Parking the command transcriber failed: {failure}")),
+    });
 }
 
 /// A recording's prestarted transcriber, taken once by its transcription. `RecordedAudio` is
@@ -268,8 +286,18 @@ fn try_command(wav: &Path, audio: &RecordedAudio) -> Result<Option<TranscriptDat
             return Ok(None);
         }
     };
+    let transcript = command_transcript(&program, wav, audio);
+    park_next(program);
+    transcript
+}
+
+fn command_transcript(
+    program: &crate::command_transcriber::Program,
+    wav: &Path,
+    audio: &RecordedAudio,
+) -> Result<Option<TranscriptData>> {
     let mut log = |line: &str| crate::capture::scrawl_log(line);
-    if let Some(prestarted) = audio.prestarted.take().filter(|p| p.runs(&program)) {
+    if let Some(prestarted) = audio.prestarted.take().filter(|p| p.runs(program)) {
         match prestarted.finish(wav, audio.sample_count, &mut log) {
             Ok(transcript) => return Ok(Some(transcript)),
             // Running it again after a timeout would wait the whole limit a second time.
@@ -282,7 +310,7 @@ fn try_command(wav: &Path, audio: &RecordedAudio) -> Result<Option<TranscriptDat
         }
     }
     let transcript =
-        crate::command_transcriber::transcribe(&program, wav, audio.sample_count, &mut log)?;
+        crate::command_transcriber::transcribe(program, wav, audio.sample_count, &mut log)?;
     Ok(Some(transcript))
 }
 

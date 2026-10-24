@@ -363,6 +363,17 @@ pub struct Prestarted {
 }
 
 impl Prestarted {
+    /// Whether its process is still running, checked without reaping it (see `collect`).
+    #[cfg(unix)]
+    pub fn alive(&self) -> bool {
+        self.child.as_ref().is_some_and(|child| running(child.id() as libc::pid_t))
+    }
+
+    #[cfg(not(unix))]
+    pub fn alive(&self) -> bool {
+        false
+    }
+
     /// Whether this was started from `program`, so a config changed mid-recording isn't used.
     pub fn runs(&self, program: &Program) -> bool {
         self.program == *program
@@ -456,6 +467,12 @@ fn readable(pipe: &ChildStdout, timeout: Duration) {
     unsafe {
         libc::poll(&mut poll, 1, ms);
     }
+}
+
+/// Whether `pid` is still running, checked without reaping it.
+#[cfg(unix)]
+pub(crate) fn running(pid: libc::pid_t) -> bool {
+    matches!(has_exited(pid), Ok(false))
 }
 
 /// Whether the program has exited, leaving it unreaped.
@@ -1454,6 +1471,19 @@ exit 0"#,
             .unwrap();
         assert_eq!(transcript.text, "early");
         assert_eq!(transcript.source, "command:fake program");
+    }
+
+    #[test]
+    fn a_parked_program_that_died_is_not_alive() {
+        let dir = Dir::new();
+        let waiting = dir.program("read -r audio", None).prestart().unwrap();
+        assert!(waiting.alive(), "a program waiting for its audio is alive");
+        let quit = dir.program("exit 0", None).prestart().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while quit.alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!quit.alive(), "a program that exited is not taken from the park");
     }
 
     #[test]
