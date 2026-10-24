@@ -769,6 +769,14 @@ fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Send
         let Some(field) = crate::ax::FocusedText::current() else { return };
         let Some(paste) = read(&field).and_then(|value| super::learn::locate(&value, &pasted)) else { return };
         let mut settle = super::learn::Settle::default();
+        let mut taught = Taught::default();
+        let mut teach = |edited: &str| {
+            let words = super::learn::learned(&paste.text, edited);
+            let layout = dictated.as_deref().and_then(|dictated| super::layout::example(dictated, &paste.text, edited, &words));
+            if let Some(learned) = taught.news(words, layout, generation) {
+                let _ = candidates.send(learned);
+            }
+        };
         let started = Instant::now();
         while started.elapsed() < LEARN_FOR && field.still_focused() {
             std::thread::sleep(LEARN_EVERY);
@@ -776,20 +784,49 @@ fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Send
             if !settle.read(value.as_deref().and_then(|value| super::learn::edited_span(&paste, value))) {
                 break;
             }
+            // An edit left alone teaches now, so the user needn't leave the field to see it.
+            if let Some(edited) = settle.quiet() {
+                teach(&edited.to_owned());
+            }
         }
         // Focus moved or time ran out: the last edit gets one more read, a full interval later so
         // it can't agree with a read a moment before. A window closed at the send reads as gone.
         std::thread::sleep(LEARN_EVERY);
         settle.read(read(&field).as_deref().and_then(|value| super::learn::edited_span(&paste, value)));
-        let Some(edited) = settle.settled() else { return };
-        let words = super::learn::learned(&paste.text, &edited);
-        let layout = dictated.and_then(|dictated| super::layout::example(&dictated, &paste.text, &edited, &words));
-        if !words.is_empty() || layout.is_some() {
-            let _ = candidates.send(Learned { words, layout, generation });
+        if let Some(edited) = settle.settled() {
+            teach(&edited);
         }
     });
     if let Err(error) = spawned {
         scrawl_log(format!("Dictation: could not watch for edits: {error}"));
+    }
+}
+
+/// What one watch already sent, so a span that teaches while focused isn't sent again later.
+#[derive(Default)]
+struct Taught {
+    words: Vec<super::learn::Respelling>,
+    layout: Option<super::layout::Example>,
+}
+
+impl Taught {
+    /// What `words` and `layout` add to what was sent, if anything.
+    fn news(
+        &mut self,
+        words: Vec<super::learn::Respelling>,
+        layout: Option<super::layout::Example>,
+        generation: u64,
+    ) -> Option<Learned> {
+        let words: Vec<_> = words.into_iter().filter(|w| !self.words.contains(w)).collect();
+        let layout = layout.filter(|l| self.layout.as_ref() != Some(l));
+        if words.is_empty() && layout.is_none() {
+            return None;
+        }
+        self.words.extend(words.iter().cloned());
+        if layout.is_some() {
+            self.layout.clone_from(&layout);
+        }
+        Some(Learned { words, layout, generation })
     }
 }
 
@@ -1028,6 +1065,17 @@ mod tests {
         assert_eq!(presentation(&listening), Pres::Dictating { latched: true });
         let both = PillState { working: true, dictating: Some(false), ..idle() };
         assert_eq!(presentation(&both), Pres::Processing);
+    }
+
+    #[test]
+    fn a_watch_sends_each_word_it_learns_once() {
+        let respelled = |was: &str, now: &str| (was.to_owned(), now.to_owned());
+        let mut taught = Taught::default();
+        let first = taught.news(vec![respelled("close", "Klose")], None, 0).map(|l| l.words);
+        assert_eq!(first, Some(vec![respelled("close", "Klose")]));
+        assert!(taught.news(vec![respelled("close", "Klose")], None, 0).is_none(), "taught while focused, not again at the end");
+        let more = taught.news(vec![respelled("close", "Klose"), respelled("orbet", "Orbett")], None, 0).map(|l| l.words);
+        assert_eq!(more, Some(vec![respelled("orbet", "Orbett")]));
     }
 
     #[test]
