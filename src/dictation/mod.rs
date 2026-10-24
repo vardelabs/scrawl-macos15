@@ -103,6 +103,10 @@ impl Dictation {
         false
     }
 
+    pub fn take_open(&mut self) -> Option<crate::settings::Focus> {
+        None
+    }
+
     pub fn mic_rms(&self) -> Option<f32> {
         None
     }
