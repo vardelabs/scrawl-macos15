@@ -649,6 +649,13 @@ fn transcribe_and_paste(
     }
     let transcript = crate::transcribe::transcribe(Some(&wav), Some(audio));
     let _ = std::fs::remove_file(&wav);
+    let history = super::history::default_path();
+    if let Err(error) = super::history::keep_audio(&history, &audio.wav_bytes, keep.0, keep.1) {
+        scrawl_log(format!("Dictation: could not keep the audio: {error:#}"));
+    }
+    if let Some(coverage) = coverage(&transcript, audio.duration_ms) {
+        scrawl_log(coverage);
+    }
     // The dictionary first, so a user's rule for "design dot md" still sees what was said.
     let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
     // With code formatting off, `screen` is `None` and the text is left as transcribed.
@@ -679,7 +686,7 @@ fn transcribe_and_paste(
     let outcome = deliver(&text, restore_clipboard, laid_out);
     if matches!(outcome, Outcome::Pasted(_) | Outcome::Copied) {
         let at = crate::now_epoch_ms();
-        if let Err(error) = super::history::record(&super::history::default_path(), &text, at, keep.0, keep.1) {
+        if let Err(error) = super::history::record(&history, &text, at, keep.0, keep.1) {
             scrawl_log(format!("Dictation: could not keep the dictation: {error:#}"));
         }
     }
@@ -689,6 +696,17 @@ fn transcribe_and_paste(
     outcome
 }
 
+
+/// How much of the audio the transcript's measured word times reach, so a transcript that lost
+/// its end shows in the log ("transcript ends at 41.2 s of 62.7 s"). `None` without measured times.
+fn coverage(transcript: &crate::model::TranscriptData, audio_ms: u64) -> Option<String> {
+    let end = transcript.words.iter().map(|word| word.t1).max().filter(|_| !transcript.estimated)?;
+    Some(format!(
+        "Dictation: transcript ends at {:.1} s of {:.1} s",
+        end as f64 / 1_000.0,
+        audio_ms as f64 / 1_000.0
+    ))
+}
 
 /// A field longer than this (a whole document) is not watched.
 const MAX_FIELD_CHARS: usize = 200_000;
@@ -943,6 +961,19 @@ fn after_last_paste() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coverage_reports_where_measured_words_end() {
+        let word = |t0, t1| crate::model::WordTiming { t0, t1, text: "word".into() };
+        let mut transcript = crate::model::TranscriptData {
+            words: vec![word(0, 400), word(41_000, 41_200)],
+            ..Default::default()
+        };
+        assert_eq!(coverage(&transcript, 62_709).as_deref(), Some("Dictation: transcript ends at 41.2 s of 62.7 s"));
+        transcript.estimated = true;
+        assert_eq!(coverage(&transcript, 62_709), None, "estimated times say nothing about coverage");
+        assert_eq!(coverage(&crate::model::TranscriptData::default(), 1_000), None);
+    }
 
     fn idle() -> PillState<'static> {
         PillState {
