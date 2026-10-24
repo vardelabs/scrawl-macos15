@@ -274,7 +274,7 @@ final class SettingsModel: ObservableObject {
     switch (focus["kind"] as? String, focus["entry"] as? String) {
     case ("word", let word?):
       row = DictionaryRows.word(word)
-      editing = state.dictation.words.contains(word) ? .word(word) : nil
+      if state.dictation.words.contains(word) { startEditing(.word(word)) }
     case ("layouts", _):
       row = DictionaryRows.layouts
     default:
@@ -1319,7 +1319,10 @@ struct SettingsView: View {
   /// The open edit, for its row; `entry` stands in while the row goes away.
   private func editing(_ entry: DictionaryEditing) -> Binding<DictionaryEditing> {
     Binding(
-      get: { model.editing.map { $0.kind == entry.kind && $0.was == entry.was } == true ? model.editing ?? entry : entry },
+      get: {
+        guard let open = model.editing, open.kind == entry.kind, open.was == entry.was else { return entry }
+        return open
+      },
       set: { if model.editing?.kind == entry.kind && model.editing?.was == entry.was { model.editing = $0 } }
     )
   }
