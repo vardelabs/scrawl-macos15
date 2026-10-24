@@ -683,7 +683,8 @@ pub struct DictationView {
     /// Notices in the pill of what dictation learned or how it laid text out.
     pub notices: bool,
     /// Recent dictations kept on disk, and whether there is anything for Clear to forget: kept
-    /// ones, or this run's last, which the pill copies with history off too.
+    /// ones, the last dictation's audio, or this run's last, which the pill copies with history
+    /// off too.
     pub history: bool,
     pub can_clear: bool,
     /// Layouts learned from edits to laid-out text (`dictation::layout`), shown to the formatter.
@@ -978,7 +979,7 @@ fn dictation_view(
         learn: config.dictation_learn.unwrap_or(true),
         notices: config.dictation_notices.unwrap_or(true),
         history: config.dictation_history.unwrap_or(true),
-        can_clear: crate::dictation::history::last(&crate::dictation::history::default_path()).is_some(),
+        can_clear: crate::dictation::history::anything_kept(&crate::dictation::history::default_path()),
         learned_layouts: crate::dictation::layout::load_from(&crate::dictation::layout::path_beside(config_path)).len(),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,

@@ -130,16 +130,20 @@ pub fn record(path: &Path, text: &str, at_ms: u64, keep: bool, generation: u64) 
     save_to(path, remember(load_from(path), Entry { at_ms, text: text.to_owned() }))
 }
 
-/// Keeps a dictation's audio as the last, beside the history at `history`, when `keep`; with
-/// history off, removes any kept before. Like `record`, keeps nothing once a Clear came since
-/// `generation`.
+/// Keeps a dictation's audio as the last, beside the history at `history`, when `keep`. Like
+/// `record`, keeps nothing once a Clear came since `generation`, and with history off leaves what
+/// is there until Clear.
 pub fn keep_audio(history: &Path, wav: &[u8], keep: bool, generation: u64) -> Result<()> {
     let _editing = edit_lock();
-    if self::generation() != generation {
+    if !keep || self::generation() != generation {
         return Ok(());
     }
-    let path = audio_path(history);
-    if keep { write_private(&path, wav) } else { remove(&path) }
+    write_private(&audio_path(history), wav)
+}
+
+/// Whether Clear has anything to delete: a last dictation, or kept audio.
+pub fn anything_kept(history: &Path) -> bool {
+    last(history).is_some() || audio_path(history).exists()
 }
 
 /// The last dictation: this run's, else the newest on disk at `path`.
@@ -233,8 +237,8 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&audio).unwrap().permissions()) & 0o777, 0o600);
         keep_audio(&path, b"RIFF off", false, generation()).unwrap();
-        assert!(!audio.exists(), "history off removes the kept audio");
-        keep_audio(&path, b"RIFF three", true, generation()).unwrap();
+        assert_eq!(std::fs::read(&audio).unwrap(), b"RIFF two", "history off writes nothing, and keeps it until Clear");
+        assert!(anything_kept(&path));
         let before_clear = generation();
         clear(&path).unwrap();
         assert!(!audio.exists(), "Clear deletes the audio");
