@@ -496,10 +496,12 @@ pub enum Pres {
     /// Dictation is on and idle: a small bar that stays on screen, as Wispr Flow's does.
     DictationIdle,
     /// One line from dictation: a notice (with a check) such as "Copied to the clipboard", with
-    /// Undo when it reports something dictation learned.
+    /// Undo when it reports something dictation learned, and `opens` when a click on it opens
+    /// Settings at what it reports.
     Message {
         label: String,
         undo: bool,
+        opens: bool,
     },
     /// The idle bar hovered: "Dictate ⌃⌥", Record, and Copy once there is a dictation to copy.
     Hint {
@@ -552,7 +554,9 @@ impl Pres {
             ) => a == b && ra == rb,
             (Self::Dictating { latched: a }, Self::Dictating { latched: b }) => a == b,
             (Self::DictationIdle, Self::DictationIdle) => true,
-            (Self::Message { label: a, undo: ua }, Self::Message { label: b, undo: ub }) => a == b && ua == ub,
+            (Self::Message { label: a, undo: ua, opens: oa }, Self::Message { label: b, undo: ub, opens: ob }) => {
+                a == b && ua == ub && oa == ob
+            }
             (Self::Hint { dictate: a, copy: ca }, Self::Hint { dictate: b, copy: cb }) => a == b && ca == cb,
             _ => false,
         }
@@ -937,6 +941,16 @@ pub struct FrameElem {
     pub enabled: bool,
 }
 
+/// Whether the pill shows a dictation notice, and whether a click on it opens Settings (it then
+/// lights more on hover, with an underline, so it reads as a link).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NoticeKind {
+    #[default]
+    None,
+    Plain,
+    Opens,
+}
+
 #[derive(Clone, Debug)]
 pub struct FrameState {
     pub t: f32,
@@ -948,7 +962,7 @@ pub struct FrameState {
     /// ends stay inner while Pause fades in and while all three fade out after Finish or Cancel.
     pub pausable_controls: bool,
     /// A dictation notice, whose label leads with a check.
-    pub is_notice: bool,
+    pub notice: NoticeKind,
     /// The always-on dictation bar, drawn see-through with a light rim, as Wispr Flow's is.
     pub is_idle: bool,
     pub content_blur: f32,
@@ -1761,7 +1775,11 @@ impl PillModel {
                 self.geo_pres,
                 Pres::Recording { pausable: true, .. } | Pres::Paused
             ) || elems.iter().any(|e| e.id == ElemId::Pause),
-            is_notice: matches!(self.geo_pres, Pres::Message { .. }),
+            notice: match self.geo_pres {
+                Pres::Message { opens: true, .. } => NoticeKind::Opens,
+                Pres::Message { .. } => NoticeKind::Plain,
+                _ => NoticeKind::None,
+            },
             is_idle: matches!(self.geo_pres, Pres::DictationIdle),
             content_blur: max_blur,
             content_alpha: max_alpha,

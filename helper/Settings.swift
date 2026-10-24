@@ -16,13 +16,16 @@ import SwiftUI
 //    "capturesSize":"1.2 GB","permissions":[{"permission":"microphone","status":"granted",…}],
 //    "updates":true}
 //   {"type":"show","pane":"permissions"}  {"type":"request"|"open-settings","permission":"…"}
+//   {"type":"show","pane":"dictation","focus":{"kind":"word","entry":"Atlas"}} (or {"kind":"layouts"})
 //   {"type":"close"}
 // Clicks and key presses go back on stdout, e.g. {"action":"set","key":"autoSend","value":false},
 // {"action":"record-shortcut","kind":"record"}, {"action":"shortcut","kind":"record",
 // "keyCode":15,"modifiers":6144,"key":"r","reserved":false}, {"action":"cancel-shortcut"},
 // {"action":"reset-shortcut","kind":"paste"}, {"action":"grant","permission":"camera"},
 // {"action":"reopen"}, {"action":"show-captures"}, {"action":"check-for-updates"},
-// {"action":"tour"}, {"action":"install-cli"}, {"action":"uninstall-cli"}, {"action":"close"}.
+// {"action":"tour"}, {"action":"install-cli"}, {"action":"uninstall-cli"}, {"action":"close"},
+// {"action":"edit-word","was":"Atlas","word":"Atlas Prime"},
+// {"action":"edit-replacement","was":"atlis","heard":"atless","write":"Atlas"}.
 
 // MARK: State
 
@@ -213,9 +216,34 @@ enum SettingsPane: String, CaseIterable {
   }
 }
 
+/// A dictionary entry open for editing in place, with what has been typed so far.
+struct DictionaryEditing: Equatable {
+  enum Kind { case word, replacement }
+  var kind: Kind
+  /// The entry as saved: the word, or the replacement's heard words.
+  var was: String
+  var text: String
+  /// A replacement's written words.
+  var write = ""
+  /// Why the typed entry can't be saved.
+  var refusal: String?
+
+  static func word(_ word: String) -> Self { Self(kind: .word, was: word, text: word) }
+  static func replacement(_ entry: SettingsReplacement) -> Self {
+    Self(kind: .replacement, was: entry.heard, text: entry.heard, write: entry.write)
+  }
+}
+
 final class SettingsModel: ObservableObject {
   @Published var state = SettingsState()
   @Published var pane: SettingsPane
+  @Published var editing: DictionaryEditing?
+  /// The row a pill notice opened the pane at ("word:Atlas", "layouts"), lit for a moment.
+  @Published var highlight: String?
+  /// Counts focus requests, so a second click on the same notice scrolls again.
+  @Published var focusRequests = 0
+  /// Rendering: how far down the pane is scrolled, since ImageRenderer can't draw a scroll view.
+  var renderScroll: CGFloat = 0
   /// Modifiers held while a recorder listens, so their keycaps light as they go down.
   @Published var liveModifiers: NSEvent.ModifierFlags = []
   let icon: NSImage?
@@ -237,6 +265,82 @@ final class SettingsModel: ObservableObject {
 
   func set(_ key: String, _ value: Any) {
     act("set", ["key": key, "value": value])
+  }
+
+  /// A pill notice's click: the Dictation pane at a learned word, open for editing, or at the
+  /// learned-layouts row.
+  func focus(_ focus: [String: Any]) {
+    let row: String
+    switch (focus["kind"] as? String, focus["entry"] as? String) {
+    case ("word", let word?):
+      row = DictionaryRows.word(word)
+      if state.dictation.words.contains(word) { startEditing(.word(word)) }
+    case ("layouts", _):
+      row = DictionaryRows.layouts
+    default:
+      return
+    }
+    highlight = row
+    focusRequests += 1
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in
+      if self?.highlight == row { self?.highlight = nil }
+    }
+  }
+
+  /// Opens an entry for editing, saving the one open now first; one that can't be saved stays.
+  func startEditing(_ edit: DictionaryEditing) {
+    saveEditing()
+    if editing == nil { editing = edit }
+  }
+
+  /// Saves the entry being edited (only `was`, when given), or says why it can't be; an
+  /// unchanged one just closes.
+  func saveEditing(_ was: String? = nil) {
+    guard var edit = editing, was == nil || was == edit.was else { return }
+    let d = state.dictation
+    let text = edit.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    let write = edit.write.trimmingCharacters(in: .whitespaces)
+    edit.refusal = DictionaryRows.refusal(edit, text: text, write: write, in: d)
+    if edit.refusal != nil {
+      editing = edit
+      return
+    }
+    editing = nil
+    switch edit.kind {
+    case .word where text != edit.was:
+      act("edit-word", ["was": edit.was, "word": text])
+    case .replacement where text != edit.was || write != d.replacements.first(where: { $0.heard == edit.was })?.write:
+      act("edit-replacement", ["was": edit.was, "heard": text, "write": write])
+    default:
+      break
+    }
+  }
+}
+
+/// Row ids for scrolling to a dictionary entry, and the checks Scrawl makes again when it saves
+/// one (`Dictionary::edit_word`, `edit_replacement`), here so a refusal shows as the user types.
+enum DictionaryRows {
+  static let layouts = "layouts"
+  static func word(_ word: String) -> String { "word:\(word)" }
+  static func replacement(_ heard: String) -> String { "replacement:\(heard)" }
+
+  /// Words as the dictionary compares them: runs of letters, digits and apostrophes, lower-cased.
+  static func words(_ text: String) -> [String] {
+    text.lowercased().split { !($0.isLetter || $0.isNumber || $0 == "'") }.map(String.init)
+  }
+
+  static func refusal(_ edit: DictionaryEditing, text: String, write: String, in d: SettingsDictation) -> String? {
+    let words = words(text)
+    let taken: Bool
+    switch edit.kind {
+    case .word:
+      if words.isEmpty { return "An entry needs a word." }
+      taken = d.words.contains { $0 != edit.was && Self.words($0) == words }
+    case .replacement:
+      if words.isEmpty || write.isEmpty { return "An entry needs a word." }
+      taken = d.replacements.contains { $0.heard != edit.was && Self.words($0.heard) == words }
+    }
+    return taken ? "That's already in your dictionary." : nil
   }
 }
 
@@ -511,21 +615,29 @@ extension SettingsHeader where Trailing == EmptyView {
   }
 }
 
-/// A saved word, or a replacement as "heard → write", with a remove button.
+/// A saved word, or a replacement as "heard → write", with a remove button. A double click edits
+/// it in place.
 struct DictionaryEntryRow: View {
   @Environment(\.settingsTheme) private var theme
   let title: String
   var detail: String?
+  var lit = false
+  let edit: () -> Void
   let remove: () -> Void
 
   var body: some View {
     HStack(spacing: 8) {
-      Text(title).font(.system(size: 14)).foregroundStyle(theme.text).lineLimit(1)
-      if let detail {
-        Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.tertiary)
-        Text(detail).font(.system(size: 14)).foregroundStyle(theme.text).lineLimit(1)
+      HStack(spacing: 8) {
+        Text(title).font(.system(size: 14)).foregroundStyle(theme.text).lineLimit(1)
+        if let detail {
+          Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.tertiary)
+          Text(detail).font(.system(size: 14)).foregroundStyle(theme.text).lineLimit(1)
+        }
+        Spacer(minLength: 8)
       }
-      Spacer(minLength: 8)
+      .contentShape(Rectangle())
+      .onTapGesture(count: 2, perform: edit)
+      .help("Double-click to edit")
       Button(action: remove) {
         Image(systemName: "minus.circle.fill")
           .font(.system(size: 15))
@@ -537,6 +649,87 @@ struct DictionaryEntryRow: View {
     }
     .padding(.horizontal, 12)
     .frame(height: SettingsMetrics.row)
+    .background(DictionaryHighlight(lit: lit))
+  }
+}
+
+/// The wash behind the row a pill notice opened the pane at.
+struct DictionaryHighlight: View {
+  @Environment(\.settingsTheme) private var theme
+  let lit: Bool
+
+  var body: some View {
+    Rectangle().fill(theme.accent.opacity(lit ? 0.2 : 0)).animation(.easeOut(duration: 0.6), value: lit)
+  }
+}
+
+/// A word or replacement open for editing: Return or a click elsewhere saves, Esc cancels. An
+/// entry that can't be saved stays open with the reason under it.
+struct DictionaryEditRow: View {
+  private enum Field { case text, write }
+  @Environment(\.settingsTheme) private var theme
+  @Environment(\.settingsRendering) private var rendering
+  @Binding var edit: DictionaryEditing
+  var lit = false
+  let save: () -> Void
+  let cancel: () -> Void
+  @FocusState private var focused: Field?
+  @State private var closed = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 8) {
+        field($edit.text, .text, placeholder: edit.kind == .word ? "Word or phrase" : "Heard")
+        if edit.kind == .replacement {
+          Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.tertiary)
+          field($edit.write, .write, placeholder: "Write")
+        }
+      }
+      if let refusal = edit.refusal {
+        Text(refusal).font(.system(size: 12)).foregroundStyle(theme.negative).padding(.leading, 7)
+      }
+    }
+    .padding(.horizontal, 5)
+    .padding(.top, 6)
+    .padding(.bottom, edit.refusal == nil ? 6 : 10)
+    .frame(minHeight: SettingsMetrics.row)
+    .background(DictionaryHighlight(lit: lit))
+    .onAppear { DispatchQueue.main.async { focused = .text } }
+    .onChange(of: focused) { _, now in
+      if now == nil, !closed { finish(save) }
+    }
+  }
+
+  @ViewBuilder private func field(_ text: Binding<String>, _ which: Field, placeholder: String) -> some View {
+    let look = RoundedRectangle(cornerRadius: 6, style: .continuous)
+    Group {
+      if rendering {
+        HStack(spacing: 1) {
+          Text(text.wrappedValue).font(.system(size: 14)).foregroundStyle(theme.text)
+          if which == .text { Rectangle().fill(theme.accent).frame(width: 1.5, height: 16) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      } else {
+        TextField(placeholder, text: text)
+          .textFieldStyle(.plain)
+          .font(.system(size: 14))
+          .foregroundStyle(theme.text)
+          .focused($focused, equals: which)
+          .onSubmit { finish(save) }
+          .onExitCommand { finish(cancel) }
+          .onChange(of: text.wrappedValue) { edit.refusal = nil }
+      }
+    }
+    .padding(.horizontal, 7)
+    .frame(height: 28)
+    .background(look.fill(theme.control))
+    .overlay(look.strokeBorder(edit.refusal == nil ? theme.accent : theme.negative, lineWidth: 1.5))
+  }
+
+  /// Saving may leave the row open with a refusal, so only a close ends it.
+  private func finish(_ action: () -> Void) {
+    action()
+    closed = edit.refusal == nil
   }
 }
 
@@ -855,6 +1048,8 @@ struct SettingsView: View {
       .contentShape(Rectangle())
       .onTapGesture {
         if model.state.recording != nil { model.act("cancel-shortcut") }
+        // A click away from an entry being edited saves it, as Return does.
+        if model.editing != nil { NSApp.keyWindow?.makeFirstResponder(nil) }
       }
     }
     .frame(minWidth: SettingsMetrics.minWidth, maxWidth: .infinity,
@@ -943,17 +1138,30 @@ struct SettingsView: View {
         // top of a pane taller than the window in view.
         paneBody(pane)
           .padding(.horizontal, SettingsMetrics.inset)
+          .offset(y: -model.renderScroll)
           .frame(height: SettingsMetrics.height - SettingsMetrics.titlebar, alignment: .top).clipped()
       } else {
         // Every pane scrolls, so none is cut off at the window's minimum size. The inset is
         // inside the scroll view, so its bar sits at the window's edge, clear of the groups.
-        ScrollView {
-          paneBody(pane)
-            .padding(.horizontal, SettingsMetrics.inset)
-            .padding(.bottom, 16)
+        ScrollViewReader { proxy in
+          ScrollView {
+            paneBody(pane)
+              .padding(.horizontal, SettingsMetrics.inset)
+              .padding(.bottom, 16)
+          }
+          .onAppear { scrollToHighlight(proxy) }
+          .onChange(of: model.focusRequests) { scrollToHighlight(proxy) }
         }
       }
       Spacer(minLength: 0)
+    }
+  }
+
+  /// To the row a pill notice opened the pane at, once the pane has laid out.
+  private func scrollToHighlight(_ proxy: ScrollViewProxy) {
+    guard let row = model.highlight else { return }
+    DispatchQueue.main.async {
+      withAnimation(SettingsMotion.reduce ? nil : .easeInOut(duration: 0.3)) { proxy.scrollTo(row, anchor: .center) }
     }
   }
 
@@ -1059,14 +1267,30 @@ struct SettingsView: View {
         SettingsRow(title: d.learnedLayouts == 1 ? "1 layout learned" : "\(d.learnedLayouts) layouts learned") {
           SettingsButton(title: "Forget", enabled: d.learnedLayouts > 0) { model.act("forget-layouts") }
         }
+        .background(DictionaryHighlight(lit: model.highlight == DictionaryRows.layouts))
+        .id(DictionaryRows.layouts)
       }
       SettingsCaption(text: learningCaption(d))
       SettingsHeader(title: "Words") {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
       SettingsGroup {
-        ForEach(Array(d.words.enumerated()), id: \.offset) { _, word in
-          DictionaryEntryRow(title: d.learned.contains(word) ? "\(word) ✨" : word) { model.act("remove-word", ["word": word]) }
+        // By position: a file edited as text can hold the same word twice. Only its first copy
+        // edits, the one `Dictionary::edit_word` rewrites.
+        ForEach(Array(d.words.enumerated()), id: \.offset) { offset, word in
+          let first = d.words.firstIndex(of: word) == offset
+          let row = DictionaryRows.word(word)
+          Group {
+            if model.editing?.kind == .word && model.editing?.was == word && first {
+              DictionaryEditRow(edit: editing(.word(word)), lit: model.highlight == row,
+                                save: { model.saveEditing(word) }, cancel: { model.editing = nil })
+            } else {
+              DictionaryEntryRow(title: d.learned.contains(word) ? "\(word) ✨" : word, lit: model.highlight == row,
+                                 edit: { model.startEditing(.word(word)) },
+                                 remove: { model.act("remove-word", ["word": word]) })
+            }
+          }
+          .id(first ? row : "\(row)#\(offset)")
           SettingsSeparator()
         }
         DictionaryAddRow(placeholder: "Add a word or phrase", enabled: d.error == nil) { model.act("add-word", ["word": $0]) }
@@ -1075,16 +1299,35 @@ struct SettingsView: View {
       SettingsCaption(text: problem ?? "Written exactly as saved. Near misses of words of seven letters or more are fixed too.", error: problem != nil)
       SettingsHeader("Replacements")
       SettingsGroup {
-        ForEach(d.replacements, id: \.self) { entry in
-          DictionaryEntryRow(title: entry.heard, detail: entry.write) {
-            model.act("remove-replacement", ["heard": entry.heard])
+        ForEach(d.replacements, id: \.heard) { entry in
+          Group {
+            if model.editing?.kind == .replacement && model.editing?.was == entry.heard {
+              DictionaryEditRow(edit: editing(.replacement(entry)),
+                                save: { model.saveEditing(entry.heard) }, cancel: { model.editing = nil })
+            } else {
+              DictionaryEntryRow(title: entry.heard, detail: entry.write,
+                                 edit: { model.startEditing(.replacement(entry)) },
+                                 remove: { model.act("remove-replacement", ["heard": entry.heard]) })
+            }
           }
+          .id(DictionaryRows.replacement(entry.heard))
           SettingsSeparator()
         }
         ReplacementAddRow(enabled: d.error == nil) { model.act("add-replacement", ["heard": $0, "write": $1]) }
       }
       SettingsCaption(text: "When Scrawl hears the words on the left, it writes the ones on the right.")
     }
+  }
+
+  /// The open edit, for its row; `entry` stands in while the row goes away.
+  private func editing(_ entry: DictionaryEditing) -> Binding<DictionaryEditing> {
+    Binding(
+      get: {
+        guard let open = model.editing, open.kind == entry.kind, open.was == entry.was else { return entry }
+        return open
+      },
+      set: { if model.editing?.kind == entry.kind && model.editing?.was == entry.was { model.editing = $0 } }
+    )
   }
 
   /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
@@ -1605,6 +1848,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
         else { continue }
         let permission = object["permission"] as? String ?? ""
         let pane = (object["pane"] as? String).flatMap(SettingsPane.init(rawValue:))
+        let focus = object["focus"] as? [String: Any]
         let state = type == "state" ? try? JSONDecoder().decode(SettingsState.self, from: data) : nil
         DispatchQueue.main.async {
           switch type {
@@ -1617,7 +1861,9 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
               self.presented = true
               self.present(nil)
             }
-          case "show": self.present(pane)
+          case "show":
+            self.present(pane)
+            if let focus = focus { self.model.focus(focus) }
           case "request": Permissions.request(permission)
           case "open-settings": Permissions.openSettings(permission)
           case "close":
@@ -1710,6 +1956,18 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       SettingsReplacement(heard: "feris", write: "Ferris"),
       SettingsReplacement(heard: "var de labs", write: "Varde Labs"),
     ]
+    var editingWord = dictating
+    editingWord.dictation.words = ["Atlas", "Nova", "Parakeet", "Orbit"]
+    editingWord.dictation.learned = ["Orbit"]
+    editingWord.dictation.replacements = [
+      SettingsReplacement(heard: "atlis", write: "Atlas"),
+      SettingsReplacement(heard: "no va", write: "Nova"),
+    ]
+    let edits: [String: DictionaryEditing] = [
+      "dictation-editing": DictionaryEditing(kind: .word, was: "Nova", text: "Nova Prime"),
+      "dictation-edit-refused": DictionaryEditing(kind: .word, was: "Orbit", text: "atlas", refusal: "That's already in your dictionary."),
+      "dictation-editing-replacement": DictionaryEditing(kind: .replacement, was: "atlis", text: "atless", write: "Atlas"),
+    ]
     var replacementsOnly = dictating
     replacementsOnly.dictation.words = []
     var dictionaryBroken = base
@@ -1730,6 +1988,10 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("dictation-empty", .dictation, base, []),
       ("dictation-replacements", .dictation, replacementsOnly, []),
       ("dictation-broken", .dictation, dictionaryBroken, []),
+      ("dictation-editing", .dictation, editingWord, []),
+      ("dictation-edit-refused", .dictation, editingWord, []),
+      ("dictation-editing-replacement", .dictation, editingWord, []),
+      ("dictation-opened", .dictation, editingWord, []),
       ("storage", .storage, base, []),
       ("permissions", .permissions, base, []),
       ("permissions-missing", .permissions, missing, []),
@@ -1745,10 +2007,16 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var index = 0
     for scheme in [ColorScheme.dark, .light] {
       for (name, pane, state, live) in samples {
-        if scheme == .light && name.contains("-") && name != "general-recording-shortcut" && !name.hasPrefix("recording-mic") { continue }
+        if scheme == .light && name.contains("-") && name != "general-recording-shortcut" && !name.hasPrefix("recording-mic")
+          && !name.hasPrefix("dictation-edit") && name != "dictation-opened" { continue }
         index += 1
         model.state = state
         model.pane = pane
+        // The Words and Replacements groups sit below the window's height.
+        let editing = edits[name] ?? (name == "dictation-opened" ? .word("Orbit") : nil)
+        model.editing = editing
+        model.highlight = name == "dictation-opened" ? DictionaryRows.word("Orbit") : nil
+        model.renderScroll = editing == nil ? 0 : 560
         model.liveModifiers = live
         model.meter.level = 0.44
         let view = SettingsView(model: model)

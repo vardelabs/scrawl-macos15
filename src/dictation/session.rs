@@ -136,8 +136,8 @@ struct PillState<'a> {
     /// Listening, and whether latched.
     dictating: Option<bool>,
     capture_busy: bool,
-    /// The notice's text, and whether it offers Undo.
-    notice: Option<(&'a str, bool)>,
+    /// The notice's text, whether it offers Undo, and whether a click on it opens Settings.
+    notice: Option<(&'a str, bool, bool)>,
     enabled: bool,
     pill: bool,
     hovered: bool,
@@ -157,10 +157,11 @@ fn presentation(state: &PillState) -> Pres {
     if state.capture_busy {
         return Pres::Hidden;
     }
-    if let Some((text, undo)) = state.notice {
+    if let Some((text, undo, opens)) = state.notice {
         return Pres::Message {
             label: text.to_owned(),
             undo,
+            opens,
         };
     }
     // With dictation off the bar stays away, so turning dictation on is what adds it to the screen.
@@ -211,6 +212,8 @@ pub struct Dictation {
     /// Transcribing and pasting on a worker; the next dictation waits for it.
     working: Option<flume::Receiver<Outcome>>,
     notices: super::notices::Notices,
+    /// Where in Settings a clicked notice asked to open, until the coordinator takes it.
+    open: Option<crate::settings::Focus>,
     /// What the edit watcher learned, checked and saved on this thread (`take_learned`).
     learned_tx: flume::Sender<Learned>,
     learned_rx: flume::Receiver<Learned>,
@@ -248,6 +251,7 @@ impl Default for Dictation {
             playback: None,
             working: None,
             notices: super::notices::Notices::default(),
+            open: None,
             learned_tx,
             learned_rx,
         }
@@ -298,23 +302,31 @@ impl Dictation {
         }
         if self.settings.enabled {
             self.listen(telemetry, capture_busy, clicks);
-        } else if clicks.iter().any(|c| matches!(c, PillAction::MessageClicked)) {
-            // Off, the pill can still show the last dictation's notice; a click dismisses it.
-            self.notices.dismiss(Instant::now());
+        } else if clicks.iter().any(|c| matches!(c, PillAction::MessageClicked)) && self.notices.showing() {
+            // Off, the pill can still show the last dictation's notice; a click takes it.
+            self.notice_clicked();
         }
         let free = pill.shown && self.working.is_none() && self.started.is_none() && !capture_busy;
-        let notice = self.notices.current(free, Instant::now()).map(|n| (n.text.clone(), n.undo.is_some()));
+        let notice = self
+            .notices
+            .current(free, Instant::now())
+            .map(|n| (n.text.clone(), n.undo.is_some(), n.opens.is_some()));
         presentation(&PillState {
             working: self.working.is_some(),
             dictating: self.started.map(|_| self.chord.is_latched()),
             capture_busy,
-            notice: notice.as_ref().map(|(text, undo)| (text.as_str(), *undo)),
+            notice: notice.as_ref().map(|(text, undo, opens)| (text.as_str(), *undo, *opens)),
             enabled: self.settings.enabled,
             pill: self.settings.pill,
             hovered: pill.hovered,
             chord: &self.settings.label,
             copy: self.settings.has_last,
         })
+    }
+
+    /// Where in Settings the last clicked notice asked to open, once.
+    pub fn take_open(&mut self) -> Option<crate::settings::Focus> {
+        self.open.take()
     }
 
     /// Listening or transcribing, so the pill should show it now.
@@ -351,7 +363,7 @@ impl Dictation {
 
     fn copy(&mut self, text: &str) {
         match crate::handoff::copy_string_to_clipboard(text) {
-            Ok(()) => self.notices.push_first("Copied"),
+            Ok(()) => self.notices.push_first("Copied", None),
             Err(error) => scrawl_log(format!("Dictation: could not copy a dictation: {error:#}")),
         }
     }
@@ -424,13 +436,20 @@ impl Dictation {
         }
     }
 
-    /// A click on a notice dismisses it; a click on the hint starts hands-free dictation, unless
-    /// it lands just after a notice went (the press was meant for the notice).
+    /// A click on a notice dismisses it, opening Settings at what it reports; a click on the hint
+    /// starts hands-free dictation, unless it lands just after a notice went (the press was meant
+    /// for the notice).
     fn message_clicked(&mut self, capture_busy: bool, key_tap_live: bool) {
         if self.notices.showing() {
-            self.notices.dismiss(Instant::now());
+            self.notice_clicked();
         } else if self.notices.gone().is_none_or(|at| at.elapsed() >= CLICK_GRACE) {
             self.start_hands_free(capture_busy, key_tap_live);
+        }
+    }
+
+    fn notice_clicked(&mut self) {
+        if let Some(opens) = self.notices.dismiss(Instant::now()).and_then(|n| n.opens) {
+            self.open = Some(opens);
         }
     }
 
@@ -472,12 +491,14 @@ impl Dictation {
             Err(flume::TryRecvError::Disconnected) => Outcome::Quiet,
         };
         self.working = None;
-        let text = match outcome {
-            Outcome::Pasted(laid_out) => laid_out.filter(|_| self.settings.notices),
-            other => other.notice(),
+        let (text, opens) = match outcome {
+            Outcome::Pasted(laid_out) => {
+                (laid_out.filter(|_| self.settings.notices), Some(crate::settings::Focus::Layouts))
+            }
+            other => (other.notice(), None),
         };
         if let Some(text) = text {
-            self.notices.push_first(text);
+            self.notices.push_first(text, opens);
         }
     }
 
@@ -748,6 +769,14 @@ fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Send
         let Some(field) = crate::ax::FocusedText::current() else { return };
         let Some(paste) = read(&field).and_then(|value| super::learn::locate(&value, &pasted)) else { return };
         let mut settle = super::learn::Settle::default();
+        let mut taught = Taught::default();
+        let mut teach = |edited: &str| {
+            let words = super::learn::learned(&paste.text, edited);
+            let layout = dictated.as_deref().and_then(|dictated| super::layout::example(dictated, &paste.text, edited, &words));
+            if let Some(learned) = taught.news(words, layout, generation) {
+                let _ = candidates.send(learned);
+            }
+        };
         let started = Instant::now();
         while started.elapsed() < LEARN_FOR && field.still_focused() {
             std::thread::sleep(LEARN_EVERY);
@@ -755,20 +784,47 @@ fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Send
             if !settle.read(value.as_deref().and_then(|value| super::learn::edited_span(&paste, value))) {
                 break;
             }
+            // An edit left alone teaches now, so the user needn't leave the field to see it.
+            if let Some(edited) = settle.quiet() {
+                teach(&edited.to_owned());
+            }
         }
         // Focus moved or time ran out: the last edit gets one more read, a full interval later so
         // it can't agree with a read a moment before. A window closed at the send reads as gone.
         std::thread::sleep(LEARN_EVERY);
         settle.read(read(&field).as_deref().and_then(|value| super::learn::edited_span(&paste, value)));
-        let Some(edited) = settle.settled() else { return };
-        let words = super::learn::learned(&paste.text, &edited);
-        let layout = dictated.and_then(|dictated| super::layout::example(&dictated, &paste.text, &edited, &words));
-        if !words.is_empty() || layout.is_some() {
-            let _ = candidates.send(Learned { words, layout, generation });
+        if let Some(edited) = settle.settled() {
+            teach(&edited);
         }
     });
     if let Err(error) = spawned {
         scrawl_log(format!("Dictation: could not watch for edits: {error}"));
+    }
+}
+
+/// What one watch already sent, so a span that teaches while focused isn't sent again later.
+#[derive(Default)]
+struct Taught {
+    words: Vec<super::learn::Respelling>,
+    layouts: Vec<super::layout::Example>,
+}
+
+impl Taught {
+    /// What `words` and `layout` add to what was sent, if anything.
+    fn news(
+        &mut self,
+        words: Vec<super::learn::Respelling>,
+        layout: Option<super::layout::Example>,
+        generation: u64,
+    ) -> Option<Learned> {
+        let words: Vec<_> = words.into_iter().filter(|w| !self.words.contains(w)).collect();
+        let layout = layout.filter(|l| !self.layouts.contains(l));
+        if words.is_empty() && layout.is_none() {
+            return None;
+        }
+        self.words.extend(words.iter().cloned());
+        self.layouts.extend(layout.iter().cloned());
+        Some(Learned { words, layout, generation })
     }
 }
 
@@ -999,24 +1055,40 @@ mod tests {
         assert_eq!(presentation(&PillState { hovered: true, ..idle() }), hint);
         let copy = Pres::Hint { dictate: "Dictate ⌃⌥".into(), copy: true };
         assert_eq!(presentation(&PillState { hovered: true, copy: true, ..idle() }), copy);
-        let copied = PillState { notice: Some(("Copied to the clipboard", false)), hovered: true, ..idle() };
-        assert!(matches!(presentation(&copied), Pres::Message { undo: false, .. }));
-        let learned = PillState { notice: Some(("Learned your formatting", true)), ..idle() };
-        assert!(matches!(presentation(&learned), Pres::Message { undo: true, .. }));
-        let listening = PillState { dictating: Some(true), notice: Some(("x", true)), ..idle() };
+        let copied = PillState { notice: Some(("Copied to the clipboard", false, false)), hovered: true, ..idle() };
+        assert!(matches!(presentation(&copied), Pres::Message { undo: false, opens: false, .. }));
+        let learned = PillState { notice: Some(("Learned your formatting", true, true)), ..idle() };
+        assert!(matches!(presentation(&learned), Pres::Message { undo: true, opens: true, .. }));
+        let listening = PillState { dictating: Some(true), notice: Some(("x", true, true)), ..idle() };
         assert_eq!(presentation(&listening), Pres::Dictating { latched: true });
         let both = PillState { working: true, dictating: Some(false), ..idle() };
         assert_eq!(presentation(&both), Pres::Processing);
     }
 
     #[test]
+    fn a_watch_sends_each_word_it_learns_once() {
+        let respelled = |was: &str, now: &str| (was.to_owned(), now.to_owned());
+        let mut taught = Taught::default();
+        let first = taught.news(vec![respelled("close", "Klose")], None, 0).map(|l| l.words);
+        assert_eq!(first, Some(vec![respelled("close", "Klose")]));
+        assert!(taught.news(vec![respelled("close", "Klose")], None, 0).is_none(), "taught while focused, not again at the end");
+        let more = taught.news(vec![respelled("close", "Klose"), respelled("orbet", "Orbett")], None, 0).map(|l| l.words);
+        assert_eq!(more, Some(vec![respelled("orbet", "Orbett")]));
+
+        let layout = |laid_out: &str| super::super::layout::Example { dictated: "a b".into(), laid_out: laid_out.into() };
+        assert!(taught.news(Vec::new(), Some(layout("a\nb")), 0).is_some());
+        assert!(taught.news(Vec::new(), Some(layout("- a\n- b")), 0).is_some());
+        assert!(taught.news(Vec::new(), Some(layout("a\nb")), 0).is_none(), "an earlier layout isn't sent again");
+    }
+
+    #[test]
     fn the_idle_pill_hides_for_captures_and_when_off() {
-        let capture = PillState { capture_busy: true, notice: Some(("x", false)), ..idle() };
+        let capture = PillState { capture_busy: true, notice: Some(("x", false, false)), ..idle() };
         assert_eq!(presentation(&capture), Pres::Hidden);
         assert_eq!(presentation(&PillState { pill: false, ..idle() }), Pres::Hidden);
         assert_eq!(presentation(&PillState { enabled: false, hovered: true, ..idle() }), Pres::Hidden);
         // A notice still shows with the idle pill off: it reports a dictation that just ran.
-        let notice = PillState { pill: false, enabled: false, notice: Some(("x", false)), ..idle() };
+        let notice = PillState { pill: false, enabled: false, notice: Some(("x", false, false)), ..idle() };
         assert!(matches!(presentation(&notice), Pres::Message { .. }));
     }
 

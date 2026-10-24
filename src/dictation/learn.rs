@@ -115,6 +115,10 @@ pub struct Settle {
 /// Reads in a row a span needs when the watch ends with it gone: a word finished and sent within
 /// one read of a pause ("Klo", then "Klose" and Enter) was never read whole.
 const AGREEING_WHEN_GONE: usize = 3;
+/// Reads in a row that let a span teach while the field still has focus: long enough that a pause
+/// inside a word ("Pipedr…") rarely reaches it, short enough that the user sees what was learned
+/// without leaving the field.
+const AGREEING_WHILE_FOCUSED: usize = 4;
 
 impl Settle {
     /// Takes the next read of the span; `false` once it is gone or empty, ending the watch.
@@ -130,6 +134,12 @@ impl Settle {
             self.agreeing = 1;
         }
         true
+    }
+
+    /// The span while the watch goes on, once it has stayed the same for `AGREEING_WHILE_FOCUSED`
+    /// reads.
+    pub fn quiet(&self) -> Option<&str> {
+        self.last.as_deref().filter(|_| !self.gone && self.agreeing >= AGREEING_WHILE_FOCUSED)
     }
 
     /// The last span, once reads agree on it: two in a row, or `AGREEING_WHEN_GONE` when the span
@@ -330,6 +340,19 @@ mod tests {
         }
         left_alone.read(None);
         assert_eq!(left_alone.settled().as_deref(), Some("I met Klose"));
+    }
+
+    #[test]
+    fn a_span_left_alone_teaches_while_the_field_has_focus() {
+        let mut settle = Settle::default();
+        for read in ["I met close", "I met Klose", "I met Klose", "I met Klose"] {
+            settle.read(Some(read));
+            assert_eq!(settle.quiet(), None, "not yet quiet");
+        }
+        settle.read(Some("I met Klose"));
+        assert_eq!(settle.quiet(), Some("I met Klose"));
+        settle.read(Some("I met Klose."));
+        assert_eq!(settle.quiet(), None, "a new edit starts over");
     }
 
     #[test]
