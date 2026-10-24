@@ -1278,9 +1278,10 @@ struct SettingsView: View {
         // By position: a file edited as text can hold the same word twice. Only its first copy
         // edits, the one `Dictionary::edit_word` rewrites.
         ForEach(Array(d.words.enumerated()), id: \.offset) { offset, word in
+          let first = d.words.firstIndex(of: word) == offset
           let row = DictionaryRows.word(word)
           Group {
-            if model.editing?.kind == .word && model.editing?.was == word && d.words.firstIndex(of: word) == offset {
+            if model.editing?.kind == .word && model.editing?.was == word && first {
               DictionaryEditRow(edit: editing(.word(word)), lit: model.highlight == row,
                                 save: { model.saveEditing(word) }, cancel: { model.editing = nil })
             } else {
@@ -1289,7 +1290,7 @@ struct SettingsView: View {
                                  remove: { model.act("remove-word", ["word": word]) })
             }
           }
-          .id(row)
+          .id(first ? row : "\(row)#\(offset)")
           SettingsSeparator()
         }
         DictionaryAddRow(placeholder: "Add a word or phrase", enabled: d.error == nil) { model.act("add-word", ["word": $0]) }
