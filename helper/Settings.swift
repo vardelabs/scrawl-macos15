@@ -1275,10 +1275,12 @@ struct SettingsView: View {
         SettingsButton(title: "Edit as Text…") { model.act("edit-dictionary") }
       }
       SettingsGroup {
-        ForEach(d.words, id: \.self) { word in
+        // By position: a file edited as text can hold the same word twice. Only its first copy
+        // edits, the one `Dictionary::edit_word` rewrites.
+        ForEach(Array(d.words.enumerated()), id: \.offset) { offset, word in
           let row = DictionaryRows.word(word)
           Group {
-            if model.editing?.kind == .word && model.editing?.was == word {
+            if model.editing?.kind == .word && model.editing?.was == word && d.words.firstIndex(of: word) == offset {
               DictionaryEditRow(edit: editing(.word(word)), lit: model.highlight == row,
                                 save: { model.saveEditing(word) }, cancel: { model.editing = nil })
             } else {

@@ -1039,6 +1039,10 @@ impl ScrawlCoordinator {
 
     fn show_settings(&mut self, pane: Option<crate::settings::Pane>, focus: Option<&crate::settings::Focus>) {
         if let Some(session) = self.settings.as_mut() {
+            // A word learned this moment may not be in the window's state until the next tick.
+            if focus.is_some() {
+                session.sync(&crate::settings::AppHost { telemetry: &self.telemetry });
+            }
             session.show(pane, focus);
             return;
         }

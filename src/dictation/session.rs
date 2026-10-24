@@ -806,7 +806,7 @@ fn watch_edits(pasted: String, dictated: Option<String>, candidates: flume::Send
 #[derive(Default)]
 struct Taught {
     words: Vec<super::learn::Respelling>,
-    layout: Option<super::layout::Example>,
+    layouts: Vec<super::layout::Example>,
 }
 
 impl Taught {
@@ -818,14 +818,12 @@ impl Taught {
         generation: u64,
     ) -> Option<Learned> {
         let words: Vec<_> = words.into_iter().filter(|w| !self.words.contains(w)).collect();
-        let layout = layout.filter(|l| self.layout.as_ref() != Some(l));
+        let layout = layout.filter(|l| !self.layouts.contains(l));
         if words.is_empty() && layout.is_none() {
             return None;
         }
         self.words.extend(words.iter().cloned());
-        if layout.is_some() {
-            self.layout.clone_from(&layout);
-        }
+        self.layouts.extend(layout.iter().cloned());
         Some(Learned { words, layout, generation })
     }
 }
@@ -1076,6 +1074,11 @@ mod tests {
         assert!(taught.news(vec![respelled("close", "Klose")], None, 0).is_none(), "taught while focused, not again at the end");
         let more = taught.news(vec![respelled("close", "Klose"), respelled("orbet", "Orbett")], None, 0).map(|l| l.words);
         assert_eq!(more, Some(vec![respelled("orbet", "Orbett")]));
+
+        let layout = |laid_out: &str| super::super::layout::Example { dictated: "a b".into(), laid_out: laid_out.into() };
+        assert!(taught.news(Vec::new(), Some(layout("a\nb")), 0).is_some());
+        assert!(taught.news(Vec::new(), Some(layout("- a\n- b")), 0).is_some());
+        assert!(taught.news(Vec::new(), Some(layout("a\nb")), 0).is_none(), "an earlier layout isn't sent again");
     }
 
     #[test]
