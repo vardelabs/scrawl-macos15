@@ -141,6 +141,9 @@ pub fn prestart() -> Option<crate::command_transcriber::Prestarted> {
     let program = crate::handoff::transcribe_command()
         .ok()
         .filter(|program| program.prestarts())?;
+    if let Some(parked) = PARKED.take().filter(|parked| parked.runs(&program) && parked.alive()) {
+        return Some(parked);
+    }
     program
         .prestart()
         .inspect_err(|failure| {
@@ -149,6 +152,26 @@ pub fn prestart() -> Option<crate::command_transcriber::Prestarted> {
             ))
         })
         .ok()
+}
+
+/// A command transcriber started after the last transcription, its model already loaded, for the
+/// next recording to take (`prestart`).
+static PARKED: crate::park::Park<crate::command_transcriber::Prestarted> = crate::park::Park::new();
+
+/// Starts the next recording's command transcriber and parks it, so its model loads before that
+/// recording begins. Called once a recording's own work is done: its first pass on the GPU would
+/// otherwise slow the dictation formatter still laying out that recording's text.
+pub fn park_transcriber() {
+    if Engine::preferred() != Engine::Command {
+        return;
+    }
+    let Some(program) = crate::handoff::transcribe_command().ok().filter(|program| program.prestarts()) else {
+        return;
+    };
+    std::thread::spawn(move || match program.prestart() {
+        Ok(prestarted) => PARKED.put(prestarted, crate::park::PARK_FOR),
+        Err(failure) => crate::capture::scrawl_log(format!("Parking the command transcriber failed: {failure}")),
+    });
 }
 
 /// A recording's prestarted transcriber, taken once by its transcription. `RecordedAudio` is

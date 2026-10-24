@@ -1,7 +1,8 @@
 //! The local formatter model (`formatCommand`, `scripts/scrawl-format.py`), started once a
 //! dictation has run a few seconds so its model loads while the user talks. `format` hands it the text and waits
 //! a short while; dropping it unused (a short or cancelled dictation) kills its process group.
-//! Like the command transcriber, its stderr is discarded and its stdout never logged.
+//! Like the command transcriber, its stderr is discarded and its stdout never logged. After each
+//! use a fresh one is parked (`crate::park`), so the next dictation finds its model loaded.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -13,6 +14,16 @@ const OUTPUT_LIMIT: u64 = 1024 * 1024;
 
 pub struct Formatter {
     child: Option<Child>,
+    command: Vec<String>,
+    /// When the learned layouts it read at start were last saved, so a parked one that predates
+    /// a newly learned layout isn't used.
+    examples: Option<std::time::SystemTime>,
+}
+
+static PARKED: crate::park::Park<Formatter> = crate::park::Park::new();
+
+fn examples_saved() -> Option<std::time::SystemTime> {
+    std::fs::metadata(super::layout::default_path()).and_then(|meta| meta.modified()).ok()
 }
 
 #[derive(serde::Deserialize)]
@@ -26,6 +37,17 @@ impl Formatter {
     /// and `SCRAWL_FORMAT_EXAMPLES`, the layouts learned from the user's edits (`layout`), which
     /// it reads while the user talks.
     pub fn prestart(command: &[String]) -> anyhow::Result<Self> {
+        let parked = PARKED.take().filter(|parked| {
+            parked.command == command && parked.examples == examples_saved() && parked.alive()
+        });
+        match parked {
+            Some(parked) => Ok(parked),
+            None => Self::start(command),
+        }
+    }
+
+    fn start(command: &[String]) -> anyhow::Result<Self> {
+        let examples = examples_saved();
         let (program, args) = command.split_first().ok_or_else(|| anyhow::anyhow!("formatCommand is empty"))?;
         let child = Command::new(program)
             .args(args)
@@ -37,7 +59,25 @@ impl Formatter {
             .process_group(0)
             .spawn()
             .map_err(|error| anyhow::anyhow!("could not start formatCommand ({})", error.kind()))?;
-        Ok(Self { child: Some(child) })
+        Ok(Self { child: Some(child), command: command.to_vec(), examples })
+    }
+
+    /// Whether its process is still running, checked without reaping it.
+    fn alive(&self) -> bool {
+        self.child.as_ref().is_some_and(|child| crate::command_transcriber::running(child.id() as libc::pid_t))
+    }
+
+    /// Puts a formatter a dictation didn't need back, for the next one.
+    pub fn park(self) {
+        PARKED.put(self, crate::park::PARK_FOR);
+    }
+
+    /// Starts and parks the next dictation's formatter, so its model loads now.
+    fn park_next(command: Vec<String>) {
+        std::thread::spawn(move || match Self::start(&command) {
+            Ok(formatter) => formatter.park(),
+            Err(error) => crate::capture::scrawl_log(format!("Dictation: parking the formatter failed: {error:#}")),
+        });
     }
 
     /// The laid-out text, or `None` when the formatter fails, answers badly or takes longer than
@@ -59,6 +99,7 @@ impl Formatter {
         });
         let out = reply.recv_timeout(wait).ok().flatten();
         end(child);
+        Self::park_next(std::mem::take(&mut self.command));
         let reply: Reply = serde_json::from_str(&out?).ok()?;
         (reply.version == 1).then_some(reply.text)
     }

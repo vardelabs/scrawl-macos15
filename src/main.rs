@@ -34,6 +34,7 @@ mod native;
 mod onboarding;
 mod onboarding_window;
 mod page;
+mod park;
 mod pause;
 mod phone;
 // Lowers the output volume while recording on macOS; elsewhere a no-op.
@@ -915,6 +916,7 @@ pub fn finalize_capture_bundle(
                 has_wav.then_some(wav_path.as_path()),
                 recorded_audio.as_ref(),
             );
+            transcribe::park_transcriber();
             (tr, t0.elapsed().as_millis() as u64)
         });
         let pre = if let Some(ref movie) = video_path
