@@ -3,8 +3,8 @@
 //! them. The last stays in memory for the button; with **Keep recent dictations**
 //! (`dictationHistory`, default on) the newest `MAX_ENTRIES` are also kept on disk, owner-only, in
 //! `~/Library/Application Support/scrawl/dictation-history.json`, so a quit or crash keeps them,
-//! and the last dictation's audio is kept beside it in `last-dictation.wav`, so a transcript that
-//! lost words can be checked against what was said. Clear deletes both and forgets the last.
+//! and the last recording's audio is kept beside it in `last-dictation.wav`, whatever came of it,
+//! so a transcript that lost words (or none at all) can be checked against what was said. Clear deletes both and forgets the last.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
