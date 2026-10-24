@@ -24,6 +24,23 @@ pub struct Dictionary {
     pub other: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Why Settings refused an entry edited in place, said under the row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    Empty,
+    /// Another entry already has these words (ignoring case and spacing).
+    Taken,
+}
+
+impl Refusal {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Empty => "An entry needs a word.",
+            Self::Taken => "That's already in your dictionary.",
+        }
+    }
+}
+
 /// Settings and the edit watcher each load, change and save the file; holding this keeps one from
 /// saving over the other's change.
 pub fn edit_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -107,6 +124,28 @@ impl Dictionary {
         }
     }
 
+    /// Rewrites the word `was` where it stands. A learned word stays marked only while its text is
+    /// unchanged; it isn't recorded as rejected, since the user corrected it rather than removed it.
+    /// A `was` that went meanwhile (Undo in the pill) is added as new.
+    pub fn edit_word(&mut self, was: &str, word: &str) -> Result<(), Refusal> {
+        let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
+        if words_of(&word).is_empty() {
+            return Err(Refusal::Empty);
+        }
+        if self.words.iter().any(|w| w != was && same(w, &word)) {
+            return Err(Refusal::Taken);
+        }
+        match self.words.iter_mut().find(|w| *w == was) {
+            Some(slot) if *slot == word => {}
+            Some(slot) => {
+                *slot = word;
+                self.learned.retain(|w| w != was);
+            }
+            None => self.words.push(word),
+        }
+        Ok(())
+    }
+
     /// Adds a word learned from an edit, unless the dictionary already has it or the user
     /// removed it after it was learned.
     pub fn learn_word(&mut self, word: &str) -> bool {
@@ -131,6 +170,21 @@ impl Dictionary {
         self.replacements.retain(|h, _| !same(h, heard));
         self.replacements.insert(heard.to_owned(), write.to_owned());
         true
+    }
+
+    /// Rewrites the replacement for `was` where it stands. Unlike `add_replacement`, words heard
+    /// by another entry are refused rather than taking it over.
+    pub fn edit_replacement(&mut self, was: &str, heard: &str, write: &str) -> Result<(), Refusal> {
+        let (heard, write) = (heard.trim(), write.trim());
+        if words_of(heard).is_empty() || write.is_empty() {
+            return Err(Refusal::Empty);
+        }
+        if self.replacements.keys().any(|h| h != was && same(h, heard)) {
+            return Err(Refusal::Taken);
+        }
+        self.replacements.remove(was);
+        self.replacements.insert(heard.to_owned(), write.to_owned());
+        Ok(())
     }
 
     pub fn remove_replacement(&mut self, heard: &str) {
@@ -352,6 +406,40 @@ mod tests {
         assert_eq!(d.apply("feris"), "Ferris!");
         d.remove_replacement("Feris");
         assert!(d.replacements.is_empty());
+    }
+
+    #[test]
+    fn words_are_edited_in_place_and_refused_when_empty_or_taken() {
+        let mut d = dict(&["Atlas", "Nova", "Orbit"], &[]);
+        d.learned = vec!["Nova".into()];
+        assert_eq!(d.edit_word("Atlas", "  Atlas   Prime "), Ok(()));
+        assert_eq!(d.words, ["Atlas Prime", "Nova", "Orbit"], "it keeps its place");
+        assert_eq!(d.edit_word("Orbit", " , "), Err(Refusal::Empty));
+        assert_eq!(d.edit_word("Orbit", "nova"), Err(Refusal::Taken));
+        assert_eq!(d.edit_word("Orbit", "ORBIT"), Ok(()), "its own words, recased, aren't taken");
+        assert_eq!(d.words, ["Atlas Prime", "Nova", "ORBIT"]);
+
+        assert_eq!(d.edit_word("Nova", "Nova"), Ok(()));
+        assert_eq!(d.learned, ["Nova"], "unchanged, a learned word stays marked");
+        assert_eq!(d.edit_word("Nova", "Novak"), Ok(()));
+        assert!(d.learned.is_empty(), "changed, it is the user's word");
+        assert!(d.rejected.is_empty(), "and the old spelling isn't rejected");
+
+        assert_eq!(d.edit_word("Gone", "Comet"), Ok(()));
+        assert_eq!(d.words.last().map(String::as_str), Some("Comet"), "a word removed meanwhile is added");
+    }
+
+    #[test]
+    fn replacements_are_edited_in_place_and_refused_when_empty_or_taken() {
+        let mut d = dict(&[], &[("atlis", "Atlas"), ("no va", "Nova")]);
+        assert_eq!(d.edit_replacement("atlis", " atless ", " Atlas! "), Ok(()));
+        assert_eq!(d.replacements.get("atless").map(String::as_str), Some("Atlas!"));
+        assert!(!d.replacements.contains_key("atlis"));
+        assert_eq!(d.edit_replacement("atless", "atless", " "), Err(Refusal::Empty));
+        assert_eq!(d.edit_replacement("atless", "  ", "Atlas"), Err(Refusal::Empty));
+        assert_eq!(d.edit_replacement("atless", "No  Va", "Atlas"), Err(Refusal::Taken));
+        assert_eq!(d.edit_replacement("no va", "No Va", "Nova"), Ok(()), "its own words aren't taken");
+        assert_eq!(d.replacements.len(), 2);
     }
 
     #[test]

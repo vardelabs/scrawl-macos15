@@ -1029,8 +1029,17 @@ impl ScrawlCoordinator {
 
     /// Opens Settings, or brings it forward on `pane`.
     pub fn open_settings(&mut self, pane: Option<crate::settings::Pane>) {
+        self.show_settings(pane, None);
+    }
+
+    /// Settings on the Dictation pane at what a clicked pill notice reported.
+    fn open_settings_at(&mut self, focus: crate::settings::Focus) {
+        self.show_settings(Some(crate::settings::Pane::Dictation), Some(&focus));
+    }
+
+    fn show_settings(&mut self, pane: Option<crate::settings::Pane>, focus: Option<&crate::settings::Focus>) {
         if let Some(session) = self.settings.as_mut() {
-            session.show(pane);
+            session.show(pane, focus);
             return;
         }
         let sender = self.telemetry.ui_sender.clone();
@@ -1042,6 +1051,10 @@ impl ScrawlCoordinator {
                 session.sync(&crate::settings::AppHost {
                     telemetry: &self.telemetry,
                 });
+                // After the first state, so the pane has the entry to scroll to.
+                if focus.is_some() {
+                    session.show(pane, focus);
+                }
                 self.settings = Some(session);
             }
             Err(error) => scrawl_log(format!("Settings could not open: {error:#}")),
@@ -1991,6 +2004,9 @@ impl ScrawlCoordinator {
         let record = input.clicks.iter().any(|c| matches!(c, PillAction::RecordScreen));
         input.clicks.retain(|c| !matches!(c, PillAction::RecordScreen));
         let pres = self.dictation.tick(&self.telemetry, capture_busy, input);
+        if let Some(focus) = self.dictation.take_open() {
+            self.open_settings_at(focus);
+        }
         if record && free {
             self.record_from_pill(cx);
         } else if free {

@@ -634,6 +634,15 @@ pub enum Pane {
     About,
 }
 
+/// What a click on a pill notice opens the Dictation pane at: a learned word, scrolled to,
+/// highlighted and open for editing, or the learned-layouts row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "entry", rename_all = "kebab-case")]
+pub enum Focus {
+    Word(String),
+    Layouts,
+}
+
 /// What `bunx skills add` installs: `skills/scrawl/SKILL.md` from this repository.
 pub const SKILL_COMMAND: &str = "bunx skills add kitlangton/scrawl";
 
@@ -1115,12 +1124,23 @@ pub enum Action {
     RemoveWord {
         word: String,
     },
+    /// A word edited in place: `was` rewritten as `word`.
+    EditWord {
+        was: String,
+        word: String,
+    },
     AddReplacement {
         heard: String,
         write: String,
     },
     RemoveReplacement {
         heard: String,
+    },
+    /// A replacement edited in place: the one for `was` rewritten.
+    EditReplacement {
+        was: String,
+        heard: String,
+        write: String,
     },
     /// "Edit as Text…": the dictionary file in a text editor.
     EditDictionary,
@@ -1271,13 +1291,25 @@ impl Panel {
             }
             Action::AddWord { word } => self.change_dictionary(host, |d| {
                 d.add_word(&word);
+                Ok(())
             }),
-            Action::RemoveWord { word } => self.change_dictionary(host, |d| d.remove_word(&word)),
+            Action::RemoveWord { word } => self.change_dictionary(host, |d| {
+                d.remove_word(&word);
+                Ok(())
+            }),
+            Action::EditWord { was, word } => {
+                self.change_dictionary(host, |d| d.edit_word(&was, &word))
+            }
             Action::AddReplacement { heard, write } => self.change_dictionary(host, |d| {
                 d.add_replacement(&heard, &write);
+                Ok(())
             }),
-            Action::RemoveReplacement { heard } => {
-                self.change_dictionary(host, |d| d.remove_replacement(&heard))
+            Action::RemoveReplacement { heard } => self.change_dictionary(host, |d| {
+                d.remove_replacement(&heard);
+                Ok(())
+            }),
+            Action::EditReplacement { was, heard, write } => {
+                self.change_dictionary(host, |d| d.edit_replacement(&was, &heard, &write))
             }
             Action::EditDictionary => {
                 Effect::EditDictionary(crate::dictionary::path_beside(&host.config_path()))
@@ -1305,11 +1337,12 @@ impl Panel {
     }
 
     /// Loads, changes and saves the dictionary. A file that doesn't read is left alone, and the
-    /// pane shows why (`dictation_view`).
+    /// pane shows why (`dictation_view`). A refused edit saves nothing and says why under the
+    /// list; the pane checks first, so this is for what its check missed.
     fn change_dictionary(
         &mut self,
         host: &dyn Host,
-        change: impl FnOnce(&mut crate::dictionary::Dictionary),
+        change: impl FnOnce(&mut crate::dictionary::Dictionary) -> Result<(), crate::dictionary::Refusal>,
     ) -> Effect {
         let path = crate::dictionary::path_beside(&host.config_path());
         let _editing = crate::dictionary::edit_lock();
@@ -1322,7 +1355,10 @@ impl Panel {
                 return Effect::None;
             }
         };
-        change(&mut dictionary);
+        if let Err(refusal) = change(&mut dictionary) {
+            self.dictionary_error = Some(format!("Not saved: {}", refusal.message()));
+            return Effect::None;
+        }
         self.dictionary_error = dictionary.save_to(&path).err().map(|error| {
             crate::capture::scrawl_log(format!("Dictionary: {error:#}"));
             format!("Couldn't save the dictionary: {}.", home_relative(&format!("{error:#}")))
@@ -1864,8 +1900,8 @@ impl Session {
         result
     }
 
-    pub fn show(&mut self, pane: Option<Pane>) {
-        self.send(&serde_json::json!({"type": "show", "pane": pane}));
+    pub fn show(&mut self, pane: Option<Pane>, focus: Option<&Focus>) {
+        self.send(&serde_json::json!({"type": "show", "pane": pane, "focus": focus}));
     }
 
     pub fn sync(&mut self, host: &dyn Host) {
@@ -2078,6 +2114,41 @@ mod tests {
             act(&mut panel, &mut host, r#"{"action":"edit-dictionary"}"#),
             Effect::EditDictionary(dir.0.join("dictionary.json"))
         );
+    }
+
+    #[test]
+    fn the_dictation_pane_edits_entries_in_place() {
+        let dir = TempDir::new("dictionary-edit");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        let act = |panel: &mut Panel, host: &mut Fake, json: &str| {
+            panel.on(serde_json::from_str(json).unwrap(), host)
+        };
+        act(&mut panel, &mut host, r#"{"action":"add-word","word":"Atlas"}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-word","word":"Nova"}"#);
+        act(&mut panel, &mut host, r#"{"action":"add-replacement","heard":"atlis","write":"Atlas"}"#);
+        act(&mut panel, &mut host, r#"{"action":"edit-word","was":"Atlas","word":"Atlas Prime"}"#);
+        act(&mut panel, &mut host, r#"{"action":"edit-replacement","was":"atlis","heard":"atless","write":"Atlas Prime"}"#);
+        let view = panel.view(&host).dictation;
+        assert_eq!(view.words, ["Atlas Prime", "Nova"]);
+        assert_eq!(view.replacements, [ReplacementView { heard: "atless".into(), write: "Atlas Prime".into() }]);
+        assert_eq!(view.save_error, None);
+
+        act(&mut panel, &mut host, r#"{"action":"edit-word","was":"Nova","word":"atlas  prime"}"#);
+        let view = panel.view(&host).dictation;
+        assert_eq!(view.words, ["Atlas Prime", "Nova"], "a refused edit saves nothing");
+        assert_eq!(view.save_error.as_deref(), Some("Not saved: That's already in your dictionary."));
+        act(&mut panel, &mut host, r#"{"action":"edit-word","was":"Nova","word":"Novak"}"#);
+        assert_eq!(panel.view(&host).dictation.save_error, None, "the next edit clears it");
+    }
+
+    #[test]
+    fn a_focus_names_its_kind_and_entry() {
+        assert_eq!(
+            serde_json::to_value(Focus::Word("Atlas".into())).unwrap(),
+            serde_json::json!({"kind": "word", "entry": "Atlas"})
+        );
+        assert_eq!(serde_json::to_value(Focus::Layouts).unwrap(), serde_json::json!({"kind": "layouts"}));
     }
 
     #[test]

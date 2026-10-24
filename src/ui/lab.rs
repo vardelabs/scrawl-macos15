@@ -129,6 +129,7 @@ fn dictation_steps() -> Vec<(f32, crate::native::pill::model::Pres)> {
     let message = |label: &str, undo: bool| Pres::Message {
         label: label.to_owned(),
         undo,
+        opens: undo,
     };
     vec![
         (0.0, Pres::DictationIdle),

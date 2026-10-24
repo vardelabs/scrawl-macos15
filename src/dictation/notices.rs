@@ -1,7 +1,7 @@
 //! What the pill tells the user after a dictation, as Wispr Flow does: where the text went ("Copied
 //! to the clipboard"), how it was laid out ("Formatted as a list"), and what was learned from an
-//! edit ("Added “Klose” to your dictionary"), with Undo for what was learned. Pure, so it is tested
-//! without a pill.
+//! edit ("Added “Klose” to your dictionary"), with Undo for what was learned. A click on a notice
+//! about the dictionary or layouts opens Settings there. Pure, so it is tested without a pill.
 //!
 //! Notices queue and show one at a time. A notice's clock starts when it first shows, so one
 //! queued while the user dictates or records waits until they finish.
@@ -26,6 +26,8 @@ pub enum Undo {
 pub struct Notice {
     pub text: String,
     pub undo: Option<Undo>,
+    /// Where in Settings a click on its text opens.
+    pub opens: Option<crate::settings::Focus>,
     /// When it goes; `None` until it first shows.
     until: Option<Instant>,
 }
@@ -38,9 +40,14 @@ pub struct Notices {
 }
 
 impl Notices {
+    /// A notice of something learned opens Settings at it.
     pub fn push(&mut self, text: impl Into<String>, undo: Option<Undo>) {
+        let opens = undo.as_ref().map(|undo| match undo {
+            Undo::Word(word) => crate::settings::Focus::Word(word.clone()),
+            Undo::Layout(..) => crate::settings::Focus::Layouts,
+        });
         if self.queue.len() < MAX_WAITING {
-            self.queue.push_back(Notice { text: text.into(), undo, until: None });
+            self.queue.push_back(Notice { text: text.into(), undo, opens, until: None });
         }
     }
 
@@ -49,13 +56,13 @@ impl Notices {
     /// still waiting, which a pill that never shows (`nativePill` off) would otherwise pile up,
     /// and past the cap drops the newest learned notice, as `push` does. A notice it displaces shows
     /// again in full afterwards.
-    pub fn push_first(&mut self, text: impl Into<String>) {
+    pub fn push_first(&mut self, text: impl Into<String>, opens: Option<crate::settings::Focus>) {
         self.queue.retain(|n| n.undo.is_some());
         self.queue.truncate(MAX_WAITING - 1);
         if let Some(front) = self.queue.front_mut() {
             front.until = None;
         }
-        self.queue.push_front(Notice { text: text.into(), undo: None, until: None });
+        self.queue.push_front(Notice { text: text.into(), undo: None, opens, until: None });
     }
 
     /// The notice the pill shows now, when `visible` (nothing else holds the pill), starting its
@@ -175,7 +182,7 @@ mod tests {
             notices.push(added_word(&n.to_string()), Some(Undo::Word(n.to_string())));
         }
         texts(&mut notices, true, t0);
-        notices.push_first("Copied to the clipboard");
+        notices.push_first("Copied to the clipboard", None);
         assert_eq!(texts(&mut notices, true, t0 + Duration::from_secs(1)).as_deref(), Some("Copied to the clipboard"));
         let after = t0 + Duration::from_secs(1) + NOTICE_FOR;
         assert_eq!(texts(&mut notices, true, after).as_deref(), Some("Added “0” to your dictionary"), "the displaced notice comes back");
@@ -191,18 +198,34 @@ mod tests {
         let t0 = Instant::now();
         let mut notices = Notices::default();
         for _ in 0..50 {
-            notices.push_first("Copied to the clipboard");
+            notices.push_first("Copied to the clipboard", None);
             notices.current(false, t0);
         }
         assert_eq!(notices.queue.len(), 1);
         for n in 0..10 {
             notices.push(added_word(&n.to_string()), Some(Undo::Word(n.to_string())));
         }
-        notices.push_first("Didn't catch that");
+        notices.push_first("Didn't catch that", None);
         assert_eq!(notices.queue.len(), MAX_WAITING);
         assert_eq!(notices.queue[0].text, "Didn't catch that");
         assert_eq!(notices.queue[1].text, added_word("0"), "the oldest learned notice stays");
         assert_eq!(notices.queue.back().unwrap().text, added_word("4"), "the newest past the cap goes");
+    }
+
+    #[test]
+    fn learned_notices_open_settings_at_what_they_learned() {
+        use crate::settings::Focus;
+        let t0 = Instant::now();
+        let mut notices = Notices::default();
+        notices.push(added_word("Nova"), Some(Undo::Word("Nova".into())));
+        notices.push("Copied", None);
+        notices.push_first("Formatted as a list", Some(Focus::Layouts));
+        let opens = |notices: &mut Notices, at| notices.current(true, at).and_then(|n| n.opens.clone());
+        assert_eq!(opens(&mut notices, t0), Some(Focus::Layouts));
+        notices.dismiss(t0);
+        assert_eq!(opens(&mut notices, t0), Some(Focus::Word("Nova".into())));
+        notices.dismiss(t0);
+        assert_eq!(opens(&mut notices, t0), None);
     }
 
     #[test]

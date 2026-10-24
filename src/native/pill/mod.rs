@@ -1066,7 +1066,7 @@ impl MetalPipelines {
                 [tile_rect[0] + TILE_PAD_PT, tile_rect[1] + TILE_PAD_PT],
                 frame.t,
                 frame.is_paused,
-                frame.is_notice,
+                frame.notice,
                 frame.pausable_controls,
                 &mut prims,
             );
@@ -1318,7 +1318,7 @@ fn emit_elem_prims(
     [ox, oy]: [f32; 2],
     t: f32,
     paused: bool,
-    notice: bool,
+    notice: model::NoticeKind,
     pausable_controls: bool,
     out: &mut Vec<TilePrim>,
 ) {
@@ -1571,12 +1571,14 @@ fn emit_elem_prims(
             );
         }
         ElemId::Message => {
+            let opens = notice == model::NoticeKind::Opens;
             if elem.hover > 0.01 {
-                push_shape(out, [ox, oy, bw, bh], bh * 0.5, [1.0, 1.0, 1.0, 0.06 * elem.hover]);
+                let lift = if opens { 0.12 } else { 0.06 };
+                push_shape(out, [ox, oy, bw, bh], bh * 0.5, [1.0, 1.0, 1.0, lift * elem.hover]);
             }
             let tx = atlas.completed_sprite;
             let mut text_x = ox + CHIP_PX;
-            if notice {
+            if notice != model::NoticeKind::None {
                 let ic = atlas.icon(IconKind::Check);
                 push_sprite(
                     out,
@@ -1586,12 +1588,12 @@ fn emit_elem_prims(
                 );
                 text_x = ox + CHIP_H;
             }
-            push_sprite(
-                out,
-                [text_x, oy + (CHIP_H - tx.size_pt[1]) * 0.5, tx.size_pt[0], tx.size_pt[1]],
-                tx.uv,
-                [0.961, 0.961, 0.969, 1.0],
-            );
+            let text_y = oy + (CHIP_H - tx.size_pt[1]) * 0.5;
+            push_sprite(out, [text_x, text_y, tx.size_pt[0], tx.size_pt[1]], tx.uv, [0.961, 0.961, 0.969, 1.0]);
+            if opens && elem.hover > 0.01 {
+                let underline = [text_x, text_y + tx.size_pt[1] - 2.0, tx.size_pt[0], 1.0];
+                push_shape(out, underline, 0.5, [0.961, 0.961, 0.969, 0.55 * elem.hover]);
+            }
         }
         ElemId::Confirm => {
             let r = (0.231 + 0.063 * elem.hover - 0.03 * elem.press).clamp(0.0, 1.0);
