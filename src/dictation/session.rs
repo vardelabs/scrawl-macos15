@@ -874,9 +874,9 @@ fn lay_out(
 /// keeps the text on the clipboard too, so nothing is lost.
 fn deliver(text: &str, restore_clipboard: bool, laid_out: Option<&'static str>) -> Outcome {
     let delivered = match route(crate::ax::focused_takes_text()) {
-        Route::Paste => crate::handoff::paste_text(&fitted(text), restore_clipboard).map(|()| Outcome::Pasted(laid_out)),
+        Route::Paste => paste_fitted(text, restore_clipboard).map(|()| Outcome::Pasted(laid_out)),
         Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
-        Route::PasteAndKeep => crate::handoff::paste_text(&fitted(text), false).map(|()| Outcome::Pasted(laid_out)),
+        Route::PasteAndKeep => paste_fitted(text, false).map(|()| Outcome::Pasted(laid_out)),
     };
     delivered.unwrap_or_else(|error| {
         scrawl_log(format!("Dictation: paste failed: {error:#}"));
@@ -890,15 +890,54 @@ const AROUND_UNITS: usize = 4;
 
 /// `text` fitted to the focused field (`spacing::fit`): a space in front when it lands right after
 /// a word, and the closer of an opening bracket it lands right after. A field Accessibility can't
-/// read (some web and Electron editors) gets the text unchanged, rather than a guess.
+/// read (some web and Electron editors) is taken to end with the last paste while nothing has
+/// moved the caret since (`after_last_paste`), and otherwise gets the text unchanged.
 fn fitted(text: &str) -> String {
     let field = crate::ax::FocusedText::current();
     match field.and_then(|field| field.around_insertion(AROUND_UNITS, MAX_FIELD_CHARS)) {
         Some((before, selected, after)) => {
             super::spacing::fit(text, &super::spacing::Around { before: &before, selected, after: after.as_deref() })
         }
-        None => text.to_owned(),
+        None => match after_last_paste() {
+            Some(before) => {
+                scrawl_log("Dictation: field unreadable, fitted after the last paste");
+                super::spacing::fit(text, &super::spacing::Around { before: &before, selected: 0, after: None })
+            }
+            None => text.to_owned(),
+        },
     }
+}
+
+/// Where the last dictation was pasted, for `fitted` to fall back on in a field Accessibility
+/// can't read.
+struct LastPaste {
+    spot: crate::ax::PasteSpot,
+    last: char,
+    /// `capture::input_presses` once the paste's own ⌘V had been counted.
+    presses: u64,
+    at: Instant,
+}
+
+static LAST_PASTE: std::sync::Mutex<Option<LastPaste>> = std::sync::Mutex::new(None);
+
+fn paste_fitted(text: &str, restore_clipboard: bool) -> anyhow::Result<()> {
+    let text = fitted(text);
+    let spot = crate::ax::PasteSpot::current();
+    let presses = crate::capture::input_presses();
+    let pasted = crate::handoff::paste_text(&text, restore_clipboard);
+    let remembered = pasted.is_ok().then_some(spot).flatten().zip(text.chars().next_back());
+    // The synthetic ⌘V is one key press of our own.
+    let last_paste = remembered.map(|(spot, last)| LastPaste { spot, last, presses: presses + 1, at: Instant::now() });
+    *LAST_PASTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = last_paste;
+    pasted
+}
+
+fn after_last_paste() -> Option<String> {
+    let guard = LAST_PASTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let last = guard.as_ref()?;
+    let same_spot = crate::ax::PasteSpot::current().is_some_and(|now| now.same_as(&last.spot));
+    let presses_since = crate::capture::input_presses().wrapping_sub(last.presses);
+    super::spacing::after_last_paste(last.last, same_spot, presses_since, last.at.elapsed())
 }
 
 #[cfg(test)]
