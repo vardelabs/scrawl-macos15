@@ -693,6 +693,7 @@ fn transcribe_and_paste(
     // What the formatter is asked to lay out, so an edit of its layout can be learned from.
     let dictated = (formatter.is_some() && super::format::worth_formatting(&text)).then(|| text.clone());
     let (text, laid_out) = lay_out(text, timed, formatter);
+    crate::transcribe::park_transcriber();
     scrawl_log(format!(
         "Dictation: {} ms of audio, {} words from {} in {} ms",
         audio.duration_ms,
