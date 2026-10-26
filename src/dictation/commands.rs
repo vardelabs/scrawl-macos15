@@ -78,8 +78,9 @@ fn key(token: &str) -> String {
     token.trim_matches(EDGE_PUNCTUATION).to_lowercase()
 }
 
+/// A sentence closed inside quotes or brackets (`"Any question?"`) still ends there.
 fn ends_phrase(token: &str) -> bool {
-    token.ends_with(PHRASE_MARKS)
+    token.trim_end_matches(['"', '”', '’', '\'', ')', ']']).ends_with(PHRASE_MARKS)
 }
 
 /// The words of `phrase` from `start`, none but the last ending a phrase, so a command never
@@ -253,6 +254,8 @@ mod tests {
             "Prices rose at the rate of five percent.",
             "We grew at the rate we're used to.",
             "Any question? Mark said no.",
+            "\"Any question?\" Mark said no.",
+            "(Any question?) Mark said no.",
             "It ends with an Oxford comma",
             "Line one\nline two",
         ] {
