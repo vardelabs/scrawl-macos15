@@ -64,8 +64,8 @@ A command matches only as whole words at a phrase boundary, so prose stays as sp
 - A word joined to another ("comma-separated", "new-line-delimited") is a different word.
 - After an article, a determiner or a possessive ("a", "the", "this", "no", "any", "every", "each", "another", "my", "our", "your", "his", "her", "its", "their") or "Oxford", the words name the thing ("a comma", "no comma", "our new line of products"). Other prose uses of "comma", "question mark", "new line" and "new paragraph" still read as commands, which is why the pass is an experiment.
 - A command never spans the transcriber's sentence break ("Any question? Mark said no").
-- "scratch that" is everyday prose ("scratch that itch"), so it counts only where the transcriber's punctuation sets it off, at the end of the dictation, or before a capitalised word.
-- "period" is everyday prose too ("the trial period"), and the transcriber ends almost every dictation with a full stop, so being set off says nothing about it. It counts when it stands alone between phrase ends ("Done. Period."), or, set off as above, when the same dictation also has a spoken "comma", "question mark", "new line" or "new paragraph", which shows the speaker is dictating punctuation. "We extended the trial period." keeps its last word.
+- "scratch that" is everyday prose ("scratch that itch"), so it counts only where what follows sets it off: its own punctuation ("scratch that,"), a capitalised next word, or the end of the dictation.
+- "period" is everyday prose too ("the trial period"), and the transcriber ends almost every dictation with a full stop, so being set off says nothing about it. It counts when it stands alone between phrase ends ("Done. Period."), or, set off by what follows as above, when the same dictation also has a spoken "comma", "question mark", "new line" or "new paragraph", which shows the speaker is dictating punctuation. "We extended the trial period." keeps its last word.
 
 Text with no command comes back byte for byte.
 

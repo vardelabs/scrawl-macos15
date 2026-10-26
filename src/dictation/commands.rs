@@ -29,8 +29,8 @@ enum Command {
 }
 
 /// "period" and "scratch that" are everyday words ("the trial period ends", "scratch that
-/// itch"), so they count only where the transcriber's punctuation or a new sentence sets them
-/// off. The others are rare enough in prose to count anywhere.
+/// itch"), so they count only where what follows sets them off (`set_off`). The others are rare
+/// enough in prose to count anywhere.
 #[derive(Clone, Copy, PartialEq)]
 enum Boundary {
     Anywhere,
@@ -100,16 +100,14 @@ fn after_noun_marker(tokens: &[&str], i: usize) -> bool {
     i > 0 && !ends_phrase(tokens[i - 1]) && NOUN_MARKERS.contains(&key(tokens[i - 1]).as_str())
 }
 
-/// The start of a dictation doesn't count as the phrase end before a command: "Scratch that itch"
-/// opening a dictation is prose.
+/// Set off by what follows: its own punctuation, a capitalised next word, or the dictation's end.
+/// What comes before says nothing ("I like apples, scratch that itch" is prose).
 fn set_off(tokens: &[&str], i: usize, len: usize) -> bool {
-    let before = i > 0 && ends_phrase(tokens[i - 1]);
     let last = tokens[i + len - 1];
-    let after = match tokens.get(i + len) {
+    match tokens.get(i + len) {
         None => true,
         Some(next) => ends_phrase(last) || next.starts_with(char::is_uppercase),
-    };
-    before || after
+    }
 }
 
 fn stands_alone(tokens: &[&str], i: usize, len: usize) -> bool {
@@ -271,6 +269,7 @@ mod tests {
             "Send the invoice period then call me.",
             "Don't scratch that itch.",
             "Scratch that itch.",
+            "I like apples, scratch that itch.",
             "Prices rose at the rate of five percent.",
             "We grew at the rate we're used to.",
             "Any question? Mark said no.",
