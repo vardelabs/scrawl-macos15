@@ -81,9 +81,11 @@ fn key(token: &str) -> String {
     token.trim_matches(EDGE_PUNCTUATION).to_lowercase()
 }
 
+const CLOSERS: &[char] = &['"', '”', '’', '\'', ')', ']'];
+
 /// A sentence closed inside quotes or brackets (`"Any question?"`) still ends there.
 fn ends_phrase(token: &str) -> bool {
-    token.trim_end_matches(['"', '”', '’', '\'', ')', ']']).ends_with(PHRASE_MARKS)
+    token.trim_end_matches(CLOSERS).ends_with(PHRASE_MARKS)
 }
 
 /// The words of `phrase` from `start`, none but the last ending a phrase, so a command never
@@ -212,7 +214,9 @@ impl Written {
             .char_indices()
             .rfind(|&(_, c)| PHRASE_MARKS.contains(&c) || c == '\n')
             .map_or(0, |(end, mark)| end + mark.len_utf8());
-        self.text.truncate(keep);
+        // The quote or bracket the phrase ended inside stays closed: `"Hello." scratch that`.
+        let closed = self.text[keep..].len() - self.text[keep..].trim_start_matches(CLOSERS).len();
+        self.text.truncate(keep + closed);
         self.trim_end(&[]);
         self.capitalize = self.text.is_empty() || self.text.ends_with(SENTENCE_ENDS);
     }
@@ -294,6 +298,8 @@ mod tests {
         assert_eq!(apply("Ship it today. Send it Monday, scratch that"), "Ship it today.");
         assert_eq!(apply("Send it Monday scratch that Tuesday works"), "Tuesday works");
         assert_eq!(apply("One… two scratch that"), "One…");
+        assert_eq!(apply("\"Hello.\" Then more scratch that"), "\"Hello.\"");
+        assert_eq!(apply("(See above.) Then more scratch that"), "(See above.)");
         assert_eq!(apply("Scratch that."), "");
     }
 
