@@ -1,5 +1,6 @@
-//! The command transcriber (`"transcriber": "command"`): Scrawl runs a program the user names
-//! (`"transcribeCommand"`, an argv array) on the recording's WAV and reads one versioned JSON
+//! The command transcriber (`"transcriber": "command"`, and the Parakeet and Whisper engines):
+//! Scrawl runs a program the user names (`"transcribeCommand"`, `"parakeetCommand"` or
+//! `"whisperCommand"`, an argv array) on the recording's WAV and reads one versioned JSON
 //! transcript from its stdout. A small wrapper adapts any local model to it; Scrawl knows about
 //! none of them.
 //!
@@ -48,8 +49,8 @@ const MAX_TIMEOUT_SECONDS: f64 = 7.0 * 24.0 * 3_600.0;
 const LEFTOVER_GRACE: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(10);
 
-/// The configured program: `transcribeCommand`, `transcribeTimeoutSeconds` and
-/// `transcribePrestart`.
+/// The configured program: one engine's argv key, plus the shared `transcribeTimeoutSeconds`
+/// and `transcribePrestart`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Program {
     argv: Vec<String>,
@@ -81,9 +82,9 @@ pub enum Unusable {
 impl std::fmt::Display for Unusable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Missing => "transcribeCommand is not set",
-            Self::NotAList => "transcribeCommand is not a list of strings",
-            Self::NotAbsolute => "transcribeCommand[0] is not an absolute path",
+            Self::Missing => "the command is not set",
+            Self::NotAList => "the command is not a list of strings",
+            Self::NotAbsolute => "the command's program is not an absolute path",
             Self::BadTimeout => "transcribeTimeoutSeconds is not a positive number",
             Self::Unsupported => "the command transcriber only runs on macOS for now",
         })
@@ -148,14 +149,14 @@ impl Program {
         })
     }
 
-    /// Reads only the command keys of the config file at `path`, so a malformed one never
-    /// affects the rest of the config (and the rest never affects these).
-    pub fn load_from(path: &Path) -> Result<Self, Unusable> {
+    /// Reads only the command keys of the config file at `path` (`key` names the argv), so a
+    /// malformed one never affects the rest of the config (and the rest never affects these).
+    pub fn load_from(path: &Path, key: &str) -> Result<Self, Unusable> {
         let config: Value = std::fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        let argv = match config.get("transcribeCommand") {
+        let argv = match config.get(key) {
             None | Some(Value::Null) => return Err(Unusable::Missing),
             Some(Value::Array(items)) => items
                 .iter()
@@ -795,14 +796,14 @@ mod tests {
     fn config(dir: &Dir, json: &str) -> Result<Program, Unusable> {
         let path = dir.0.join("config.json");
         std::fs::write(&path, json).unwrap();
-        Program::load_from(&path)
+        Program::load_from(&path, "transcribeCommand")
     }
 
     #[test]
     fn the_command_needs_an_absolute_program_and_its_keys_stand_alone() {
         let dir = Dir::new();
         assert_eq!(
-            Program::load_from(&dir.0.join("none.json")),
+            Program::load_from(&dir.0.join("none.json"), "transcribeCommand"),
             Err(Unusable::Missing)
         );
         assert_eq!(config(&dir, "not json"), Err(Unusable::Missing));
@@ -1438,12 +1439,30 @@ exit 0"#,
                 }
             }
         }
-        let unusable = Program::load_from(&dir.0.join("none")).unwrap_err();
+        let unusable = Program::load_from(&dir.0.join("none"), "transcribeCommand").unwrap_err();
         said.push(unusable.to_string());
         assert!(said.len() > bodies.len() * 2, "{said:?}");
         for line in &said {
             assert!(!line.contains("SECRET"), "{line}");
         }
+    }
+
+    #[test]
+    fn each_engine_reads_its_own_argv_key() {
+        let dir = Dir::new();
+        let path = dir.0.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"parakeetCommand":["/opt/stt/parakeet"],"whisperCommand":["/opt/stt/whisper"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Program::load_from(&path, "transcribeCommand"),
+            Err(Unusable::Missing)
+        );
+        let name = |key| Program::load_from(&path, key).unwrap().name();
+        assert_eq!(name("parakeetCommand"), "parakeet");
+        assert_eq!(name("whisperCommand"), "whisper");
     }
 
     #[test]

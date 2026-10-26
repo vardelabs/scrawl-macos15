@@ -720,7 +720,8 @@ Or in
 { "transcriber": "hex", "hexModel": "whisper_large_v3_turbo", "hexLanguage": "nl" }
 ```
 
-`"transcriber"` is `"apple"` (default), `"hex"` or `"command"` (below); `hexModel` defaults to the
+`"transcriber"` is `"apple"` (default), `"parakeet"` or `"whisper"` (below; the fork's installer
+picks `"parakeet"`), `"hex"` or `"command"` (below); `hexModel` defaults to the
 first ready one of `parakeet_unified_en`, `parakeet_v3`, `parakeet_v2`, `whisper_large_v3_turbo`.
 Scrawl never downloads or prepares a Hex model: install it in Hex first.
 
@@ -746,8 +747,30 @@ and ignore the hint.
   `"estimated": true`; because those times are approximate, spoken cues ("now", "here") don't cut
   keyframes from a Hex transcript. Marks, clicks, laser and scene changes still do.
 - `scrawl hex status` shows whether Hex is connected, its ready models and what the next recording
-  will use. `scrawl reprocess <bundle> --out … --transcriber hex|apple|command` (also
+  will use. `scrawl reprocess <bundle> --out … --transcriber hex|apple|command|parakeet|whisper` (also
   `scrawl import`) picks an engine for one run.
+
+### Parakeet and Whisper
+
+Settings › Recording › **Transcription** also offers **Parakeet** and **Whisper large-v3 turbo**.
+Both run on the Mac through the command contract below, each with its own argv key, so the picker
+can switch between them:
+
+```json
+{
+  "transcriber": "parakeet",
+  "parakeetCommand": ["/Users/me/.local/share/uv/tools/parakeet-mlx/bin/python", "/Users/me/.local/share/scrawl/scrawl-parakeet.py", "{audio}"],
+  "whisperCommand": ["/Users/me/.local/share/uv/tools/mlx-whisper/bin/python", "/Users/me/.local/share/scrawl/scrawl-whisper.py", "{audio}"],
+  "transcribePrestart": true
+}
+```
+
+An engine is greyed out as "(not set up)" until its key names a program by its absolute path.
+`transcribeTimeoutSeconds` and `transcribePrestart` apply to both. The transcript says
+`"source": "command:<file name of argv[0]>"`, and any failure falls back to Apple Speech, as for
+Command. `scripts/scrawl-whisper.py` takes `--language nl` before `{audio}` to fix the language;
+without it Whisper detects it. `scrawl reprocess --transcriber parakeet|whisper` picks one for a
+run.
 
 ### Your own model (command)
 
@@ -811,6 +834,11 @@ stays in the file):
   fails, Scrawl runs the program again the usual way, except after a timeout, which goes straight
   to Apple Speech. `scripts/scrawl-parakeet.py` supports it:
   its first pass in a process costs about 2 s, which this moves into the recording.
+
+`scripts/scrawl-whisper.py` is the same kind of wrapper for Whisper large-v3 turbo through
+[mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) (`uv tool install
+mlx-whisper`; it reads the WAV itself, so it needs no ffmpeg). Its first run downloads the model,
+about 1.6 GB.
 
 `scripts/scrawl-parakeet.py` is a ready wrapper for NVIDIA's Parakeet TDT 0.6B v3
 (CC BY 4.0, 25 languages, word timestamps) through [parakeet-mlx](https://github.com/senstella/parakeet-mlx)

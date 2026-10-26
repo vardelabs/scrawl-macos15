@@ -1,8 +1,8 @@
-//! Transcription: Apple's SpeechAnalyzer through `scrawl-helper` (measured word and segment
+//! Transcription: Apple's speech model through `scrawl-helper` (measured word and segment
 //! timings), Hex when `"transcriber": "hex"` is set and Hex is connected (`crate::hex`; word
-//! times estimated), or a program of the user's when `"transcriber": "command"`
-//! (`crate::command_transcriber`). Any Hex or command trouble falls back to Apple for that
-//! recording.
+//! times estimated), or a program (`crate::command_transcriber`): Parakeet
+//! (`"parakeetCommand"`), Whisper (`"whisperCommand"`) or one of the user's own
+//! (`"transcribeCommand"`). Any Hex or program trouble falls back to Apple for that recording.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -14,6 +14,8 @@ use crate::model::TranscriptData;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Engine {
+    Parakeet,
+    Whisper,
     #[default]
     Apple,
     Hex,
@@ -21,21 +23,58 @@ pub enum Engine {
 }
 
 impl Engine {
+    /// The Settings menu's order.
+    pub const ALL: [Self; 5] = [
+        Self::Parakeet,
+        Self::Whisper,
+        Self::Apple,
+        Self::Hex,
+        Self::Command,
+    ];
+
     pub fn parse(name: &str) -> Option<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "apple" => Some(Self::Apple),
-            "hex" => Some(Self::Hex),
-            "command" => Some(Self::Command),
-            _ => None,
-        }
+        let name = name.trim();
+        Self::ALL
+            .into_iter()
+            .find(|engine| engine.name().eq_ignore_ascii_case(name))
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Parakeet => "parakeet",
+            Self::Whisper => "whisper",
             Self::Apple => "apple",
             Self::Hex => "hex",
             Self::Command => "command",
         }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Parakeet => "Parakeet",
+            Self::Whisper => "Whisper large-v3 turbo",
+            Self::Apple => LOCAL_ENGINE_TITLE,
+            Self::Hex => "Hex",
+            Self::Command => "Command",
+        }
+    }
+
+    /// The config key with the argv of an engine that runs a program.
+    pub fn command_key(self) -> Option<&'static str> {
+        match self {
+            Self::Parakeet => Some("parakeetCommand"),
+            Self::Whisper => Some("whisperCommand"),
+            Self::Command => Some("transcribeCommand"),
+            Self::Apple | Self::Hex => None,
+        }
+    }
+
+    /// The program this engine runs, or `None` for Apple and Hex.
+    pub fn program(
+        self,
+    ) -> Option<Result<crate::command_transcriber::Program, crate::command_transcriber::Unusable>>
+    {
+        self.command_key().map(crate::handoff::transcribe_command)
     }
 
     /// The configured engine: `"transcriber"` in the config file, Apple when missing or unknown.
@@ -49,10 +88,8 @@ impl Engine {
     /// What recordings use now: a command-line `--transcriber`, else the configured engine.
     pub fn preferred() -> Self {
         match OVERRIDE.load(Ordering::Relaxed) {
-            1 => Self::Apple,
-            2 => Self::Hex,
-            3 => Self::Command,
-            _ => Self::configured(),
+            0 => Self::configured(),
+            pinned => Self::ALL[usize::from(pinned) - 1],
         }
     }
 }
@@ -122,23 +159,18 @@ pub fn menu_state(
 
 /// Pins the engine for this process (`scrawl reprocess --transcriber`).
 pub fn set_override(engine: Engine) {
-    OVERRIDE.store(
-        match engine {
-            Engine::Apple => 1,
-            Engine::Hex => 2,
-            Engine::Command => 3,
-        },
-        Ordering::Relaxed,
-    );
+    let index = Engine::ALL
+        .iter()
+        .position(|e| *e == engine)
+        .unwrap_or_default();
+    OVERRIDE.store(index as u8 + 1, Ordering::Relaxed);
 }
 
 /// The command transcriber for a recording that is starting, when it will handle that
 /// recording and `transcribePrestart` is on, so its model loads while the user talks.
 pub fn prestart() -> Option<crate::command_transcriber::Prestarted> {
-    if Engine::preferred() != Engine::Command {
-        return None;
-    }
-    let program = crate::handoff::transcribe_command()
+    let program = Engine::preferred()
+        .program()?
         .ok()
         .filter(|program| program.prestarts())?;
     if let Some(parked) = PARKED.take().filter(|parked| parked.runs(&program) && parked.alive()) {
@@ -162,12 +194,12 @@ static PARKED: crate::park::Park<crate::command_transcriber::Prestarted> = crate
 /// recording begins. Called once a recording's own work is done: its first pass on the GPU would
 /// otherwise slow the dictation formatter still laying out that recording's text.
 pub fn park_transcriber() {
-    if Engine::preferred() != Engine::Command {
-        return;
-    }
-    let Some(program) = crate::handoff::transcribe_command().ok().filter(|program| program.prestarts()) else {
+    let Some(Ok(program)) = Engine::preferred().program() else {
         return;
     };
+    if !program.prestarts() {
+        return;
+    }
     std::thread::spawn(move || match program.prestart() {
         Ok(prestarted) => PARKED.put(prestarted, crate::park::PARK_FOR),
         Err(failure) => crate::capture::scrawl_log(format!("Parking the command transcriber failed: {failure}")),
@@ -216,7 +248,7 @@ pub fn transcribe(wav: Option<&Path>, audio: Option<&RecordedAudio>) -> Transcri
         || match engine {
             Engine::Apple => Ok(None),
             Engine::Hex => try_hex(audio),
-            Engine::Command => try_command(wav, audio),
+            Engine::Parakeet | Engine::Whisper | Engine::Command => try_command(engine, wav, audio),
         },
         || {
             live.and_then(|live| finish_live(live, audio))
@@ -256,17 +288,16 @@ fn finish_live(
 
 /// The preferred engine when it isn't Apple, with Apple as the answer to anything it can't do.
 /// `other` returns `Ok(None)` when that engine isn't there at all (Hex not connected or without a
-/// ready model, no usable `transcribeCommand`).
+/// ready model, no usable command).
 fn run(
     engine: Engine,
     other: impl FnOnce() -> Result<Option<TranscriptData>>,
     apple: impl FnOnce() -> TranscriptData,
 ) -> TranscriptData {
-    let name = match engine {
-        Engine::Apple => return apple(),
-        Engine::Hex => "Hex",
-        Engine::Command => "Command",
-    };
+    if engine == Engine::Apple {
+        return apple();
+    }
+    let name = engine.title();
     match other() {
         Ok(Some(transcript)) => return transcript,
         Ok(None) => {}
@@ -277,15 +308,23 @@ fn run(
     apple()
 }
 
-/// Runs `transcribeCommand`. Its errors are fixed reasons (`command_transcriber::Failure`),
+/// Runs the engine's program. Its errors are fixed reasons (`command_transcriber::Failure`),
 /// never what the program printed or was given.
-fn try_command(wav: &Path, audio: &RecordedAudio) -> Result<Option<TranscriptData>> {
-    let program = match crate::handoff::transcribe_command() {
+fn try_command(
+    engine: Engine,
+    wav: &Path,
+    audio: &RecordedAudio,
+) -> Result<Option<TranscriptData>> {
+    let Some(key) = engine.command_key() else {
+        return Ok(None);
+    };
+    let program = match crate::handoff::transcribe_command(key) {
         Ok(program) => program,
         Err(unusable) => {
             LOGGED_NO_COMMAND.call_once(|| {
                 crate::capture::scrawl_log(format!(
-                    "Command transcriber preferred but {unusable}; using {LOCAL_ENGINE_TITLE}"
+                    "{} preferred but {key} is unusable ({unusable}); using {LOCAL_ENGINE_TITLE}",
+                    engine.title()
                 ));
             });
             return Ok(None);
@@ -367,7 +406,9 @@ mod tests {
         assert_eq!(Engine::parse("hex"), Some(Engine::Hex));
         assert_eq!(Engine::parse(" Apple "), Some(Engine::Apple));
         assert_eq!(Engine::parse("Command"), Some(Engine::Command));
-        assert_eq!(Engine::parse("whisper"), None);
+        assert_eq!(Engine::parse("whisper"), Some(Engine::Whisper));
+        assert_eq!(Engine::parse("parakeet"), Some(Engine::Parakeet));
+        assert_eq!(Engine::parse("whisper.cpp"), None);
         assert_eq!(Engine::default(), Engine::Apple);
     }
 
@@ -386,6 +427,8 @@ mod tests {
         for (engine, source) in [
             (Engine::Hex, "hex:parakeet_v3"),
             (Engine::Command, "command:whisper-scrawl"),
+            (Engine::Parakeet, "command:scrawl-parakeet.py"),
+            (Engine::Whisper, "command:scrawl-whisper.py"),
         ] {
             let result = run(
                 engine,
@@ -398,7 +441,12 @@ mod tests {
 
     #[test]
     fn an_unavailable_or_failing_engine_falls_back_to_apple() {
-        for engine in [Engine::Hex, Engine::Command] {
+        for engine in [
+            Engine::Hex,
+            Engine::Command,
+            Engine::Parakeet,
+            Engine::Whisper,
+        ] {
             let apple = || named("speech-analyzer");
             assert_eq!(run(engine, || Ok(None), apple).source, "speech-analyzer");
             let failed = run(engine, || Err(anyhow::anyhow!("took too long")), apple);
