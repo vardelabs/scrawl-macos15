@@ -64,7 +64,8 @@ A command matches only as whole words at a phrase boundary, so prose stays as sp
 - A word joined to another ("comma-separated", "new-line-delimited") is a different word.
 - After "a", "an", "the", "this", "that" or "Oxford", the words name the thing ("a comma", "the new line").
 - A command never spans the transcriber's sentence break ("Any question? Mark said no").
-- "period" and "scratch that" are everyday words ("the trial period ends", "scratch that itch"), so they count only where the transcriber's punctuation sets them off, at the end of the dictation, or before a capitalised word.
+- "scratch that" is everyday prose ("scratch that itch"), so it counts only where the transcriber's punctuation sets it off, at the end of the dictation, or before a capitalised word.
+- "period" is everyday prose too ("the trial period"), and the transcriber ends almost every dictation with a full stop, so being set off says nothing about it. It counts when it stands alone between phrase ends ("Done. Period."), or, set off as above, when the same dictation also has a spoken "comma", "question mark", "new line" or "new paragraph", which shows the speaker is dictating punctuation. "We extended the trial period." keeps its last word.
 
 Text with no command comes back byte for byte.
 

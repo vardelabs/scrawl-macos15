@@ -32,6 +32,11 @@ enum Command {
 enum Boundary {
     Anywhere,
     SetOff,
+    /// "period" ends a phrase where the transcriber puts its own full stop, which almost every
+    /// dictation gets at its end ("We extended the trial period."), so being set off says nothing.
+    /// It counts when it stands alone between phrase ends ("Done. Period."), or when the speaker
+    /// also spoke a mark that has no everyday meaning, which shows they are dictating punctuation.
+    StandsAloneOrMarksSpoken,
 }
 
 const COMMANDS: &[(&[&str], Command, Boundary)] = &[
@@ -40,18 +45,19 @@ const COMMANDS: &[(&[&str], Command, Boundary)] = &[
     (&["new", "line"], Command::Break("\n"), Boundary::Anywhere),
     (&["question", "mark"], Command::Mark('?'), Boundary::Anywhere),
     (&["comma"], Command::Mark(','), Boundary::Anywhere),
-    (&["period"], Command::Mark('.'), Boundary::SetOff),
+    (&["period"], Command::Mark('.'), Boundary::StandsAloneOrMarksSpoken),
 ];
 const AT_THE_RATE: &[&str] = &["at", "the", "rate"];
 
 /// Text with no command in it comes back byte for byte.
 pub fn apply(text: &str) -> String {
     let tokens: Vec<&str> = text.split_whitespace().collect();
+    let marks_spoken = marks_spoken(&tokens);
     let mut written = Written::default();
     let mut changed = false;
     let mut i = 0;
     while i < tokens.len() {
-        let spoken = if let Some((command, len)) = command_at(&tokens, i) {
+        let spoken = if let Some((command, len)) = command_at(&tokens, i, marks_spoken) {
             written.command(command);
             len
         } else if let Some(handle) = handle_at(&tokens, i) {
@@ -98,15 +104,40 @@ fn set_off(tokens: &[&str], i: usize, len: usize) -> bool {
     before || after
 }
 
-fn command_at(tokens: &[&str], i: usize) -> Option<(Command, usize)> {
+fn stands_alone(tokens: &[&str], i: usize, len: usize) -> bool {
+    let before = i == 0 || ends_phrase(tokens[i - 1]);
+    before && (ends_phrase(tokens[i + len - 1]) || i + len == tokens.len())
+}
+
+/// Whether a mark or line break that counts anywhere was spoken (`Boundary::StandsAloneOrMarksSpoken`).
+fn marks_spoken(tokens: &[&str]) -> bool {
+    (0..tokens.len()).any(|i| {
+        !after_noun_marker(tokens, i)
+            && COMMANDS.iter().any(|&(phrase, command, boundary)| {
+                boundary == Boundary::Anywhere
+                    && matches!(command, Command::Mark(_) | Command::Break(_))
+                    && spoken_at(tokens, i, phrase)
+            })
+    })
+}
+
+fn command_at(tokens: &[&str], i: usize, marks_spoken: bool) -> Option<(Command, usize)> {
     if after_noun_marker(tokens, i) {
         return None;
     }
     COMMANDS.iter().find_map(|&(phrase, command, boundary)| {
         let len = phrase.len();
-        let matched = spoken_at(tokens, i, phrase)
-            && (boundary == Boundary::Anywhere || set_off(tokens, i, len));
-        matched.then_some((command, len))
+        if !spoken_at(tokens, i, phrase) {
+            return None;
+        }
+        let placed = match boundary {
+            Boundary::Anywhere => true,
+            Boundary::SetOff => set_off(tokens, i, len),
+            Boundary::StandsAloneOrMarksSpoken => {
+                stands_alone(tokens, i, len) || (marks_spoken && set_off(tokens, i, len))
+            }
+        };
+        placed.then_some((command, len))
     })
 }
 
@@ -207,6 +238,10 @@ mod tests {
             "Put a comma after the name and a period at the end.",
             "Is that a question mark or the new line character?",
             "The trial period ends on Friday.",
+            "We extended the trial period.",
+            "The trial period",
+            "My trial period. Then the review.",
+            "Send the invoice period then call me.",
             "Don't scratch that itch.",
             "Prices rose at the rate of five percent.",
             "We grew at the rate we're used to.",
@@ -224,8 +259,9 @@ mod tests {
         assert_eq!(apply("Hello, comma, world."), "Hello, world.");
         assert_eq!(apply("Is it ready question mark"), "Is it ready?");
         assert_eq!(apply("Is it ready question mark ship it"), "Is it ready? Ship it");
-        assert_eq!(apply("That is done period"), "That is done.");
         assert_eq!(apply("That is done. Period. Next one."), "That is done. Next one.");
+        assert_eq!(apply("Book the room comma then the flights period."), "Book the room, then the flights.");
+        assert_eq!(apply("Is it ready question mark ship it period"), "Is it ready? Ship it.");
     }
 
     #[test]
