@@ -1438,11 +1438,8 @@ struct SettingsView: View {
           }
         }
       }
-      SettingsCaption(text: "Parakeet, Whisper and Apple Speech run on this Mac and time each word. Parakeet and Whisper are enabled once parakeetCommand or whisperCommand is in config.json: install.sh sets up Parakeet, and install.sh --whisper adds Whisper. "
-        + (t.hexEnabled || t.engine == "hex"
-          ? "Hex uses a model you have in Hex, and its word times are estimates. "
-          : "Hex shows up here while Hex is running. ")
-        + "Command runs the program in transcribeCommand.")
+      SettingsCaption(text: "Turns your voice into text on this Mac. Engines that aren't installed show “(not set up)”."
+        + (t.engine == "hex" ? " Hex's word times are estimates." : ""))
       if t.engine == "apple", let line = t.speech?.line {
         SettingsCaption(text: line)
       }
