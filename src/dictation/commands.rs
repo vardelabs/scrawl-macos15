@@ -301,6 +301,6 @@ mod tests {
     fn at_the_rate_writes_a_handle() {
         assert_eq!(apply("Ask at the rate kai about it"), "Ask @kai about it");
         assert_eq!(apply("Thanks, at the rate north."), "Thanks, @north.");
-        assert_eq!(apply("Mail kai at the rate vardelabs.com today"), "Mail kai@vardelabs.com today");
+        assert_eq!(apply("Mail sam at the rate example.com today"), "Mail sam@example.com today");
     }
 }

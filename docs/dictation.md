@@ -57,7 +57,7 @@ Behind the experiment `spokenCommands` (off by default; see Experiments in `AGEN
 - "comma" and "question mark" write `,` and `?`, and "period" writes `.`. The spoken mark replaces a comma or full stop the transcriber put just before it.
 - "new line" and "new paragraph" break the text, and the next word starts with a capital.
 - "scratch that" drops the text back to the last comma, colon, sentence end or line break, so "I like apples, and oranges, scratch that, and pears" is "I like apples, and pears".
-- "at the rate X" writes `@X`. A domain joins the word before it ("kai at the rate vardelabs.com" is `kai@vardelabs.com`). "at the rate of" and "at the rate we're going" stay prose.
+- "at the rate X" writes `@X`. A domain joins the word before it ("sam at the rate example.com" is `sam@example.com`). "at the rate of" and "at the rate we're going" stay prose.
 
 A command matches only as whole words at a phrase boundary, so prose stays as spoken:
 
