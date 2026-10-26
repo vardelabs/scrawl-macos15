@@ -189,9 +189,9 @@ impl Written {
     /// The transcriber often writes its own comma or full stop where the speaker paused before
     /// the command, so the spoken mark replaces it.
     fn mark(&mut self, mark: char) {
-        self.trim_end(&[',', ';', ':']);
+        self.trim_end(&[',', ';', ':', '.']);
         if mark != ',' {
-            self.trim_end(&['.', '!', '?']);
+            self.trim_end(&['!', '?']);
         }
         self.text.push(mark);
         self.capitalize = mark != ',';
@@ -257,6 +257,7 @@ mod tests {
     fn spoken_punctuation_replaces_the_word() {
         assert_eq!(apply("Hello comma world"), "Hello, world");
         assert_eq!(apply("Hello, comma, world."), "Hello, world.");
+        assert_eq!(apply("Hello. Comma world."), "Hello, world.");
         assert_eq!(apply("Is it ready question mark"), "Is it ready?");
         assert_eq!(apply("Is it ready question mark ship it"), "Is it ready? Ship it");
         assert_eq!(apply("That is done. Period. Next one."), "That is done. Next one.");
