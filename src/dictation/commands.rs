@@ -209,16 +209,29 @@ impl Written {
     /// before "Monday".
     fn scratch(&mut self) {
         self.trim_end(PHRASE_MARKS);
-        let keep = self
-            .text
-            .char_indices()
-            .rfind(|&(_, c)| PHRASE_MARKS.contains(&c) || c == '\n')
-            .map_or(0, |(end, mark)| end + mark.len_utf8());
-        // The quote or bracket the phrase ended inside stays closed: `"Hello." scratch that`.
-        let closed = self.text[keep..].len() - self.text[keep..].trim_start_matches(CLOSERS).len();
-        self.text.truncate(keep + closed);
+        let keep = self.last_phrase_end();
+        self.text.truncate(keep);
         self.trim_end(&[]);
         self.capitalize = self.text.is_empty() || self.text.ends_with(SENTENCE_ENDS);
+    }
+
+    /// Where the last phrase ends: after a line break, or after a mark that ends its word, with the
+    /// quote or bracket it closed inside (`"Hello."`). A mark inside a word (`1,000`, `v1.5`) ends
+    /// nothing.
+    fn last_phrase_end(&self) -> usize {
+        self.text
+            .char_indices()
+            .rev()
+            .find_map(|(at, c)| {
+                let end = at + c.len_utf8();
+                if c == '\n' {
+                    return Some(end);
+                }
+                let closed = end + self.text[end..].len() - self.text[end..].trim_start_matches(CLOSERS).len();
+                let word_ends = self.text[closed..].chars().next().is_none_or(char::is_whitespace);
+                (PHRASE_MARKS.contains(&c) && word_ends).then_some(closed)
+            })
+            .unwrap_or(0)
     }
 
     /// "kai at the rate gmail.com" is an email address, so a domain joins the word before it.
@@ -298,6 +311,7 @@ mod tests {
         assert_eq!(apply("Ship it today. Send it Monday, scratch that"), "Ship it today.");
         assert_eq!(apply("Send it Monday scratch that Tuesday works"), "Tuesday works");
         assert_eq!(apply("One… two scratch that"), "One…");
+        assert_eq!(apply("Done. The amount is 1,000 dollars, scratch that"), "Done.");
         assert_eq!(apply("\"Hello.\" Then more scratch that"), "\"Hello.\"");
         assert_eq!(apply("(See above.) Then more scratch that"), "(See above.)");
         assert_eq!(apply("Scratch that."), "");
