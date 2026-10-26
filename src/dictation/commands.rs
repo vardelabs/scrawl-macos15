@@ -11,8 +11,11 @@ const EDGE_PUNCTUATION: &[char] = &['.', ',', '!', '?', ';', ':', '…', '"', '�
 const PHRASE_MARKS: &[char] = &['.', ',', '!', '?', ';', ':', '…'];
 const SENTENCE_ENDS: &[char] = &['.', '!', '?', '…', '\n'];
 /// A command word after one of these is the thing named, not the command ("a comma", "the new
-/// line", "an Oxford comma").
-const NOUN_MARKERS: &[&str] = &["a", "an", "the", "this", "that", "oxford"];
+/// line", "no comma", "our new line of products").
+const NOUN_MARKERS: &[&str] = &[
+    "a", "an", "the", "this", "that", "oxford", "no", "any", "every", "each", "another", "my", "our",
+    "your", "his", "her", "its", "their",
+];
 /// "at the rate of five percent" is prose: these never become a handle.
 const NOT_A_HANDLE: &[&str] = &[
     "of", "per", "a", "an", "the", "we", "you", "they", "it", "i", "he", "she", "that", "which",
@@ -257,6 +260,9 @@ mod tests {
             "\"Any question?\" Mark said no.",
             "(Any question?) Mark said no.",
             "It ends with an Oxford comma",
+            "There is no comma here.",
+            "We launched our new line of products.",
+            "Every new paragraph needs a heading.",
             "Line one\nline two",
         ] {
             assert_eq!(apply(prose), prose);
