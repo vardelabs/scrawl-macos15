@@ -679,6 +679,11 @@ fn transcribe_and_paste(
     }
     // The dictionary first, so a user's rule for "design dot md" still sees what was said.
     let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
+    let text = if crate::handoff::experiment("spokenCommands") {
+        super::commands::apply(&text)
+    } else {
+        text
+    };
     // With code formatting off, `screen` is `None` and the text is left as transcribed.
     let text = match screen {
         Some((read, deadline)) => {

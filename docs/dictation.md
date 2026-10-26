@@ -1,6 +1,6 @@
 # Dictation: voice only, pasted where you type
 
-Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `context.rs`, filenames and code; `format.rs` and `formatter.rs`, paragraphs and lists; `learn.rs`, words learned from edits; `layout.rs`, layouts learned from edits), `src/dictionary.rs` or the dictation pill.
+Read this before changing `src/dictation/` (`chord.rs`, the state machine; `session.rs`, the runtime; `commands.rs`, spoken edit commands; `context.rs`, filenames and code; `format.rs` and `formatter.rs`, paragraphs and lists; `learn.rs`, words learned from edits; `layout.rs`, layouts learned from edits), `src/dictionary.rs` or the dictation pill.
 
 Dictation is the screenless sibling of a capture: a modifier-only chord records the microphone, the configured transcriber turns it into text, and Scrawl pastes the text into the app in front. It is off by default (`"dictation": true` turns it on, or Settings › Dictation).
 
@@ -50,9 +50,27 @@ Every dictation pasted or copied is kept as the last, in memory, for the pill's 
 
 Parakeet takes no vocabulary prompt, so the dictionary corrects after transcription.
 
+## Spoken commands (`src/dictation/commands.rs`)
+
+Behind the experiment `spokenCommands` (off by default; see Experiments in `AGENTS.md`). After the dictionary and before the filename and code pass, `commands::apply` acts on what the speaker said to the text, not into it:
+
+- "comma" and "question mark" write `,` and `?`, and "period" writes `.`. The spoken mark replaces a comma or full stop the transcriber put just before it.
+- "new line" and "new paragraph" break the text, and the next word starts with a capital.
+- "scratch that" drops the text back to the last comma, colon, sentence end or line break, so "I like apples, and oranges, scratch that, and pears" is "I like apples, and pears".
+- "at the rate X" writes `@X`. A domain joins the word before it ("kai at the rate vardelabs.com" is `kai@vardelabs.com`). "at the rate of" and "at the rate we're going" stay prose.
+
+A command matches only as whole words at a phrase boundary, so prose stays as spoken:
+
+- A word joined to another ("comma-separated", "new-line-delimited") is a different word.
+- After "a", "an", "the", "this", "that" or "Oxford", the words name the thing ("a comma", "the new line").
+- A command never spans the transcriber's sentence break ("Any question? Mark said no").
+- "period" and "scratch that" are everyday words ("the trial period ends", "scratch that itch"), so they count only where the transcriber's punctuation sets them off, at the end of the dictation, or before a capitalised word.
+
+Text with no command comes back byte for byte.
+
 ## Filenames and code (`src/dictation/context.rs`)
 
-With **Format code and filenames** (`dictationCodeFormatting`, default on), the text goes through three pure steps after the dictionary, so a rule for "design dot md" still sees what was said. Prose is the common case, so every rule needs a spoken "dot" or a written `.` or `_`. Names (diFranco), brand names (iPhone, Node), camelCase, and phrasal verbs that match an identifier on screen ("sign in" beside `signIn`) all stay as spoken.
+With **Format code and filenames** (`dictationCodeFormatting`, default on), the text goes through three pure steps after the dictionary and spoken commands, so a rule for "design dot md" still sees what was said. Prose is the common case, so every rule needs a spoken "dot" or a written `.` or `_`. Names (diFranco), brand names (iPhone, Node), camelCase, and phrasal verbs that match an identifier on screen ("sign in" beside `signIn`) all stay as spoken.
 
 1. `spoken_extensions`: a lower-case spoken "dot" before a known extension joins the word before it, so "design dot MD" becomes "design.md". The name "Dot", "the", "a" or "an" before the "dot", and extensions that are everyday words or letters (`AMBIGUOUS`: go, c, h, sh, env, lock) are left as spoken.
 2. `apply` with screen filenames: when the chord is released, `ax::window_text` walks the focused window's Accessibility tree breadth first, on a thread of its own alongside transcription. It stops at `SCREEN_ELEMENTS` elements or `SCREEN_BUDGET`, and never reads a secure text field. The paste waits for it at most `SCREEN_WAIT` after the chord; an app slow to answer Accessibility gets its text without filenames. `terms` keeps the filenames it finds. A spoken run of up to `MAX_SPAN_WORDS` words that ends in a spoken "dot" and an extension, and equals a screen filename on letters and digits (a possessive "'s" or "s'" dropped from the words before the extension), is written as that filename. So "the product's design dot MD" with `PRODUCT-DESIGN.md` on screen becomes `PRODUCT-DESIGN.md`, while "note text" beside `note.txt` stays.
@@ -65,7 +83,7 @@ With the setting off, none of this runs and nothing is read from the screen. Scr
 A long dictation is laid out as Wispr Flow lays one out: paragraphs where the topic changes, and numbered or bulleted lists when the speaker lists things. A local model does the layout (`scripts/scrawl-format.py`, a 4-bit Qwen2.5 3B through mlx-lm, set up like Parakeet). Nothing leaves the Mac. It needs `"formatCommand": ["/Users/you/.local/share/uv/tools/mlx-lm/bin/python", "/path/to/scrawl-format.py"]`, and **Format paragraphs and lists** (`dictationFormatting`, default on).
 
 1. Once a dictation has run `FORMAT_PRESTART_AFTER` (5 s), `formatter::Formatter::prestart` takes the parked formatter (below) or starts one with `SCRAWL_PRESTART=1`, so its model loads while the user talks. A cancelled dictation drops it, which kills its process group. While it lays text out, the dictation counts as busy, as transcription does.
-2. After filler removal, the dictionary and the filename and code pass, `format::worth_formatting` sends only dictations of `MIN_WORDS` words and `MIN_SENTENCES` sentences or more. Shorter ones park the formatter unused.
+2. After filler removal, the dictionary, spoken commands and the filename and code pass, `format::worth_formatting` sends only dictations of `MIN_WORDS` words and `MIN_SENTENCES` sentences or more. Shorter ones park the formatter unused.
 3. The request carries the text and `format::pause_hints`: the sentences after which the transcriber's measured word timings show a silence of `PARAGRAPH_PAUSE_MS` or more (estimated timings, as Hex's, give no hints). The paste waits for the reply for `FORMAT_WAIT_BASE` plus `FORMAT_WAIT_PER_WORD` per word, at most `FORMAT_WAIT_MAX`. When the model returned the text with no line breaks, `break_at_pauses` breaks at those pauses; once it laid the text out, its sentence ends may have moved, so the hints no longer apply.
 4. `format::same_words` checks that the reply has the dictated words in order. It ignores the punctuation layout changes around a word (`,` `.` `:` `;`, double quotes, brackets) and line-leading list markers. A word's first letter may change case only where a sentence, line or list item starts, so a name or "I" keeps its capital elsewhere; code in backticks must match exactly (`README.md` never becomes `readme.md`). Markdown the model adds (`**`, `_`, backticks, a fence) counts as a change. Characters inside a word (`1.5`, `$50`, `We're`), apostrophes and a word's `?` or `!` must match. A dictated "and" or "or" may be missing only right before a list's last item. A sentence ending inside closing quotes (`"stop."`) counts as a sentence end. Any other change, a timeout or a bad reply pastes the text as dictated. The log says which happened, never the text.
 
