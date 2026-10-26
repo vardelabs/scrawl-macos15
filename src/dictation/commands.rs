@@ -94,8 +94,10 @@ fn after_noun_marker(tokens: &[&str], i: usize) -> bool {
     i > 0 && !ends_phrase(tokens[i - 1]) && NOUN_MARKERS.contains(&key(tokens[i - 1]).as_str())
 }
 
+/// The start of a dictation doesn't count as the phrase end before a command: "Scratch that itch"
+/// opening a dictation is prose.
 fn set_off(tokens: &[&str], i: usize, len: usize) -> bool {
-    let before = i == 0 || ends_phrase(tokens[i - 1]);
+    let before = i > 0 && ends_phrase(tokens[i - 1]);
     let last = tokens[i + len - 1];
     let after = match tokens.get(i + len) {
         None => true,
@@ -201,7 +203,11 @@ impl Written {
     /// before "Monday".
     fn scratch(&mut self) {
         self.trim_end(PHRASE_MARKS);
-        let keep = self.text.rfind(|c| PHRASE_MARKS.contains(&c) || c == '\n').map_or(0, |end| end + 1);
+        let keep = self
+            .text
+            .char_indices()
+            .rfind(|&(_, c)| PHRASE_MARKS.contains(&c) || c == '\n')
+            .map_or(0, |(end, mark)| end + mark.len_utf8());
         self.text.truncate(keep);
         self.trim_end(&[]);
         self.capitalize = self.text.is_empty() || self.text.ends_with(SENTENCE_ENDS);
@@ -243,6 +249,7 @@ mod tests {
             "My trial period. Then the review.",
             "Send the invoice period then call me.",
             "Don't scratch that itch.",
+            "Scratch that itch.",
             "Prices rose at the rate of five percent.",
             "We grew at the rate we're used to.",
             "Any question? Mark said no.",
@@ -277,6 +284,8 @@ mod tests {
         assert_eq!(apply("I like apples, and oranges, scratch that, and pears."), "I like apples, and pears.");
         assert_eq!(apply("Ship it today. Send it Monday, scratch that"), "Ship it today.");
         assert_eq!(apply("Send it Monday scratch that Tuesday works"), "Tuesday works");
+        assert_eq!(apply("One… two scratch that"), "One…");
+        assert_eq!(apply("Scratch that."), "");
     }
 
     #[test]
