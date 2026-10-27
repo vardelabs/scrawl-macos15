@@ -948,11 +948,12 @@ pub fn apple_locale_from(config: &Config) -> Option<String> {
         .and_then(crate::speech_model::locale_id)
 }
 
-/// The command transcriber's program (`transcribeCommand`, `transcribeTimeoutSeconds`), read
-/// on its own from the config file.
-pub fn transcribe_command()
--> Result<crate::command_transcriber::Program, crate::command_transcriber::Unusable> {
-    crate::command_transcriber::Program::load_from(&default_config_path())
+/// A program engine's program (its argv `key`, `transcribeTimeoutSeconds`), read on its own
+/// from the config file.
+pub fn transcribe_command(
+    key: &str,
+) -> Result<crate::command_transcriber::Program, crate::command_transcriber::Unusable> {
+    crate::command_transcriber::Program::load_from(&default_config_path(), key)
 }
 
 /// Whether the native AppKit + Metal recording pill is enabled (`SCRAWL_NATIVE_PILL` or

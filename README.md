@@ -54,8 +54,14 @@ The installer:
 - installs `uv`, `ffmpeg`, `parakeet-mlx` and `mlx-lm`
 - downloads the Parakeet model (about 1.2 GB) and the dictation formatter's model (about 1.8 GB),
   which lays long dictations out in paragraphs and lists
-- backs up `~/.config/scrawl/config.json` to `config.json.bak`, then sets the three Parakeet keys
-  and `formatCommand` only where they are not set yet, so an update keeps what you chose in Settings
+- backs up `~/.config/scrawl/config.json` to `config.json.bak`, then sets `"transcriber":
+  "parakeet"`, `parakeetCommand`, `transcribePrestart` and `formatCommand` only where they are not
+  set yet, so an update keeps what you chose in Settings. An older install that ran Parakeet as
+  `"transcriber": "command"` moves to `"parakeet"`.
+
+`install.sh --whisper` also installs `mlx-whisper`, downloads Whisper large-v3 turbo (about 1.6 GB)
+and sets `whisperCommand`. Settings › Recording › **Transcription** then picks Parakeet (the
+default), Whisper large-v3 turbo or Apple Speech; all three run on the Mac.
 
 To update, choose **Check for Updates…** in the menu bar menu or in Settings › About. Scrawl asks
 GitHub for this repository's newest release, shows its notes, and on **Install** downloads the zip,
@@ -94,9 +100,12 @@ For transcription on macOS 15, set up Parakeet:
 2. Run `scripts/scrawl-parakeet.py` once by hand on any WAV, with the tool's Python
    (`~/.local/share/uv/tools/parakeet-mlx/bin/python`). That first run downloads the model, about
    1.2 GB.
-3. In `~/.config/scrawl/config.json`, set `"transcriber": "command"`, `"transcribeCommand"` and
+3. In `~/.config/scrawl/config.json`, set `"transcriber": "parakeet"`, `"parakeetCommand"` and
    `"transcribePrestart": true`, as
-   [`docs/guide.md`](docs/guide.md#your-own-model-command) shows.
+   [`docs/guide.md`](docs/guide.md#parakeet-and-whisper) shows.
+
+Whisper large-v3 turbo is set up the same way with `uv tool install mlx-whisper`,
+`scripts/scrawl-whisper.py` (about 1.6 GB on its first run) and `"whisperCommand"`.
 
 ## Staying in sync with Kit
 

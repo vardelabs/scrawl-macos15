@@ -910,8 +910,10 @@ fn microphone_view(
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriberView {
-    /// What recordings use now: "apple", "hex" or "command".
+    /// What recordings use now: an `Engine::name`.
     pub engine: &'static str,
+    /// The Transcription menu: every engine, enabled once it can run.
+    pub engines: Vec<EngineView>,
     pub hex_title: &'static str,
     pub hex_enabled: bool,
     pub language: String,
@@ -920,6 +922,13 @@ pub struct TranscriberView {
     /// The program's file name while `transcribeCommand` is usable (read, never run); Command
     /// is offered only then.
     pub command: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EngineView {
+    pub id: &'static str,
+    pub title: String,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1077,9 +1086,9 @@ pub enum Action {
     /// `tapChooses`, `cropWindowCaptures`, `dictation`, `dictationRestoreClipboard`,
     /// `dictationPill`, `dictationCodeFormatting`, `dictationFormatting`, `dictationLearn`,
     /// `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
-    /// ("default" or a device id), `transcriber` ("apple"/"hex"), `hexModel` (an id),
+    /// ("default" or a device id), `transcriber` (an `Engine` name), `hexModel` (an id),
     /// `hexLanguage` (a code), `appleLocale` (a locale id or "auto"), `retention` (a preset id).
-    /// ("default" or a device id), `transcriber` ("apple"/"hex"/"command"), `hexModel` (an id),
+    /// ("default" or a device id), `transcriber` (an `Engine` name), `hexModel` (an id),
     /// `hexLanguage` (a code), `retention` (a preset id).
     Set {
         key: String,
@@ -1522,7 +1531,12 @@ impl Panel {
             .and_then(crate::transcribe::Engine::parse)
             .unwrap_or_default();
         let menu = crate::transcribe::menu_state(engine, hex.as_ref(), config.hex_model.as_deref());
-        let command = crate::command_transcriber::Program::load_from(&host.config_path())
+        let program =
+            |key: &str| crate::command_transcriber::Program::load_from(&host.config_path(), key);
+        let runs = |engine: crate::transcribe::Engine| {
+            engine.command_key().is_none_or(|key| program(key).is_ok())
+        };
+        let command = program("transcribeCommand")
             .ok()
             .map(|program| program.name());
         let policy = crate::retention::Policy::load_from(&host.config_path());
@@ -1573,10 +1587,30 @@ impl Panel {
             playback_level: config.recording_volume(),
             transcriber: TranscriberView {
                 engine: match engine {
-                    crate::transcribe::Engine::Command if command.is_some() => "command",
-                    _ if menu.hex_checked => "hex",
+                    crate::transcribe::Engine::Hex if menu.hex_checked => "hex",
+                    crate::transcribe::Engine::Hex => "apple",
+                    _ if runs(engine) => engine.name(),
                     _ => "apple",
                 },
+                engines: crate::transcribe::Engine::ALL
+                    .into_iter()
+                    .map(|choice| {
+                        let enabled = match choice {
+                            crate::transcribe::Engine::Hex => menu.hex_enabled,
+                            _ => runs(choice),
+                        };
+                        let title = match choice {
+                            crate::transcribe::Engine::Hex => menu.hex_title.to_owned(),
+                            _ if enabled => choice.title().to_owned(),
+                            _ => format!("{} (not set up)", choice.title()),
+                        };
+                        EngineView {
+                            id: choice.name(),
+                            title,
+                            enabled,
+                        }
+                    })
+                    .collect(),
                 hex_title: menu.hex_title,
                 hex_enabled: menu.hex_enabled,
                 language: crate::handoff::hex_language_from(&config),
@@ -2886,6 +2920,11 @@ mod tests {
         std::fs::write(&host.path, r#"{"transcriber":"command"}"#).unwrap();
         let view = panel.view(&host).transcriber;
         assert_eq!((view.engine, view.command), ("apple", None));
+        let command = view.engines.iter().find(|e| e.id == "command").unwrap();
+        assert_eq!(
+            (command.title.as_str(), command.enabled),
+            ("Command (not set up)", false)
+        );
 
         std::fs::write(
             &host.path,
@@ -2905,6 +2944,43 @@ mod tests {
         );
         assert_eq!(read_json(&host.path)["transcriber"], "command");
         assert_eq!(panel.view(&host).transcriber.engine, "command");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn parakeet_and_whisper_are_offered_once_their_commands_are_set() {
+        let dir = TempDir::new("engines");
+        let mut host = fake(&dir);
+        let mut panel = Panel::default();
+        std::fs::write(
+            &host.path,
+            r#"{"transcriber":"whisper","parakeetCommand":["/opt/stt/python","/opt/stt/scrawl-parakeet.py","{audio}"]}"#,
+        )
+        .unwrap();
+        let view = panel.view(&host).transcriber;
+        assert_eq!(view.engine, "apple", "Whisper is chosen but has no command");
+        let offered: Vec<_> = view
+            .engines
+            .iter()
+            .map(|e| (e.id, e.title.as_str(), e.enabled))
+            .collect();
+        assert_eq!(
+            offered[..2],
+            [
+                ("parakeet", "Parakeet", true),
+                ("whisper", "Whisper large-v3 turbo (not set up)", false),
+            ]
+        );
+
+        panel.on(
+            Action::Set {
+                key: "transcriber".into(),
+                value: "parakeet".into(),
+            },
+            &mut host,
+        );
+        assert_eq!(read_json(&host.path)["transcriber"], "parakeet");
+        assert_eq!(panel.view(&host).transcriber.engine, "parakeet");
     }
 
     #[test]

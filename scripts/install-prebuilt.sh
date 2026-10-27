@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # Installs a prebuilt Scrawl fork release (the zip that package-prebuilt.sh makes, where this file
 # is install.sh beside Scrawl.app), with Parakeet transcription and the dictation formatter, on an
-# Apple silicon Mac running macOS 15 or later. Needs Homebrew, not Xcode.
+# Apple silicon Mac running macOS 15 or later. Needs Homebrew, not Xcode. With --whisper it also
+# sets up Whisper large-v3 turbo (mlx-whisper), which Settings › Recording can then pick.
 set -euo pipefail
+
+WHISPER=0
+for arg in "$@"; do
+  case "${arg}" in
+    --whisper) WHISPER=1 ;;
+    *) echo "usage: install.sh [--whisper]" >&2; exit 2 ;;
+  esac
+done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${HOME}/Applications/Scrawl.app"
@@ -10,6 +19,7 @@ SHARE_DIR="${HOME}/.local/share/scrawl"
 CONFIG="${HOME}/.config/scrawl/config.json"
 PARAKEET_PY="${HOME}/.local/share/uv/tools/parakeet-mlx/bin/python"
 FORMAT_PY="${HOME}/.local/share/uv/tools/mlx-lm/bin/python"
+WHISPER_PY="${HOME}/.local/share/uv/tools/mlx-whisper/bin/python"
 
 [[ "$(uname -m)" == "arm64" ]] || { echo "Scrawl needs an Apple silicon Mac." >&2; exit 1; }
 major="$(sw_vers -productVersion | cut -d. -f1)"
@@ -45,6 +55,14 @@ trap 'rm -rf "${WORK}"' EXIT
 ffmpeg -loglevel error -f lavfi -i anullsrc=r=16000:cl=mono -t 1 "${WORK}/silence.wav"
 "${PARAKEET_PY}" "${SHARE_DIR}/scrawl-parakeet.py" "${WORK}/silence.wav" >/dev/null
 
+if ((WHISPER)); then
+  echo "Installing Whisper (mlx-whisper)"
+  uv tool list 2>/dev/null | grep -q '^mlx-whisper ' || uv tool install mlx-whisper
+  cp -f "${HERE}/scrawl-whisper.py" "${SHARE_DIR}/scrawl-whisper.py"
+  echo "Downloading the Whisper large-v3 turbo model (about 1.6 GB) and checking it runs"
+  "${WHISPER_PY}" "${SHARE_DIR}/scrawl-whisper.py" "${WORK}/silence.wav" >/dev/null
+fi
+
 echo "Installing the dictation formatter (mlx-lm)"
 uv tool list 2>/dev/null | grep -q '^mlx-lm ' || uv tool install mlx-lm
 cp -f "${HERE}/scrawl-format.py" "${SHARE_DIR}/scrawl-format.py"
@@ -56,20 +74,28 @@ SCRAWL_PRESTART=1 "${FORMAT_PY}" "${SHARE_DIR}/scrawl-format.py" </dev/null >/de
 echo "Pointing Scrawl at Parakeet and the formatter in ${CONFIG}"
 mkdir -p "$(dirname "${CONFIG}")"
 [[ -f "${CONFIG}" ]] && cp -f "${CONFIG}" "${CONFIG}.bak"
-"${PARAKEET_PY}" - "${CONFIG}" "${PARAKEET_PY}" "${SHARE_DIR}/scrawl-parakeet.py" "${FORMAT_PY}" "${SHARE_DIR}/scrawl-format.py" <<'PY'
+"${PARAKEET_PY}" - "${CONFIG}" "${PARAKEET_PY}" "${SHARE_DIR}/scrawl-parakeet.py" "${FORMAT_PY}" "${SHARE_DIR}/scrawl-format.py" "${WHISPER}" "${WHISPER_PY}" "${SHARE_DIR}/scrawl-whisper.py" <<'PY'
 import json, os, sys
-path, python, script, format_python, format_script = sys.argv[1:6]
+path, python, script, format_python, format_script, whisper, whisper_python, whisper_script = sys.argv[1:9]
 config = {}
 if os.path.exists(path):
     with open(path) as f:
         config = json.load(f)
+parakeet = [python, script, "{audio}"]
+# Installs before the engine picker ran Parakeet as the generic command.
+if config.get("transcriber") == "command" and config.get("transcribeCommand") == parakeet:
+    config["transcriber"] = "parakeet"
+    del config["transcribeCommand"]
 # An update runs this again, so a choice made in Settings since the first install stays.
-for key, value in {
-    "transcriber": "command",
-    "transcribeCommand": [python, script, "{audio}"],
+defaults = {
+    "transcriber": "parakeet",
+    "parakeetCommand": parakeet,
     "transcribePrestart": True,
     "formatCommand": [format_python, format_script],
-}.items():
+}
+if whisper == "1":
+    defaults["whisperCommand"] = [whisper_python, whisper_script, "{audio}"]
+for key, value in defaults.items():
     config.setdefault(key, value)
 with open(path, "w") as f:
     json.dump(config, f, indent=2)

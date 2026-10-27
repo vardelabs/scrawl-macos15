@@ -82,7 +82,21 @@ struct SettingsTranscriber: Decodable, Equatable {
   var models: [SettingsModelOption] = []
   /// The program's file name while `transcribeCommand` is usable.
   var command: String?
+  /// The Transcription menu, in order; an engine is enabled once it can run.
+  var engines: [SettingsEngine] = [
+    SettingsEngine(id: "parakeet", title: "Parakeet (not set up)", enabled: false),
+    SettingsEngine(id: "whisper", title: "Whisper large-v3 turbo (not set up)", enabled: false),
+    SettingsEngine(id: "apple", title: "Apple Speech", enabled: true),
+    SettingsEngine(id: "hex", title: "Hex (not running)", enabled: false),
+    SettingsEngine(id: "command", title: "Command (not set up)", enabled: false),
+  ]
   var speech: SpeechStatus?
+}
+
+struct SettingsEngine: Decodable, Equatable {
+  var id: String
+  var title: String
+  var enabled: Bool
 }
 
 struct SettingsOption: Decodable, Equatable {
@@ -1358,15 +1372,9 @@ struct SettingsView: View {
 
   private var recording: some View {
     let t = state.transcriber
-    var engines: [(id: String, title: String, enabled: Bool)] = [("apple", "Apple Speech", true)]
-    engines.append(("hex", t.hexTitle, t.hexEnabled))
-    engines.append(("command", t.command == nil ? "Command (not set up)" : "Command", t.command != nil))
+    let engines = t.engines.map { (id: $0.id, title: $0.title, enabled: $0.enabled) }
     let chosenModel = t.models.first(where: \.chosen)
-    let engineTitle = switch t.engine {
-    case "hex": "Hex"
-    case "command": "Command"
-    default: "Apple Speech"
-    }
+    let engineTitle = t.engines.first { $0.id == t.engine }?.title ?? "Apple Speech"
     let mic = state.microphone
     return VStack(spacing: 0) {
       SettingsGroup {
@@ -1430,11 +1438,8 @@ struct SettingsView: View {
           }
         }
       }
-      SettingsCaption(text: t.engine == "command" || t.command != nil
-        ? "Command runs the program in transcribeCommand (config.json) on each recording and reads its transcript. Apple Speech runs on this Mac and times each word."
-        : t.hexEnabled || t.engine == "hex"
-        ? "Apple Speech times each word. Hex uses a model you have in Hex, and its word times are estimates. Command is enabled once transcribeCommand in config.json names a program by its absolute path."
-        : "Apple Speech runs on this Mac and times each word. Hex shows up here while Hex is running. Command is enabled once transcribeCommand in config.json names a program by its absolute path.")
+      SettingsCaption(text: "Turns your voice into text on this Mac. Engines that aren't installed show “(not set up)”."
+        + (t.engine == "hex" ? " Hex's word times are estimates." : ""))
       if t.engine == "apple", let line = t.speech?.line {
         SettingsCaption(text: line)
       }

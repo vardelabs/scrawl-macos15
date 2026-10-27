@@ -94,7 +94,7 @@ struct Cli {
 
 fn parse_engine(name: &str) -> Result<crate::transcribe::Engine, String> {
     crate::transcribe::Engine::parse(name)
-        .ok_or_else(|| "expected `apple`, `hex` or `command`".to_owned())
+        .ok_or_else(|| "expected `parakeet`, `whisper`, `apple`, `hex` or `command`".to_owned())
 }
 
 /// `scrawl hex status`: connection, models and what the next recording would use.
@@ -102,15 +102,14 @@ fn hex_status() {
     let preferred = transcribe::Engine::configured();
     println!("Preferred transcriber: {}", preferred.name());
     // Never runs the program; argv is not printed.
-    let command = handoff::transcribe_command();
-    if preferred == transcribe::Engine::Command {
-        match &command {
-            Ok(program) => println!("Command: {}", program.name()),
-            Err(unusable) => println!("Command: not usable ({unusable})"),
-        }
+    let command = preferred.program();
+    match &command {
+        Some(Ok(program)) => println!("{}: {}", preferred.title(), program.name()),
+        Some(Err(unusable)) => println!("{}: not usable ({unusable})", preferred.title()),
+        None => {}
     }
     let next = |hex_model: Option<&str>| match (preferred, hex_model, &command) {
-        (transcribe::Engine::Command, _, Ok(program)) => format!("Command ({})", program.name()),
+        (_, _, Some(Ok(program))) => format!("{} ({})", preferred.title(), program.name()),
         (transcribe::Engine::Hex, Some(model), _) => format!("Hex ({model})"),
         _ => transcribe::LOCAL_ENGINE_TITLE.to_owned(),
     };
@@ -271,7 +270,7 @@ enum Command {
         /// Copy the summary to the clipboard.
         #[arg(long)]
         clipboard: bool,
-        /// Transcribe with `apple`, `hex` or `command` instead of the configured transcriber.
+        /// Transcribe with `parakeet`, `whisper`, `apple`, `hex` or `command` instead of the configured transcriber.
         #[arg(long, value_parser = parse_engine)]
         transcriber: Option<crate::transcribe::Engine>,
     },
@@ -309,7 +308,7 @@ enum Command {
         /// many times real time first, as if recording, so the finish only transcribes the tail.
         #[arg(long, hide = true, requires = "bench")]
         live_speed: Option<f64>,
-        /// Transcribe with `apple`, `hex` or `command` instead of the configured transcriber.
+        /// Transcribe with `parakeet`, `whisper`, `apple`, `hex` or `command` instead of the configured transcriber.
         #[arg(long, value_parser = parse_engine)]
         transcriber: Option<crate::transcribe::Engine>,
         /// Turn an experiment on for this run, as `"experiments"` in `config.json` would
