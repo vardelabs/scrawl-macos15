@@ -16,3 +16,6 @@ value 192.168.1.4
 # Co-Authored-By trailer upstream's commits carry.
 value pw@app.example.com
 value noreply@anthropic.com
+
+# The operator's own work address, which earlier commits of a spoken-command example used.
+value kai@vardelabs.com
