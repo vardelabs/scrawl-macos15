@@ -91,6 +91,9 @@ const REPEAT_AFTER: Duration = Duration::from_secs(1);
 
 const INVALID: Time = Time { value: 0, timescale: 0, flags: 0, epoch: 0 };
 
+/// `AVAssetWriterStatusWriting`.
+const WRITING: isize = 1;
+
 struct Writer {
     writer: Retained<AnyObject>,
     input: Retained<AnyObject>,
@@ -294,6 +297,14 @@ impl Movie {
             let mut w = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
             if !w.started || w.finished {
                 w.finished = true;
+                return;
+            }
+            // A writer that failed mid-capture (a full disk) raises on the session calls below,
+            // which would abort the app at the stop.
+            let status: isize = unsafe { msg_send![&*w.writer, status] };
+            if status != WRITING {
+                w.finished = true;
+                scrawl_log(format!("Movie: failed while recording ({})", writer_error(&w.writer)));
                 return;
             }
             // The movie runs to the stop, not to its last frame.

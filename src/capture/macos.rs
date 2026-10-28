@@ -1278,7 +1278,9 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                             }
                         }
                     }
-                    if cropped && new_crop != crop {
+                    // Without a crop the window is recorded whole wherever it goes, so its live
+                    // frame is published on every move, not only when the crop changes.
+                    if cropped {
                         crop = new_crop;
                         publish_crop(telemetry.as_deref(), &sampler_target, crop, follow.frame);
                     }
