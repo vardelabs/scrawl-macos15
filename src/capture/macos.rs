@@ -1259,7 +1259,6 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                         filter_and_config = Some((filter, shot_config));
                     }
                 } else {
-                    follow_pending = false;
                     // The recording must hide the same windows as the candidates, or keyframes
                     // decoded from it could show Scrawl's own overlays.
                     let mut cropped = new_crop == crop || stream.is_none();
@@ -1283,6 +1282,8 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                         crop = new_crop;
                         publish_crop(telemetry.as_deref(), &sampler_target, crop, follow.frame);
                     }
+                    // A failed crop update is tried again at the next look.
+                    follow_pending = !cropped;
                     let shot_config = sck_config(&sampler_target, shot_edge, local(crop));
                     filter_and_config = Some((new_filter, shot_config));
                 }
