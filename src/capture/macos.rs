@@ -1129,10 +1129,11 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
         CANDIDATE_EDGE_NO_VIDEO
     };
     let mut crop = filter.as_ref().and_then(|(_, crop)| *crop);
-    publish_crop(telemetry.as_deref(), &sampler_target, crop);
+    let mut follow = WindowFollow::new(&sampler_target);
+    let mut follow_pending = false;
+    publish_crop(telemetry.as_deref(), &sampler_target, crop, follow.frame);
     let mut filter_and_config =
         filter.map(|(f, crop)| (f, sck_config(&sampler_target, shot_edge, local(crop))));
-    let mut follow = WindowFollow::new(&sampler_target);
     let mut last_sample = Instant::now()
         .checked_sub(FRAME_SAMPLE_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -1183,7 +1184,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                     });
                     if let Some((filter, next_crop)) = next_filter {
                         crop = next_crop;
-                        publish_crop(telemetry.as_deref(), &sampler_target, crop);
+                        publish_crop(telemetry.as_deref(), &sampler_target, crop, follow.frame);
                         let config = sck_config(&sampler_target, shot_edge, local(next_crop));
                         filter_and_config = Some((filter, config));
                     }
@@ -1212,8 +1213,9 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
         }
         cur_excluded.extend(&prompts.ids);
         let excluded_changed = cur_excluded != last_excluded;
-        let moved = follow.moved();
-        if excluded_changed || moved {
+        let polled = follow.poll();
+        follow_pending |= polled == Some(true);
+        if excluded_changed || (follow_pending && polled.is_some()) {
             if excluded_changed {
                 last_excluded.clone_from(&cur_excluded);
                 prompts.hidden = sck_lists_windows(&prompts.ids);
@@ -1225,7 +1227,13 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 // A running stream given a new filter and a new crop at once goes black, as one
                 // moved to another display always needs, so the movie carries on in a new
                 // segment instead, joined at finish like a pause's.
-                if stream.is_some() && (new_display || (excluded_changed && new_crop != crop)) {
+                let restart =
+                    stream.is_some() && (new_display || (excluded_changed && new_crop != crop));
+                if restart && polled == Some(true) && !excluded_changed {
+                    // Still being dragged: one new segment once it stops, not one per display
+                    // edge it crosses.
+                } else if restart {
+                    follow_pending = false;
                     if let Some(old) = stream.take() {
                         stop_stream(&old, movie.take().as_deref());
                     }
@@ -1246,29 +1254,35 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                     });
                     if let Some((filter, next_crop)) = next_filter {
                         crop = next_crop;
-                        publish_crop(telemetry.as_deref(), &sampler_target, crop);
+                        publish_crop(telemetry.as_deref(), &sampler_target, crop, follow.frame);
                         let shot_config = sck_config(&sampler_target, shot_edge, local(crop));
                         filter_and_config = Some((filter, shot_config));
                     }
                 } else {
+                    follow_pending = false;
                     // The recording must hide the same windows as the candidates, or keyframes
                     // decoded from it could show Scrawl's own overlays.
+                    let mut cropped = new_crop == crop || stream.is_none();
                     if let Some(ref stream) = stream {
                         if excluded_changed
                             && let Err(error) = stream.update_content_filter(&new_filter)
                         {
                             scrawl_log(format!("Recording filter update failed: {error:?}"));
                         }
-                        if new_crop != crop
-                            && let Err(error) = stream.update_configuration(&config)
-                        {
-                            scrawl_log(format!("Recording crop update failed: {error:?}"));
+                        if !cropped {
+                            match stream.update_configuration(&config) {
+                                Ok(()) => cropped = true,
+                                // The ink and the candidates stay with the movie's crop.
+                                Err(error) => {
+                                    scrawl_log(format!("Recording crop update failed: {error:?}"));
+                                }
+                            }
                         }
                     }
-                    if new_crop != crop {
-                        publish_crop(telemetry.as_deref(), &sampler_target, new_crop);
+                    if cropped && new_crop != crop {
+                        crop = new_crop;
+                        publish_crop(telemetry.as_deref(), &sampler_target, crop, follow.frame);
                     }
-                    crop = new_crop;
                     let shot_config = sck_config(&sampler_target, shot_edge, local(crop));
                     filter_and_config = Some((new_filter, shot_config));
                 }
@@ -1348,35 +1362,36 @@ impl WindowFollow {
         }
     }
 
-    fn moved(&mut self) -> bool {
-        let Some(id) = self.id else {
-            return false;
-        };
+    /// `None` between looks; otherwise whether the window moved or resized since the last one.
+    fn poll(&mut self) -> Option<bool> {
+        let id = self.id?;
         if self.checked.elapsed() < FOLLOW_INTERVAL {
-            return false;
+            return None;
         }
         self.checked = Instant::now();
         let frame = raw_windows_now().into_iter().find(|w| w.id == id).map(|w| w.bounds);
-        match frame {
+        Some(match frame {
             Some(frame) if frame != self.frame => {
                 self.frame = frame;
                 true
             }
             _ => false,
-        }
+        })
     }
 }
 
-/// Where a window's recording is now, so ink, clicks and the overlay go with it.
+/// Where a window's recording is now, so ink, clicks and the overlay go with it: its crop, or
+/// without one (a window partly off its display, recorded whole) the window's frame `live`.
 fn publish_crop(
     telemetry: Option<&SharedCaptureTelemetry>,
     target: &TargetInfo,
     crop: Option<WindowCrop>,
+    live: [f64; 4],
 ) {
-    let (Some(telemetry), Some(crop)) = (telemetry, crop) else {
+    let Some(telemetry) = telemetry.filter(|_| target.mode == CaptureMode::Window) else {
         return;
     };
-    let [x, y, width, height] = crop.global;
+    let [x, y, width, height] = crop.map_or(live, |c| c.global);
     *telemetry.target_frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
         crate::model::TargetFrame { x, y, width, height, scale: target.frame.scale };
 }
