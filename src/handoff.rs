@@ -217,7 +217,7 @@ pub fn paste_bundle_image_and_text(bundle_dir: &Path) -> Result<()> {
     crate::capture::post_synthetic_cmd_v();
     offer.wait_taken(std::time::Instant::now());
     copy_string_to_clipboard(&summary)?;
-    offer.retire();
+    drop(offer);
     std::thread::sleep(std::time::Duration::from_millis(20));
     crate::capture::post_synthetic_cmd_v();
     Ok(())
@@ -268,13 +268,14 @@ mod paste_offer {
     const AFTER_TAKE_MS: u64 = 60;
 
     pub struct PasteOffer {
-        provider: Retained<PasteProvider>,
+        provider: Option<Retained<PasteProvider>>,
         taken: Receiver<()>,
     }
 
     /// The last offer's provider. The pasteboard item doesn't keep it, and AppKit can still be
-    /// calling it on the main thread when the summary replaces the item, so it lives until the
-    /// next paste replaces it here rather than dying on the paste's thread.
+    /// calling it on the main thread when the offer ends (the summary replaced it, or the paste
+    /// failed), so it lives until the next offer replaces it here rather than dying on the
+    /// paste's thread.
     static RETIRED: Mutex<Option<Retired>> = Mutex::new(None);
 
     struct Retired(#[allow(dead_code)] Retained<PasteProvider>);
@@ -298,10 +299,13 @@ mod paste_offer {
             let after_take = Duration::from_millis(if taken { AFTER_TAKE_MS } else { 0 });
             std::thread::sleep(min.saturating_sub(elapsed).max(after_take));
         }
+    }
 
-        /// Called once the summary has replaced the offer on the clipboard.
-        pub fn retire(self) {
-            *RETIRED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Retired(self.provider));
+    impl Drop for PasteOffer {
+        fn drop(&mut self) {
+            if let Some(provider) = self.provider.take() {
+                *RETIRED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Retired(provider));
+            }
         }
     }
 
@@ -357,7 +361,7 @@ mod paste_offer {
         pasteboard.clearContents();
         let items = NSArray::from_retained_slice(&[ProtocolObject::from_retained(item)]);
         ensure!(pasteboard.writeObjects(&items), "Could not put the paste on the clipboard");
-        Ok(PasteOffer { provider, taken })
+        Ok(PasteOffer { provider: Some(provider), taken })
     }
 }
 
@@ -367,8 +371,6 @@ struct PasteOffer;
 
 #[cfg(target_os = "windows")]
 impl PasteOffer {
-    fn retire(self) {}
-
     fn wait_taken(&self, pasted: std::time::Instant) {
         let min = std::time::Duration::from_millis(FIRST_PASTE_MIN_MS);
         std::thread::sleep(min.saturating_sub(pasted.elapsed()));
