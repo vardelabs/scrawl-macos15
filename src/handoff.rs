@@ -215,8 +215,7 @@ pub fn paste_bundle_image_and_text(bundle_dir: &Path) -> Result<()> {
     };
     std::thread::sleep(std::time::Duration::from_millis(20));
     crate::capture::post_synthetic_cmd_v();
-
-    offer.wait_taken();
+    offer.wait_taken(std::time::Instant::now());
     copy_string_to_clipboard(&summary)?;
     drop(offer);
     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -231,8 +230,8 @@ enum Offer<'a> {
     Text(&'a str),
 }
 
-/// The second paste replaces the first one's clipboard no sooner than this after `⌘V`, the
-/// fixed wait it used to be.
+/// The second paste replaces the first one's clipboard no sooner than this after the first
+/// `⌘V`, the fixed wait it used to be.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const FIRST_PASTE_MIN_MS: u64 = 160;
 
@@ -267,17 +266,16 @@ mod paste_offer {
         // The pasteboard item doesn't keep its provider; this does until the summary replaces it.
         _provider: Retained<PasteProvider>,
         taken: Receiver<()>,
-        offered: Instant,
     }
 
     impl PasteOffer {
-        /// Waits for the app in front to take the offer. A clipboard manager may take it
-        /// first, so the old fixed wait still applies.
-        pub fn wait_taken(&self) {
+        /// Waits for the app in front to take the offer after the `⌘V` posted at `pasted`. A
+        /// clipboard manager may take it first, so the old fixed wait still applies.
+        pub fn wait_taken(&self, pasted: Instant) {
             let min = Duration::from_millis(FIRST_PASTE_MIN_MS);
             let max = Duration::from_millis(FIRST_PASTE_MAX_MS);
-            let taken = self.taken.recv_timeout(max.saturating_sub(self.offered.elapsed())).is_ok();
-            let elapsed = self.offered.elapsed();
+            let taken = self.taken.recv_timeout(max.saturating_sub(pasted.elapsed())).is_ok();
+            let elapsed = pasted.elapsed();
             scrawl_log(if taken {
                 format!("paste: the first paste was taken after {} ms", elapsed.as_millis())
             } else {
@@ -339,7 +337,7 @@ mod paste_offer {
         pasteboard.clearContents();
         let items = NSArray::from_retained_slice(&[ProtocolObject::from_retained(item)]);
         ensure!(pasteboard.writeObjects(&items), "Could not put the paste on the clipboard");
-        Ok(PasteOffer { _provider: provider, taken, offered: Instant::now() })
+        Ok(PasteOffer { _provider: provider, taken })
     }
 }
 
@@ -349,8 +347,9 @@ struct PasteOffer;
 
 #[cfg(target_os = "windows")]
 impl PasteOffer {
-    fn wait_taken(&self) {
-        std::thread::sleep(std::time::Duration::from_millis(FIRST_PASTE_MIN_MS));
+    fn wait_taken(&self, pasted: std::time::Instant) {
+        let min = std::time::Duration::from_millis(FIRST_PASTE_MIN_MS);
+        std::thread::sleep(min.saturating_sub(pasted.elapsed()));
     }
 }
 
