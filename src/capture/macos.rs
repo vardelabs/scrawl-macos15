@@ -1391,8 +1391,9 @@ fn window_crop(content: &SCShareableContent, window: &SCWindow) -> Option<(SCDis
     })
 }
 
-/// The window and the rest of its app, so its menus, popovers and tooltips show as they did,
-/// less the app's other windows (another browser window behind it) and Scrawl's own overlays.
+/// The window and the rest of its app, so its menus, popovers, sheets and dialogs show where
+/// they overlap the crop (what reaches past the window's frame is cut off at its edge), less
+/// the app's other titled windows behind it (another browser window) and Scrawl's own overlays.
 fn window_filter(
     content: &SCShareableContent,
     window: &SCWindow,
@@ -1407,13 +1408,23 @@ fn window_filter(
             .build()
             .ok();
     };
+    // CoreGraphics lists on-screen windows front to back; a dialog in front of the window stays.
+    let order: Vec<u32> = raw_windows_now().into_iter().map(|w| w.id).collect();
+    let position = |id: u32| order.iter().position(|&w| w == id);
+    let target_at = position(window.window_id());
+    let behind = |id: u32| match (position(id), target_at) {
+        (Some(at), Some(target)) => at > target,
+        _ => true,
+    };
     let others: Vec<SCWindow> = content
         .windows()
         .into_iter()
         .filter(|w| {
             w.window_id() != window.window_id()
                 && w.owning_application().is_some_and(|a| a.process_id() == app.process_id())
-                && ((w.window_layer() == 0 && w.title().is_some_and(|t| !t.is_empty()))
+                && ((w.window_layer() == 0
+                    && w.title().is_some_and(|t| !t.is_empty())
+                    && behind(w.window_id()))
                     || excluded_window_ids.contains(&w.window_id())
                     || (app.process_id() == our_pid && w.window_layer() != 0))
         })
