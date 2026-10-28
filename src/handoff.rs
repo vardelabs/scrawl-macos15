@@ -164,25 +164,6 @@ pub fn copy_string_to_clipboard(content: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-pub fn copy_png_to_clipboard(png_bytes: &[u8]) -> Result<()> {
-    use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
-    use objc2_foundation::{NSArray, NSData};
-
-    let data = NSData::with_bytes(png_bytes);
-    let pasteboard = NSPasteboard::generalPasteboard();
-    unsafe {
-        let types = NSArray::from_slice(&[NSPasteboardTypePNG]);
-        pasteboard.clearContents();
-        pasteboard.declareTypes_owner(&types, None);
-        ensure!(
-            pasteboard.setData_forType(Some(&data), NSPasteboardTypePNG),
-            "Could not copy PNG image to clipboard"
-        );
-    }
-    Ok(())
-}
-
 #[cfg(target_os = "windows")]
 pub fn copy_string_to_clipboard(content: &str) -> Result<()> {
     crate::win::clipboard::set_text(content)
@@ -224,22 +205,162 @@ pub fn paste_bundle_image_and_text(bundle_dir: &Path) -> Result<()> {
 
     crate::capture::wait_for_modifiers_released(350);
 
-    if crate::capture::is_frontmost_terminal() {
+    let offer = if crate::capture::is_frontmost_terminal() {
         // In terminals (Ghostty / OpenCode TUI / Claude Code), pasting the image path first
         // resolves and attaches `[Image 1]`, and the second paste inserts the text summary.
-        copy_string_to_clipboard(&sheet_path.display().to_string())?;
+        offer_for_paste(Offer::Text(&sheet_path.display().to_string()))?
     } else {
         // In GUI apps (OpenCode Desktop, Slack, Linear, browsers), PNG-only attaches the image.
-        copy_png_to_clipboard(&image)?;
-    }
+        offer_for_paste(Offer::Png(&image))?
+    };
     std::thread::sleep(std::time::Duration::from_millis(20));
     crate::capture::post_synthetic_cmd_v();
 
-    std::thread::sleep(std::time::Duration::from_millis(160));
+    offer.wait_taken();
     copy_string_to_clipboard(&summary)?;
+    drop(offer);
     std::thread::sleep(std::time::Duration::from_millis(20));
     crate::capture::post_synthetic_cmd_v();
     Ok(())
+}
+
+/// What the first of the two pastes puts on the clipboard.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+enum Offer<'a> {
+    Png(&'a [u8]),
+    Text(&'a str),
+}
+
+/// The second paste replaces the first one's clipboard no sooner than this after `⌘V`, the
+/// fixed wait it used to be.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const FIRST_PASTE_MIN_MS: u64 = 160;
+
+#[cfg(target_os = "macos")]
+use paste_offer::offer_for_paste;
+
+/// The first paste's clipboard, handed over only when an app asks for it. A busy app (an
+/// Electron one right after a capture finishes) can read the clipboard well after the fixed
+/// 160 ms, by which time it held the summary, and the image was lost.
+#[cfg(target_os = "macos")]
+mod paste_offer {
+    use std::sync::mpsc::{Receiver, SyncSender};
+    use std::time::{Duration, Instant};
+
+    use anyhow::{Result, ensure};
+    use objc2::rc::Retained;
+    use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+    use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+    use objc2_app_kit::{
+        NSPasteboard, NSPasteboardItem, NSPasteboardItemDataProvider, NSPasteboardType,
+        NSPasteboardTypePNG, NSPasteboardTypeString,
+    };
+    use objc2_foundation::{NSArray, NSData, NSObject};
+
+    use super::{FIRST_PASTE_MIN_MS, Offer};
+    use crate::capture::scrawl_log;
+
+    /// Nor later than this: an app that takes no image (a plain text field) never asks for it.
+    const FIRST_PASTE_MAX_MS: u64 = 1_000;
+
+    pub struct PasteOffer {
+        // The pasteboard item doesn't keep its provider; this does until the summary replaces it.
+        _provider: Retained<PasteProvider>,
+        taken: Receiver<()>,
+        offered: Instant,
+    }
+
+    impl PasteOffer {
+        /// Waits for the app in front to take the offer. A clipboard manager may take it
+        /// first, so the old fixed wait still applies.
+        pub fn wait_taken(&self) {
+            let min = Duration::from_millis(FIRST_PASTE_MIN_MS);
+            let max = Duration::from_millis(FIRST_PASTE_MAX_MS);
+            let taken = self.taken.recv_timeout(max.saturating_sub(self.offered.elapsed())).is_ok();
+            let elapsed = self.offered.elapsed();
+            scrawl_log(if taken {
+                format!("paste: the first paste was taken after {} ms", elapsed.as_millis())
+            } else {
+                format!("paste: nothing took the first paste within {} ms", max.as_millis())
+            });
+            std::thread::sleep(min.saturating_sub(elapsed));
+        }
+    }
+
+    struct Provision {
+        data: Retained<NSData>,
+        taken: SyncSender<()>,
+    }
+
+    define_class!(
+        #[unsafe(super = NSObject)]
+        #[name = "ScrawlPasteProvider"]
+        #[ivars = Provision]
+        struct PasteProvider;
+
+        unsafe impl NSObjectProtocol for PasteProvider {}
+
+        unsafe impl NSPasteboardItemDataProvider for PasteProvider {
+            // AppKit asks on the main thread, while the paste waits on its own.
+            #[unsafe(method(pasteboard:item:provideDataForType:))]
+            fn provide(
+                &self,
+                _pasteboard: Option<&NSPasteboard>,
+                item: &NSPasteboardItem,
+                kind: &NSPasteboardType,
+            ) {
+                let provision = self.ivars();
+                item.setData_forType(&provision.data, kind);
+                let _ = provision.taken.try_send(());
+            }
+        }
+    );
+
+    pub fn offer_for_paste(offer: Offer) -> Result<PasteOffer> {
+        let (kind, bytes) = match offer {
+            Offer::Png(png) => (unsafe { NSPasteboardTypePNG }, png),
+            Offer::Text(text) => (unsafe { NSPasteboardTypeString }, text.as_bytes()),
+        };
+        let (sender, taken) = std::sync::mpsc::sync_channel(1);
+        let provider = PasteProvider::alloc().set_ivars(Provision {
+            data: NSData::with_bytes(bytes),
+            taken: sender,
+        });
+        let provider: Retained<PasteProvider> = unsafe { msg_send![super(provider), init] };
+        let item = NSPasteboardItem::new();
+        ensure!(
+            item.setDataProvider_forTypes(
+                ProtocolObject::from_ref(&*provider),
+                &NSArray::from_slice(&[kind])
+            ),
+            "Could not offer the paste"
+        );
+        let pasteboard = NSPasteboard::generalPasteboard();
+        pasteboard.clearContents();
+        let items = NSArray::from_retained_slice(&[ProtocolObject::from_retained(item)]);
+        ensure!(pasteboard.writeObjects(&items), "Could not put the paste on the clipboard");
+        Ok(PasteOffer { _provider: provider, taken, offered: Instant::now() })
+    }
+}
+
+/// Windows keeps the fixed wait.
+#[cfg(target_os = "windows")]
+struct PasteOffer;
+
+#[cfg(target_os = "windows")]
+impl PasteOffer {
+    fn wait_taken(&self) {
+        std::thread::sleep(std::time::Duration::from_millis(FIRST_PASTE_MIN_MS));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn offer_for_paste(offer: Offer) -> Result<PasteOffer> {
+    match offer {
+        Offer::Png(png) => copy_png_to_clipboard(png)?,
+        Offer::Text(text) => copy_string_to_clipboard(text)?,
+    }
+    Ok(PasteOffer)
 }
 
 /// How long a dictation's text stays on the clipboard before the previous contents come back:
