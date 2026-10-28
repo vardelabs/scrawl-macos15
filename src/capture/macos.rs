@@ -1299,7 +1299,19 @@ fn build_sck_filter_and_config(
             .into_iter()
             .find(|w| w.window_id() == window_id)
     {
-        SCContentFilter::create().with_window(&window).build().ok()
+        // Only a window wholly on its display gets a crop (`window_source_rect`), and its filter
+        // must be the display one the crop is measured in.
+        let display = window_source_rect(target).and_then(|_| {
+            content.displays().into_iter().find(|d| d.display_id() == target.display_id)
+        });
+        match display {
+            Some(display) => SCContentFilter::create()
+                .with_display(&display)
+                .with_including_windows(&[&window])
+                .build()
+                .ok(),
+            None => SCContentFilter::create().with_window(&window).build().ok(),
+        }
     } else if let Some(display) = content
         .displays()
         .into_iter()
@@ -1341,24 +1353,39 @@ fn sck_config(target: &TargetInfo, long_edge: f64) -> SCStreamConfiguration {
         .with_width(width)
         .with_height(height)
         .with_shows_cursor(true);
-    if target.mode == CaptureMode::Region {
+    let source = if target.mode == CaptureMode::Region {
         // `sourceRect` is in the display's own points, not global ones.
-        let b = core_graphics::display::CGDisplay::new(target.display_id).bounds();
-        let display = [b.origin.x, b.origin.y, b.size.width, b.size.height];
-        let area = [
-            target.frame.x,
-            target.frame.y,
-            target.frame.width,
-            target.frame.height,
-        ];
-        let [x, y, w, h] = if display[2] > 0.0 && display[3] > 0.0 {
-            crate::screens::source_rect(area, display)
-        } else {
-            area
-        };
+        let area = frame_rect(target);
+        let display = display_bounds(target.display_id);
+        Some(display.map_or(area, |d| crate::screens::source_rect(area, d)))
+    } else {
+        window_source_rect(target)
+    };
+    if let Some([x, y, w, h]) = source {
         config.set_source_rect(CGRect::new(x, y, w, h));
     }
     config
+}
+
+/// ScreenCaptureKit's single-window filter records a window together with any child windows
+/// beside it, scaled to fit, so a window with helpers off its edge (Arc keeps some 147 points to
+/// its left) came out smaller and shifted from where the ink is drawn. Recording its display with
+/// only the window included, cropped to the window's frame, keeps the two in step.
+fn window_source_rect(target: &TargetInfo) -> Option<[f64; 4]> {
+    if target.mode != CaptureMode::Window || target.window_id.is_none() {
+        return None;
+    }
+    crate::screens::window_source_rect(frame_rect(target), display_bounds(target.display_id)?)
+}
+
+fn frame_rect(target: &TargetInfo) -> [f64; 4] {
+    [target.frame.x, target.frame.y, target.frame.width, target.frame.height]
+}
+
+fn display_bounds(display_id: u32) -> Option<[f64; 4]> {
+    let b = core_graphics::display::CGDisplay::new(display_id).bounds();
+    (b.size.width > 0.0 && b.size.height > 0.0)
+        .then_some([b.origin.x, b.origin.y, b.size.width, b.size.height])
 }
 
 /// Starts the recording stream; returns it with the filter for candidate screenshots and when
