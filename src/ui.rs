@@ -1842,17 +1842,21 @@ impl ScrawlCoordinator {
         }
     }
 
-    /// The iPhone's mirror window can be dragged to another display mid-recording: the ink
-    /// overlay and the capsule go with it.
+    /// The iPhone's mirror window, or a captured window, can be dragged to another display
+    /// mid-recording: the ink overlay and the capsule go with it.
     fn follow_phone_mirror(&mut self) {
         let Some(ActiveRecording {
-            source: CaptureSource::Phone(_),
+            source,
+            target,
             _metal_overlay: Some(overlay),
             ..
         }) = self.active_recording.as_mut()
         else {
             return;
         };
+        if !matches!(source, CaptureSource::Phone(_)) && target.mode != CaptureMode::Window {
+            return;
+        }
         let f = *self
             .telemetry
             .target_frame
@@ -2767,6 +2771,7 @@ impl ScrawlCoordinator {
             Some(video_path),
             Arc::clone(&self.telemetry.excluded_window_ids),
             Arc::clone(&clock),
+            Some(Arc::clone(&self.telemetry)),
         );
         start_metric("sck_start_ms", stage);
         set_pause_hotkey(Some(&self.telemetry.shortcuts().0));

@@ -16,6 +16,9 @@ use crate::model::{
 #[cfg_attr(target_os = "windows", path = "capture/windows.rs")]
 mod platform;
 pub use platform::*;
+#[cfg(target_os = "macos")]
+#[path = "capture/movie.rs"]
+mod movie;
 
 pub const FRAME_SAMPLE_INTERVAL: Duration = Duration::from_millis(220);
 /// Candidate frames only feed scene diffs and keyframe selection; the keyframes themselves are
@@ -615,6 +618,9 @@ pub(crate) struct Sampler {
     pub urgent: Arc<AtomicBool>,
     pub frames: Arc<Mutex<CandidateBuffer>>,
     pub video_offset_ms: Arc<AtomicU64>,
+    /// Where a moved window's recording now is goes here, so ink and clicks follow it.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
+    pub telemetry: Option<Arc<SharedCaptureTelemetry>>,
 }
 
 /// Active screen + optional MP4 recorder (ScreenCaptureKit on macOS, Windows.Graphics.Capture
@@ -638,16 +644,17 @@ impl ScreenCaptureSession {
         excluded_window_ids: Arc<Mutex<Vec<u32>>>,
     ) -> Self {
         let clock = Arc::new(crate::pause::PauseClock::new());
-        Self::start_pausable(target, video_output_path, excluded_window_ids, clock)
+        Self::start_pausable(target, video_output_path, excluded_window_ids, clock, None)
     }
 
     /// Records on `clock`, so `pause` holds this session together with the input and the
-    /// microphone sharing it.
+    /// microphone sharing it. A captured window that moves moves `telemetry`'s target frame.
     pub fn start_pausable(
         target: TargetInfo,
         video_output_path: Option<PathBuf>,
         excluded_window_ids: Arc<Mutex<Vec<u32>>>,
         clock: Arc<crate::pause::PauseClock>,
+        telemetry: Option<Arc<SharedCaptureTelemetry>>,
     ) -> Self {
         let started_at = Instant::now();
         let clock = crate::pause::SessionClock::starting_now(clock);
@@ -676,6 +683,7 @@ impl ScreenCaptureSession {
                     urgent: thread_urgent,
                     frames: thread_frames,
                     video_offset_ms: thread_offset,
+                    telemetry,
                 })
             })
             .ok();

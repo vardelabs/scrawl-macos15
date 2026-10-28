@@ -28,7 +28,15 @@ gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["NSPasteboard", "NSPasteboardItem"] }
 objc2-core-foundation = "0.3.2"
-objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSData", "NSString"] }
+objc2-foundation = { version = "0.3.2", features = [
+  "NSArray",
+  "NSData",
+  "NSDictionary",
+  "NSError",
+  "NSString",
+  "NSURL",
+  "NSValue",
+] }
 objc2-quartz-core = { version = "0.3.2", features = ["CALayer"] }
 metal = "0.29.0"
 screencapturekit = { version = "=11.0.0", features = ["macos_15_0"] }

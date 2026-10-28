@@ -10,10 +10,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use screencapturekit::prelude::*;
-use screencapturekit::recording_output::{
-    SCRecordingOutput, SCRecordingOutputCodec, SCRecordingOutputConfiguration,
-    SCRecordingOutputFileType,
-};
 use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
 
 use super::{
@@ -1106,6 +1102,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
         urgent: thread_urgent,
         frames: thread_frames,
         video_offset_ms: thread_offset,
+        telemetry,
     } = sampler;
     let initial_excluded = excluded_window_ids
         .lock()
@@ -1114,7 +1111,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
     // Keep SCK initialization, capture and teardown on the owning worker.
     // stop() joins even if it arrives while setup is still in progress.
     let first_path = video_output_path.clone();
-    let (mut stream, mut recording_output, video_path, filter, movie_started) =
+    let (mut stream, mut movie, video_path, filter, movie_started) =
         setup_sck_capture(&sampler_target, video_output_path, &initial_excluded);
     if let Some(at) = movie_started {
         thread_offset.store(clock.ms_at(at), Ordering::Release);
@@ -1132,8 +1129,10 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
         CANDIDATE_EDGE_NO_VIDEO
     };
     let mut crop = filter.as_ref().and_then(|(_, crop)| *crop);
+    publish_crop(telemetry.as_deref(), &sampler_target, crop);
     let mut filter_and_config =
-        filter.map(|(f, crop)| (f, sck_config(&sampler_target, shot_edge, crop)));
+        filter.map(|(f, crop)| (f, sck_config(&sampler_target, shot_edge, local(crop))));
+    let mut follow = WindowFollow::new(&sampler_target);
     let mut last_sample = Instant::now()
         .checked_sub(FRAME_SAMPLE_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -1148,7 +1147,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
         if clock.clock.is_paused() {
             // The sampler owns the stream, so it stops it here and starts the next segment.
             if let Some(stream) = stream.take() {
-                stop_stream(&stream, recording_output.take().as_ref());
+                stop_stream(&stream, movie.take().as_deref());
             }
             if let Some(mut done) = segment.take() {
                 done.end_ms = Some(clock.ms());
@@ -1176,7 +1175,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 // resuming at the movie's own start would shift the audio by that much per pause.
                 let resumed = Instant::now();
                 if !thread_stopping.load(Ordering::Acquire) && clock.clock.finish_resume(resumed) {
-                    (stream, recording_output) = (next_stream, next_output);
+                    (stream, movie) = (next_stream, next_output);
                     segment = next_path.map(|path| crate::pause::Segment {
                         path,
                         start_ms: clock.ms_at(resumed),
@@ -1184,7 +1183,8 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                     });
                     if let Some((filter, next_crop)) = next_filter {
                         crop = next_crop;
-                        let config = sck_config(&sampler_target, shot_edge, next_crop);
+                        publish_crop(telemetry.as_deref(), &sampler_target, crop);
+                        let config = sck_config(&sampler_target, shot_edge, local(next_crop));
                         filter_and_config = Some((filter, config));
                     }
                     scrawl_log(format!("Capture resumed at {} ms", clock.ms()));
@@ -1192,7 +1192,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 } else {
                     // Paused again, or stopped, while the stream was starting.
                     if let Some(next_stream) = next_stream {
-                        stop_stream(&next_stream, next_output.as_ref());
+                        stop_stream(&next_stream, next_output.as_deref());
                     }
                     if let Some(path) = next_path {
                         let _ = std::fs::remove_file(path);
@@ -1211,25 +1211,71 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 .drop_since(prompts.clear_until_ms);
         }
         cur_excluded.extend(&prompts.ids);
-        if cur_excluded != last_excluded {
-            last_excluded.clone_from(&cur_excluded);
-            prompts.hidden = sck_lists_windows(&prompts.ids);
-            // A window that moved since the stream started has a new crop. Changing a running
-            // stream's crop stops its movie, so the filter stays until the next resume.
-            if let Some((new_filter, _, new_crop)) =
-                build_sck_filter_and_config(&sampler_target, &cur_excluded)
-                && new_crop == crop
-            {
-                // The recording must hide the same windows as the candidates, or
-                // keyframes decoded from it could show Scrawl's own overlays.
-                if let Some(ref stream) = stream
-                    && let Err(error) = stream.update_content_filter(&new_filter)
-                {
-                    scrawl_log(format!("Recording filter update failed: {error:?}"));
-                }
-                let shot_config = sck_config(&sampler_target, shot_edge, crop);
-                filter_and_config = Some((new_filter, shot_config));
+        let excluded_changed = cur_excluded != last_excluded;
+        let moved = follow.moved();
+        if excluded_changed || moved {
+            if excluded_changed {
+                last_excluded.clone_from(&cur_excluded);
+                prompts.hidden = sck_lists_windows(&prompts.ids);
             }
+            if let Some((new_filter, config, new_crop)) =
+                build_sck_filter_and_config(&sampler_target, &cur_excluded)
+            {
+                let new_display = new_crop.map(|c| c.display) != crop.map(|c| c.display);
+                // A running stream given a new filter and a new crop at once goes black, as one
+                // moved to another display always needs, so the movie carries on in a new
+                // segment instead, joined at finish like a pause's.
+                if stream.is_some() && (new_display || (excluded_changed && new_crop != crop)) {
+                    if let Some(old) = stream.take() {
+                        stop_stream(&old, movie.take().as_deref());
+                    }
+                    if let Some(mut done) = segment.take() {
+                        done.end_ms = Some(clock.ms());
+                        segments.push(done);
+                    }
+                    let next = first_path
+                        .as_deref()
+                        .map(|first| crate::pause::segment_path(first, segments.len()));
+                    let (next_stream, next_movie, next_path, next_filter, started) =
+                        setup_sck_capture(&sampler_target, next, &cur_excluded);
+                    (stream, movie) = (next_stream, next_movie);
+                    segment = next_path.map(|path| crate::pause::Segment {
+                        path,
+                        start_ms: started.map_or_else(|| clock.ms(), |at| clock.ms_at(at)),
+                        end_ms: None,
+                    });
+                    if let Some((filter, next_crop)) = next_filter {
+                        crop = next_crop;
+                        publish_crop(telemetry.as_deref(), &sampler_target, crop);
+                        let shot_config = sck_config(&sampler_target, shot_edge, local(crop));
+                        filter_and_config = Some((filter, shot_config));
+                    }
+                } else {
+                    // The recording must hide the same windows as the candidates, or keyframes
+                    // decoded from it could show Scrawl's own overlays.
+                    if let Some(ref stream) = stream {
+                        if excluded_changed
+                            && let Err(error) = stream.update_content_filter(&new_filter)
+                        {
+                            scrawl_log(format!("Recording filter update failed: {error:?}"));
+                        }
+                        if new_crop != crop
+                            && let Err(error) = stream.update_configuration(&config)
+                        {
+                            scrawl_log(format!("Recording crop update failed: {error:?}"));
+                        }
+                    }
+                    if new_crop != crop {
+                        publish_crop(telemetry.as_deref(), &sampler_target, new_crop);
+                    }
+                    crop = new_crop;
+                    let shot_config = sck_config(&sampler_target, shot_edge, local(crop));
+                    filter_and_config = Some((new_filter, shot_config));
+                }
+            }
+        }
+        if let Some(ref movie) = movie {
+            movie.keep_alive();
         }
         let urgent = thread_urgent.swap(false, Ordering::AcqRel);
         let interval = thread_frames
@@ -1263,7 +1309,7 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
         thread::park_timeout(Duration::from_millis(30));
     }
     if let Some(stream) = stream {
-        stop_stream(&stream, recording_output.as_ref());
+        stop_stream(&stream, movie.as_deref());
     }
     // Finished right after a pause, before the loop saw it: the segment still ends at the pause.
     segments.extend(segment.map(|mut last| {
@@ -1275,19 +1321,71 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
     segments
 }
 
-/// Stopping before removing the output lets the recording finish writing its movie.
-fn stop_stream(stream: &SCStream, recording_output: Option<&SCRecordingOutput>) {
+/// The movie is finished once the stream has stopped sending it frames.
+fn stop_stream(stream: &SCStream, movie: Option<&super::movie::Movie>) {
     let _ = stream.stop_capture();
-    if let Some(output) = recording_output {
-        let _ = stream.remove_recording_output(output);
+    if let Some(movie) = movie {
+        movie.finish();
     }
+}
+
+/// How often a captured window's frame is looked up, to move its crop with it.
+const FOLLOW_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Notices a captured window moving or resizing.
+struct WindowFollow {
+    id: Option<u32>,
+    frame: [f64; 4],
+    checked: Instant,
+}
+
+impl WindowFollow {
+    fn new(target: &TargetInfo) -> Self {
+        Self {
+            id: target.window_id.filter(|_| target.mode == CaptureMode::Window),
+            frame: frame_rect(target),
+            checked: Instant::now(),
+        }
+    }
+
+    fn moved(&mut self) -> bool {
+        let Some(id) = self.id else {
+            return false;
+        };
+        if self.checked.elapsed() < FOLLOW_INTERVAL {
+            return false;
+        }
+        self.checked = Instant::now();
+        let frame = raw_windows_now().into_iter().find(|w| w.id == id).map(|w| w.bounds);
+        match frame {
+            Some(frame) if frame != self.frame => {
+                self.frame = frame;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Where a window's recording is now, so ink, clicks and the overlay go with it.
+fn publish_crop(
+    telemetry: Option<&SharedCaptureTelemetry>,
+    target: &TargetInfo,
+    crop: Option<WindowCrop>,
+) {
+    let (Some(telemetry), Some(crop)) = (telemetry, crop) else {
+        return;
+    };
+    let [x, y, width, height] = crop.global;
+    *telemetry.target_frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        crate::model::TargetFrame { x, y, width, height, scale: target.frame.scale };
 }
 
 /// The filter, the recording's config, and a window's crop (`window_crop`).
 fn build_sck_filter_and_config(
     target: &TargetInfo,
     excluded_window_ids: &[u32],
-) -> Option<(SCContentFilter, SCStreamConfiguration, Option<[f64; 4]>)> {
+) -> Option<(SCContentFilter, SCStreamConfiguration, Option<WindowCrop>)> {
     let content = match SCShareableContent::get() {
         Ok(c) => c,
         Err(err) => {
@@ -1308,9 +1406,9 @@ fn build_sck_filter_and_config(
             .into_iter()
             .find(|w| w.window_id() == window_id)
     {
-        match window_crop(&content, &window) {
-            Some((display, rect)) => {
-                crop = Some(rect);
+        match window_crop(&content, &window, target) {
+            Some((display, window_crop)) => {
+                crop = Some(window_crop);
                 window_filter(&content, &window, &display, excluded_window_ids, our_pid)
             }
             None => SCContentFilter::create().with_window(&window).build().ok(),
@@ -1345,7 +1443,7 @@ fn build_sck_filter_and_config(
         None
     }?;
 
-    Some((filter, sck_config(target, recording_edge(target), crop), crop))
+    Some((filter, sck_config(target, recording_edge(target), local(crop)), crop))
 }
 
 fn recording_edge(target: &TargetInfo) -> f64 {
@@ -1376,18 +1474,37 @@ fn sck_config(
     config
 }
 
+/// Where a window is recorded: `rect` in its display's points for `sourceRect`, `global` in
+/// global points for the ink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowCrop {
+    display: u32,
+    rect: [f64; 4],
+    global: [f64; 4],
+}
+
+fn local(crop: Option<WindowCrop>) -> Option<[f64; 4]> {
+    crop.map(|c| c.rect)
+}
+
 /// ScreenCaptureKit's single-window filter records a window together with any child windows
 /// beside it, scaled to fit, so a window with helpers off its edge (Arc keeps some 147 points to
 /// its left) came out smaller and shifted from where the ink is drawn. A window wholly on one
-/// display is recorded through that display instead, cropped to the window's frame as it is
-/// when the stream starts (a capture's start or a resume): the display, and the crop in its
-/// points. A running stream keeps its crop, since changing it stops the stream's movie.
-fn window_crop(content: &SCShareableContent, window: &SCWindow) -> Option<(SCDisplay, [f64; 4])> {
-    let f = window.frame();
-    let frame = [f.origin.x, f.origin.y, f.size.width, f.size.height];
+/// display is recorded through that display instead, cropped to where the window is now at the
+/// capture's starting size, so a moved window is followed and the movie keeps one shape (a
+/// resized one is cropped or padded at its right and bottom).
+fn window_crop(
+    content: &SCShareableContent,
+    window: &SCWindow,
+    target: &TargetInfo,
+) -> Option<(SCDisplay, WindowCrop)> {
+    let origin = window.frame().origin;
+    let global = [origin.x, origin.y, target.frame.width, target.frame.height];
     content.displays().into_iter().find_map(|display| {
         let bounds = display_bounds(display.display_id())?;
-        crate::screens::window_source_rect(frame, bounds).map(|crop| (display, crop))
+        let rect = crate::screens::window_source_rect(global, bounds)?;
+        let id = display.display_id();
+        Some((display, WindowCrop { display: id, rect, global }))
     })
 }
 
@@ -1436,17 +1553,17 @@ fn display_bounds(display_id: u32) -> Option<[f64; 4]> {
         .then_some([b.origin.x, b.origin.y, b.size.width, b.size.height])
 }
 
-/// Starts the recording stream; returns it with the filter for candidate screenshots and when
-/// the movie started.
+/// Starts the recording stream; returns it with its movie, the filter for candidate screenshots
+/// and when the movie started.
 fn setup_sck_capture(
     target: &TargetInfo,
     video_output_path: Option<PathBuf>,
     excluded_window_ids: &[u32],
 ) -> (
     Option<SCStream>,
-    Option<SCRecordingOutput>,
+    Option<Arc<super::movie::Movie>>,
     Option<PathBuf>,
-    Option<(SCContentFilter, Option<[f64; 4]>)>,
+    Option<(SCContentFilter, Option<WindowCrop>)>,
     Option<Instant>,
 ) {
     let Some((filter, config, crop)) = build_sck_filter_and_config(target, excluded_window_ids)
@@ -1455,28 +1572,30 @@ fn setup_sck_capture(
     };
 
     if let Some(video_path) = video_output_path {
-        if let Ok(rec_cfg_builder) = SCRecordingOutputConfiguration::new()
-            && let Ok(rec_cfg) = rec_cfg_builder.with_output_url(&video_path).map(|c| {
-                c.with_video_codec(SCRecordingOutputCodec::H264)
-                    .with_output_file_type(SCRecordingOutputFileType::MP4)
-            })
-            && let Some(rec_output) = SCRecordingOutput::new(&rec_cfg)
-            && let Ok(stream) = SCStream::new(&filter, &config)
-            && stream.add_recording_output(&rec_output).is_ok()
-        {
-            // The movie's clock starts while `start_capture` runs; its midpoint is the closest
-            // estimate this side of the recording delegate.
-            let before = Instant::now();
-            if stream.start_capture().is_ok() {
-                let started = before + before.elapsed() / 2;
-                return (
-                    Some(stream),
-                    Some(rec_output),
-                    Some(video_path),
-                    Some((filter, crop)),
-                    Some(started),
-                );
+        let (width, height) = capture_size(target, recording_edge(target));
+        match super::movie::Movie::create(&video_path, width as usize, height as usize) {
+            Ok(movie) => {
+                let output = super::movie::MovieOutput(Arc::clone(&movie));
+                let before = Instant::now();
+                if let Ok(mut stream) = SCStream::new(&filter, &config)
+                    && stream.add_output_handler(output, SCStreamOutputType::Screen).is_ok()
+                    && stream.start_capture().is_ok()
+                {
+                    // The movie starts at its first frame; a screen that shows nothing new sends
+                    // one at once, so the fallback is only for a stream that never does.
+                    let started = movie
+                        .first_frame_within(Duration::from_secs(1))
+                        .unwrap_or_else(|| before + before.elapsed() / 2);
+                    return (
+                        Some(stream),
+                        Some(movie),
+                        Some(video_path),
+                        Some((filter, crop)),
+                        Some(started),
+                    );
+                }
             }
+            Err(error) => scrawl_log(format!("Movie: {error}")),
         }
     }
 
