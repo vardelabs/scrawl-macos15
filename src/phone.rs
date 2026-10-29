@@ -1086,6 +1086,7 @@ impl Default for IngestHooks {
             resolve: crate::handoff::resolve_opencode_session,
             build: |movie, timeline, bundle_dir| {
                 let (dir, bundle, _) = import(movie, Some(timeline), bundle_dir, None)?;
+                crate::word_stats::record_capture(&bundle);
                 Ok((dir, Some(bundle)))
             },
             forward: crate::handoff::send_bundle_to_session,
