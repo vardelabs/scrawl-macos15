@@ -95,7 +95,7 @@ fn save_to(path: &Path, entries: Vec<Entry>) -> Result<()> {
 }
 
 /// Writes a temp file and renames it over `path`, owner-only, since dictations can be private.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

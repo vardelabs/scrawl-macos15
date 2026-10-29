@@ -461,6 +461,9 @@ objc2::define_class!(
         #[unsafe(method(menuNeedsUpdate:))]
         fn menu_needs_update(&self, menu: &NSMenu) {
             rebuild_inbox_menu_items(menu, self);
+            if let Some(item) = menu.itemWithTag(WORD_STATS_MENU_TAG) {
+                refresh_word_stats(&item);
+            }
             if let Some(item) = menu.itemWithTag(RECENT_DICTATIONS_MENU_TAG) {
                 rebuild_recent_dictations(&item, self);
             }
@@ -480,6 +483,15 @@ const INBOX_MENU_TAG: isize = 0x5c4a;
 const EXPORT_VIDEO_MENU_TAG: isize = 0x5c4e;
 /// Tag on **Recent Dictations**, hidden while there are none.
 const RECENT_DICTATIONS_MENU_TAG: isize = 0x5c4f;
+/// Tag on the words-spoken line above it, hidden before the first word.
+const WORD_STATS_MENU_TAG: isize = 0x5c50;
+
+/// "12,480 words  ·  148 WPM", read fresh from disk; a line to read, not a command.
+fn refresh_word_stats(item: &NSMenuItem) {
+    let label = crate::word_stats::menu_label(&crate::word_stats::load_from(&crate::word_stats::default_path()));
+    item.setHidden(label.is_none());
+    item.setTitle(&NSString::from_str(label.as_deref().unwrap_or("")));
+}
 
 /// Fills **Recent Dictations** with the newest dictations kept on disk, newest first; each item's
 /// tag is when it was pasted, which `copyDictation:` copies.
@@ -668,6 +680,13 @@ pub(super) fn install_status_bar() -> Option<flume::Receiver<MenuAction>> {
         item.setTag(EXPORT_VIDEO_MENU_TAG);
         item.setHidden(!crate::handoff::video_export());
     }
+    let stats = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::new(), None, &NSString::new())
+    };
+    stats.setTag(WORD_STATS_MENU_TAG);
+    stats.setEnabled(false);
+    refresh_word_stats(&stats);
+    menu.addItem(&stats);
     let recent = unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(
             NSMenuItem::alloc(mtm),

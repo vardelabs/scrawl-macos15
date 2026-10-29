@@ -62,6 +62,8 @@ struct Settings {
     notices: bool,
     /// Keep recent dictations on disk (`dictationHistory`).
     history: bool,
+    /// Say each dictation's words per minute in the pill (`dictationWpm`).
+    wpm: bool,
     /// A dictation to copy again: this run's, or one on disk.
     has_last: bool,
 }
@@ -94,6 +96,7 @@ impl Settings {
             learn: config.learn,
             notices: config.notices,
             history: config.history,
+            wpm: config.wpm,
             has_last: super::history::last(&super::history::default_path()).is_some(),
         }
     }
@@ -111,8 +114,8 @@ impl Settings {
 
 /// How a finished dictation ended, for the pill's notice.
 enum Outcome {
-    /// Pasted, with how the formatter laid it out ("Formatted as a list").
-    Pasted(Option<&'static str>),
+    /// Pasted, with what the pill can say about it.
+    Pasted(AfterPaste),
     /// Nowhere to paste: the text is on the clipboard.
     Copied,
     NoSpeech,
@@ -126,6 +129,27 @@ impl Outcome {
             Self::Copied => Some("Copied to the clipboard"),
             Self::NoSpeech => Some("Didn't catch that"),
             Self::Pasted(_) | Self::Quiet => None,
+        }
+    }
+}
+
+/// What the pill can say after a paste, each part behind its own setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AfterPaste {
+    /// How the formatter laid it out ("Formatted as a list"), with `dictationNotices`.
+    laid_out: Option<&'static str>,
+    /// The dictation's words per minute, with `dictationWpm`.
+    wpm: Option<u64>,
+}
+
+impl AfterPaste {
+    /// "Formatted as a list  ·  152 WPM", or either part alone.
+    fn notice(self, notices: bool, wpm: bool) -> Option<String> {
+        let laid_out = self.laid_out.filter(|_| notices).map(str::to_owned);
+        let wpm = self.wpm.filter(|_| wpm).map(|wpm| format!("{wpm} WPM"));
+        match (laid_out, wpm) {
+            (Some(laid_out), Some(wpm)) => Some(format!("{laid_out}  ·  {wpm}")),
+            (laid_out, wpm) => laid_out.or(wpm),
         }
     }
 }
@@ -501,10 +525,12 @@ impl Dictation {
         };
         self.working = None;
         let (text, opens) = match outcome {
-            Outcome::Pasted(laid_out) => {
-                (laid_out.filter(|_| self.settings.notices), Some(crate::settings::Focus::Layouts))
+            Outcome::Pasted(after) => {
+                // Only a layout's notice opens its row; a speed alone opens nothing.
+                let opens = after.laid_out.filter(|_| self.settings.notices).map(|_| crate::settings::Focus::Layouts);
+                (after.notice(self.settings.notices, self.settings.wpm), opens)
             }
-            other => (other.notice(), None),
+            other => (other.notice().map(str::to_owned), None),
         };
         if let Some(text) = text {
             self.notices.push_first(text, opens);
@@ -726,6 +752,8 @@ fn transcribe_and_paste(
     };
     // Estimated timings spread words across the speech, so their gaps are not pauses.
     let timed: &[crate::model::WordTiming] = if transcript.estimated { &[] } else { &transcript.words };
+    // Counted before the layout, whose list markers aren't words.
+    let spoken = crate::word_stats::tally(&text, &transcript, audio.duration_ms);
     // What the formatter is asked to lay out, so an edit of its layout can be learned from.
     let dictated = (formatter.is_some() && super::format::worth_formatting(&text)).then(|| text.clone());
     let (text, laid_out) = lay_out(text, timed, formatter);
@@ -741,11 +769,16 @@ fn transcribe_and_paste(
     if !text.chars().any(char::is_alphanumeric) {
         return Outcome::NoSpeech;
     }
-    let outcome = deliver(&text, restore_clipboard, laid_out);
+    let wpm = spoken.wpm().filter(|_| spoken.words >= crate::word_stats::MIN_NOTICE_WORDS);
+    let outcome = deliver(&text, restore_clipboard, AfterPaste { laid_out, wpm });
     if matches!(outcome, Outcome::Pasted(_) | Outcome::Copied) {
         let at = crate::now_epoch_ms();
         if let Err(error) = super::history::record(&history, &text, at, keep.0, keep.1) {
             scrawl_log(format!("Dictation: could not keep the dictation: {error:#}"));
+        }
+        let stats = crate::word_stats::default_path();
+        if let Err(error) = crate::word_stats::record(&stats, crate::word_stats::Source::Dictation, spoken, at) {
+            scrawl_log(format!("Word stats: {error:#}"));
         }
     }
     if let (Outcome::Pasted(_), Some(learned)) = (&outcome, learn) {
@@ -1003,11 +1036,11 @@ fn lay_out(
 /// Pastes where a text field has focus and then puts the clipboard back; with nowhere to paste,
 /// the text stays on the clipboard to paste by hand. An app that doesn't say gets the paste and
 /// keeps the text on the clipboard too, so nothing is lost.
-fn deliver(text: &str, restore_clipboard: bool, laid_out: Option<&'static str>) -> Outcome {
+fn deliver(text: &str, restore_clipboard: bool, after: AfterPaste) -> Outcome {
     let delivered = match route(crate::ax::focused_takes_text()) {
-        Route::Paste => paste_fitted(text, restore_clipboard).map(|()| Outcome::Pasted(laid_out)),
+        Route::Paste => paste_fitted(text, restore_clipboard).map(|()| Outcome::Pasted(after)),
         Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
-        Route::PasteAndKeep => paste_fitted(text, false).map(|()| Outcome::Pasted(laid_out)),
+        Route::PasteAndKeep => paste_fitted(text, false).map(|()| Outcome::Pasted(after)),
     };
     delivered.unwrap_or_else(|error| {
         scrawl_log(format!("Dictation: paste failed: {error:#}"));
@@ -1160,13 +1193,24 @@ mod tests {
     }
 
     #[test]
+    fn a_paste_says_its_layout_and_speed_each_behind_its_setting() {
+        let both = AfterPaste { laid_out: Some("Formatted as a list"), wpm: Some(152) };
+        assert_eq!(both.notice(true, true).as_deref(), Some("Formatted as a list  ·  152 WPM"));
+        assert_eq!(both.notice(false, true).as_deref(), Some("152 WPM"));
+        assert_eq!(both.notice(true, false).as_deref(), Some("Formatted as a list"));
+        assert_eq!(both.notice(false, false), None);
+        assert_eq!(AfterPaste::default().notice(true, true), None, "a short dictation says no speed");
+    }
+
+    #[test]
     fn only_a_definite_no_keeps_the_text_off_the_app() {
         assert_eq!(route(Some(true)), Route::Paste);
         assert_eq!(route(Some(false)), Route::Copy);
         assert_eq!(route(None), Route::PasteAndKeep);
         assert_eq!(Outcome::Copied.notice(), Some("Copied to the clipboard"));
         assert_eq!(Outcome::NoSpeech.notice(), Some("Didn't catch that"));
-        assert_eq!(Outcome::Pasted(Some("Formatted as a list")).notice(), None, "a layout's notice is a setting's");
+        let listed = AfterPaste { laid_out: Some("Formatted as a list"), wpm: None };
+        assert_eq!(Outcome::Pasted(listed).notice(), None, "a layout's notice is a setting's");
         assert_eq!(Outcome::Quiet.notice(), None);
         assert!(one_slip("calender", "calendar") && one_slip("recieved", "received"));
         assert!(!one_slip("klose", "klaus"));

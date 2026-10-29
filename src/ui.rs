@@ -3053,8 +3053,9 @@ impl ScrawlCoordinator {
                                     None,
                                 )
                             });
-                            if let Err(error) = &finalized {
-                                scrawl_log(format!("iPhone capture failed: {error:#}"));
+                            match &finalized {
+                                Ok((_, bundle, _)) => crate::word_stats::record_capture(bundle),
+                                Err(error) => scrawl_log(format!("iPhone capture failed: {error:#}")),
                             }
                             let duration_ms =
                                 finalized.as_ref().map_or(0, |(_, b, _)| b.duration_ms);
@@ -3092,6 +3093,9 @@ impl ScrawlCoordinator {
                         None,
                         activity,
                     );
+                    if let Ok((_, bundle, _)) = &finalized {
+                        crate::word_stats::record_capture(bundle);
+                    }
                     (finalized, duration_ms)
                 })
                 .await;

@@ -62,6 +62,7 @@ mod web;
 #[cfg(target_os = "windows")]
 mod win;
 mod windows;
+mod word_stats;
 mod zoom;
 
 use std::path::{Path, PathBuf};

@@ -694,6 +694,9 @@ pub struct Config {
     /// Keeps recent dictations on disk for the menu bar's Recent Dictations (default on).
     #[serde(default)]
     pub dictation_history: Option<bool>,
+    /// Says each dictation's words per minute in the pill (default on).
+    #[serde(default)]
+    pub dictation_wpm: Option<bool>,
     /// Smart routing's settings (`routing::look`).
     #[serde(default)]
     pub routing: Option<RoutingConfig>,
@@ -1004,6 +1007,8 @@ pub struct DictationConfig {
     pub notices: bool,
     /// Keep recent dictations on disk (`dictation::history`).
     pub history: bool,
+    /// Say each dictation's words per minute in the pill (`word_stats`).
+    pub wpm: bool,
 }
 
 /// `formatCommand` when it can run: an argv whose first entry is an absolute path, as the app
@@ -1026,6 +1031,7 @@ pub fn dictation() -> DictationConfig {
         learn: config.dictation_learn.unwrap_or(true),
         notices: config.dictation_notices.unwrap_or(true),
         history: config.dictation_history.unwrap_or(true),
+        wpm: config.dictation_wpm.unwrap_or(true),
     }
 }
 
