@@ -1,0 +1,6 @@
+# Test fixtures from upstream commit 512b332 (kitlangton/scrawl). Both values
+# are repeating hex patterns inside #[cfg(test)] in src/phone.rs, used only by
+# a constant-time compare test and a loopback ingest test. Neither is a
+# credential. Each entry names one commit, so it hides nothing else.
+512b332c927dd64ccea909274c9010a10e520554:src/phone.rs:generic-api-key:1507
+512b332c927dd64ccea909274c9010a10e520554:src/phone.rs:generic-api-key:1574
