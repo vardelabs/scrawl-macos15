@@ -18,6 +18,8 @@ const MAX_WAITING: usize = 6;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Undo {
     Word(String),
+    /// A learned replacement: the words heard, and what it writes.
+    Replacement(String, String),
     /// The layout learned, and the example of the same dictation it replaced.
     Layout(super::layout::Example, Option<super::layout::Example>),
 }
@@ -44,6 +46,7 @@ impl Notices {
     pub fn push(&mut self, text: impl Into<String>, undo: Option<Undo>) {
         let opens = undo.as_ref().map(|undo| match undo {
             Undo::Word(word) => crate::settings::Focus::Word(word.clone()),
+            Undo::Replacement(heard, _) => crate::settings::Focus::Replacement(heard.clone()),
             Undo::Layout(..) => crate::settings::Focus::Layouts,
         });
         if self.queue.len() < MAX_WAITING {
@@ -109,6 +112,10 @@ impl Notices {
 /// "Added “Klose” to your dictionary".
 pub fn added_word(word: &str) -> String {
     format!("Added “{word}” to your dictionary")
+}
+
+pub fn added_replacement(heard: &str, write: &str) -> String {
+    format!("“{heard}” will be written “{write}”")
 }
 
 pub const LEARNED_LAYOUT: &str = "Learned your formatting";

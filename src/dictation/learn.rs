@@ -6,8 +6,9 @@
 //! that is still mostly as dictated, and never a stretched word ("heyyy"), a vowel-dropped
 //! shortcut ("abt") or an email address. `session` keeps only those the system spell checker
 //! doesn't know and can't correct (a name such as Klose or Pipedrive), so ordinary editing ("The"
-//! to "This", "follow up" to "follow-up", "Jon" to "John") and typos ("calender") are never
-//! learned.
+//! to "This", "follow up" to "follow-up") and typos ("calender") are never learned. A short name
+//! respelled ("Shawn" to Sean, "Jon" to John) becomes a replacement instead
+//! (`session::learns_as_replacement`).
 
 /// Text kept on each side of the paste to find it again after edits.
 const ANCHOR_CHARS: usize = 40;

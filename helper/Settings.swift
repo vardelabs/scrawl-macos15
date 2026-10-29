@@ -281,14 +281,19 @@ final class SettingsModel: ObservableObject {
     act("set", ["key": key, "value": value])
   }
 
-  /// A pill notice's click: the Dictation pane at a learned word, open for editing, or at the
-  /// learned-layouts row.
+  /// A pill notice's click: the Dictation pane at a learned word or replacement, open for editing,
+  /// or at the learned-layouts row.
   func focus(_ focus: [String: Any]) {
     let row: String
     switch (focus["kind"] as? String, focus["entry"] as? String) {
     case ("word", let word?):
       row = DictionaryRows.word(word)
       if state.dictation.words.contains(word) { startEditing(.word(word)) }
+    case ("replacement", let heard?):
+      row = DictionaryRows.replacement(heard)
+      if let entry = state.dictation.replacements.first(where: { $0.heard == heard }) {
+        startEditing(.replacement(entry))
+      }
     case ("layouts", _):
       row = DictionaryRows.layouts
     default:

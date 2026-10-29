@@ -640,6 +640,8 @@ pub enum Pane {
 #[serde(tag = "kind", content = "entry", rename_all = "kebab-case")]
 pub enum Focus {
     Word(String),
+    /// A replacement, by the words it hears.
+    Replacement(String),
     Layouts,
 }
 
@@ -2181,6 +2183,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Focus::Word("Atlas".into())).unwrap(),
             serde_json::json!({"kind": "word", "entry": "Atlas"})
+        );
+        assert_eq!(
+            serde_json::to_value(Focus::Replacement("shawn".into())).unwrap(),
+            serde_json::json!({"kind": "replacement", "entry": "shawn"})
         );
         assert_eq!(serde_json::to_value(Focus::Layouts).unwrap(), serde_json::json!({"kind": "layouts"}));
     }
