@@ -261,7 +261,9 @@ fn same(a: &str, b: &str) -> bool {
     words_of(a) == words_of(b)
 }
 
-/// Replaces each run of word tokens matching `from` (separated only by spaces) with `to`.
+/// Replaces each run of word tokens matching `from` with `to`. The words may be separated by
+/// spaces or by one hyphen, since a transcriber writes a word it doesn't know as pieces it does
+/// ("Kubernetes" as "Cuber-netes").
 fn replace_phrase(
     tokens: &mut Vec<String>,
     from: &[String],
@@ -275,7 +277,7 @@ fn replace_phrase(
             && (0..span).all(|k| {
                 let token = &tokens[i + k];
                 if k % 2 == 1 {
-                    token.chars().all(|c| c == ' ')
+                    word_break(token)
                 } else {
                     matches(&token.to_lowercase(), &from[k / 2])
                 }
@@ -285,6 +287,11 @@ fn replace_phrase(
         }
         i += 1;
     }
+}
+
+/// Spaces with at most one hyphen among them: "cuber netes", "cuber-netes", "cuber- netes".
+fn word_break(separator: &str) -> bool {
+    separator.chars().all(|c| c == ' ' || c == '-') && separator.matches('-').count() <= 1
 }
 
 /// A near miss of a dictionary word: same first letter, one edit away (two from 10 letters),
@@ -355,6 +362,14 @@ mod tests {
             d.apply("Ask Feris about var de labs, not ferisx."),
             "Ask Ferris about Varde Labs, not ferisx."
         );
+    }
+
+    #[test]
+    fn a_replacement_matches_words_the_transcriber_hyphenated() {
+        let d = dict(&[], &[("cuber netes", "Kubernetes")]);
+        assert_eq!(d.apply("Cuber-netes, cuber-netes, cuber- netes."), "Kubernetes, Kubernetes, Kubernetes.");
+        // Two hyphens, or other punctuation between the words, is not one spoken word split.
+        assert_eq!(d.apply("cuber--netes, cuber, netes"), "cuber--netes, cuber, netes");
     }
 
     #[test]
