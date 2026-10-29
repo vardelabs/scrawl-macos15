@@ -110,6 +110,18 @@ pub fn source_rect(area: Rect, display: Rect) -> Rect {
     [lx, ly, w, h]
 }
 
+/// `SCStreamConfiguration.sourceRect` for a window recorded through its display: its frame in
+/// the display's points, or `None` when part of it is off that display, since a crop there would
+/// record less than the frame the ink is placed against.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn window_source_rect(window: Rect, display: Rect) -> Option<Rect> {
+    let inside = window[0] >= display[0]
+        && window[1] >= display[1]
+        && window[0] + window[2] <= display[0] + display[2]
+        && window[1] + window[3] <= display[1] + display[3];
+    (inside && window[2] > 0.0 && window[3] > 0.0).then(|| source_rect(window, display))
+}
+
 /// The smallest area Scrawl records, points a side.
 pub const MIN_AREA: f64 = 32.0;
 
@@ -317,6 +329,21 @@ mod tests {
     /// The laptop plus one external display at `frame`.
     fn pair(frame: Rect, scale: f64) -> [Screen; 2] {
         [screen(1, LAPTOP, 2.0), screen(2, frame, scale)]
+    }
+
+    #[test]
+    fn a_window_is_cropped_to_its_frame_only_when_it_is_wholly_on_its_display() {
+        let external = [0.0, -1080.0, 3840.0, 1080.0];
+        assert_eq!(
+            window_source_rect([634.0, -1049.0, 2560.0, 1043.0], external),
+            Some([634.0, 31.0, 2560.0, 1043.0])
+        );
+        // Filling the display exactly still counts as on it.
+        assert_eq!(window_source_rect(external, external), Some([0.0, 0.0, 3840.0, 1080.0]));
+        // Hanging off any edge, or onto the laptop below, it is recorded as a window instead.
+        assert_eq!(window_source_rect([-10.0, -1049.0, 800.0, 600.0], external), None);
+        assert_eq!(window_source_rect([3200.0, -1049.0, 800.0, 600.0], external), None);
+        assert_eq!(window_source_rect([100.0, -600.0, 800.0, 700.0], external), None);
     }
 
     #[test]

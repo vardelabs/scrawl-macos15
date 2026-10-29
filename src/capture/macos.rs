@@ -1131,8 +1131,9 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
     } else {
         CANDIDATE_EDGE_NO_VIDEO
     };
-    let shot_config = sck_config(&sampler_target, shot_edge);
-    let mut filter_and_config = filter.map(|f| (f, shot_config));
+    let mut crop = filter.as_ref().and_then(|(_, crop)| *crop);
+    let mut filter_and_config =
+        filter.map(|(f, crop)| (f, sck_config(&sampler_target, shot_edge, crop)));
     let mut last_sample = Instant::now()
         .checked_sub(FRAME_SAMPLE_INTERVAL)
         .unwrap_or_else(Instant::now);
@@ -1181,8 +1182,10 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                         start_ms: clock.ms_at(resumed),
                         end_ms: None,
                     });
-                    if let Some(filter) = next_filter {
-                        filter_and_config = Some((filter, sck_config(&sampler_target, shot_edge)));
+                    if let Some((filter, next_crop)) = next_filter {
+                        crop = next_crop;
+                        let config = sck_config(&sampler_target, shot_edge, next_crop);
+                        filter_and_config = Some((filter, config));
                     }
                     scrawl_log(format!("Capture resumed at {} ms", clock.ms()));
                     thread_urgent.store(true, Ordering::Release);
@@ -1211,8 +1214,11 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
         if cur_excluded != last_excluded {
             last_excluded.clone_from(&cur_excluded);
             prompts.hidden = sck_lists_windows(&prompts.ids);
-            if let Some((new_filter, _)) =
+            // A window that moved since the stream started has a new crop. Changing a running
+            // stream's crop stops its movie, so the filter stays until the next resume.
+            if let Some((new_filter, _, new_crop)) =
                 build_sck_filter_and_config(&sampler_target, &cur_excluded)
+                && new_crop == crop
             {
                 // The recording must hide the same windows as the candidates, or
                 // keyframes decoded from it could show Scrawl's own overlays.
@@ -1221,7 +1227,8 @@ pub(super) fn run_sampler(sampler: Sampler) -> Vec<crate::pause::Segment> {
                 {
                     scrawl_log(format!("Recording filter update failed: {error:?}"));
                 }
-                filter_and_config = Some((new_filter, sck_config(&sampler_target, shot_edge)));
+                let shot_config = sck_config(&sampler_target, shot_edge, crop);
+                filter_and_config = Some((new_filter, shot_config));
             }
         }
         let urgent = thread_urgent.swap(false, Ordering::AcqRel);
@@ -1276,10 +1283,11 @@ fn stop_stream(stream: &SCStream, recording_output: Option<&SCRecordingOutput>) 
     }
 }
 
+/// The filter, the recording's config, and a window's crop (`window_crop`).
 fn build_sck_filter_and_config(
     target: &TargetInfo,
     excluded_window_ids: &[u32],
-) -> Option<(SCContentFilter, SCStreamConfiguration)> {
+) -> Option<(SCContentFilter, SCStreamConfiguration, Option<[f64; 4]>)> {
     let content = match SCShareableContent::get() {
         Ok(c) => c,
         Err(err) => {
@@ -1293,13 +1301,20 @@ fn build_sck_filter_and_config(
     };
     let our_pid = std::process::id() as i32;
 
+    let mut crop = None;
     let filter = if let Some(window_id) = target.window_id
         && let Some(window) = content
             .windows()
             .into_iter()
             .find(|w| w.window_id() == window_id)
     {
-        SCContentFilter::create().with_window(&window).build().ok()
+        match window_crop(&content, &window) {
+            Some((display, rect)) => {
+                crop = Some(rect);
+                window_filter(&content, &window, &display, excluded_window_ids, our_pid)
+            }
+            None => SCContentFilter::create().with_window(&window).build().ok(),
+        }
     } else if let Some(display) = content
         .displays()
         .into_iter()
@@ -1330,35 +1345,106 @@ fn build_sck_filter_and_config(
         None
     }?;
 
-    let long_edge =
-        crate::capture::video_long_edge(target, crate::capture::crops_keyframes(target.mode));
-    Some((filter, sck_config(target, long_edge)))
+    Some((filter, sck_config(target, recording_edge(target), crop), crop))
 }
 
-fn sck_config(target: &TargetInfo, long_edge: f64) -> SCStreamConfiguration {
+fn recording_edge(target: &TargetInfo) -> f64 {
+    crate::capture::video_long_edge(target, crate::capture::crops_keyframes(target.mode))
+}
+
+fn sck_config(
+    target: &TargetInfo,
+    long_edge: f64,
+    crop: Option<[f64; 4]>,
+) -> SCStreamConfiguration {
     let (width, height) = capture_size(target, long_edge);
     let mut config = SCStreamConfiguration::new()
         .with_width(width)
         .with_height(height)
         .with_shows_cursor(true);
-    if target.mode == CaptureMode::Region {
+    let source = if target.mode == CaptureMode::Region {
         // `sourceRect` is in the display's own points, not global ones.
-        let b = core_graphics::display::CGDisplay::new(target.display_id).bounds();
-        let display = [b.origin.x, b.origin.y, b.size.width, b.size.height];
-        let area = [
-            target.frame.x,
-            target.frame.y,
-            target.frame.width,
-            target.frame.height,
-        ];
-        let [x, y, w, h] = if display[2] > 0.0 && display[3] > 0.0 {
-            crate::screens::source_rect(area, display)
-        } else {
-            area
-        };
+        let area = frame_rect(target);
+        let display = display_bounds(target.display_id);
+        Some(display.map_or(area, |d| crate::screens::source_rect(area, d)))
+    } else {
+        crop
+    };
+    if let Some([x, y, w, h]) = source {
         config.set_source_rect(CGRect::new(x, y, w, h));
     }
     config
+}
+
+/// ScreenCaptureKit's single-window filter records a window together with any child windows
+/// beside it, scaled to fit, so a window with helpers off its edge (Arc keeps some 147 points to
+/// its left) came out smaller and shifted from where the ink is drawn. A window wholly on one
+/// display is recorded through that display instead, cropped to the window's frame as it is
+/// when the stream starts (a capture's start or a resume): the display, and the crop in its
+/// points. A running stream keeps its crop, since changing it stops the stream's movie.
+fn window_crop(content: &SCShareableContent, window: &SCWindow) -> Option<(SCDisplay, [f64; 4])> {
+    let f = window.frame();
+    let frame = [f.origin.x, f.origin.y, f.size.width, f.size.height];
+    content.displays().into_iter().find_map(|display| {
+        let bounds = display_bounds(display.display_id())?;
+        crate::screens::window_source_rect(frame, bounds).map(|crop| (display, crop))
+    })
+}
+
+/// The window and the rest of its app, so its menus, popovers, sheets and dialogs show where
+/// they overlap the crop (what reaches past the window's frame is cut off at its edge), less
+/// the app's other titled windows behind it (another browser window) and Scrawl's own overlays.
+fn window_filter(
+    content: &SCShareableContent,
+    window: &SCWindow,
+    display: &SCDisplay,
+    excluded_window_ids: &[u32],
+    our_pid: i32,
+) -> Option<SCContentFilter> {
+    let Some(app) = window.owning_application() else {
+        return SCContentFilter::create()
+            .with_display(display)
+            .with_including_windows(&[window])
+            .build()
+            .ok();
+    };
+    // CoreGraphics lists on-screen windows front to back; a dialog in front of the window stays.
+    let order: Vec<u32> = raw_windows_now().into_iter().map(|w| w.id).collect();
+    let position = |id: u32| order.iter().position(|&w| w == id);
+    let target_at = position(window.window_id());
+    let behind = |id: u32| match (position(id), target_at) {
+        (Some(at), Some(target)) => at > target,
+        _ => true,
+    };
+    let others: Vec<SCWindow> = content
+        .windows()
+        .into_iter()
+        .filter(|w| {
+            w.window_id() != window.window_id()
+                && w.owning_application().is_some_and(|a| a.process_id() == app.process_id())
+                && ((w.window_layer() == 0
+                    && w.title().is_some_and(|t| !t.is_empty())
+                    && behind(w.window_id()))
+                    || excluded_window_ids.contains(&w.window_id())
+                    || (app.process_id() == our_pid && w.window_layer() != 0))
+        })
+        .collect();
+    let others: Vec<&SCWindow> = others.iter().collect();
+    SCContentFilter::create()
+        .with_display(display)
+        .with_including_applications(&[&app], &others)
+        .build()
+        .ok()
+}
+
+fn frame_rect(target: &TargetInfo) -> [f64; 4] {
+    [target.frame.x, target.frame.y, target.frame.width, target.frame.height]
+}
+
+fn display_bounds(display_id: u32) -> Option<[f64; 4]> {
+    let b = core_graphics::display::CGDisplay::new(display_id).bounds();
+    (b.size.width > 0.0 && b.size.height > 0.0)
+        .then_some([b.origin.x, b.origin.y, b.size.width, b.size.height])
 }
 
 /// Starts the recording stream; returns it with the filter for candidate screenshots and when
@@ -1371,10 +1457,11 @@ fn setup_sck_capture(
     Option<SCStream>,
     Option<SCRecordingOutput>,
     Option<PathBuf>,
-    Option<SCContentFilter>,
+    Option<(SCContentFilter, Option<[f64; 4]>)>,
     Option<Instant>,
 ) {
-    let Some((filter, config)) = build_sck_filter_and_config(target, excluded_window_ids) else {
+    let Some((filter, config, crop)) = build_sck_filter_and_config(target, excluded_window_ids)
+    else {
         return (None, None, None, None, None);
     };
 
@@ -1397,14 +1484,14 @@ fn setup_sck_capture(
                     Some(stream),
                     Some(rec_output),
                     Some(video_path),
-                    Some(filter),
+                    Some((filter, crop)),
                     Some(started),
                 );
             }
         }
     }
 
-    (None, None, None, Some(filter), None)
+    (None, None, None, Some((filter, crop)), None)
 }
 
 fn capture_sck_frame(
