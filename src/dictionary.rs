@@ -191,6 +191,29 @@ impl Dictionary {
         self.replacements.remove(heard);
     }
 
+    /// Whether the word list has `word` (ignoring case and spacing).
+    pub fn has_word(&self, word: &str) -> bool {
+        self.words.iter().any(|w| same(w, word))
+    }
+
+    /// Adds a replacement learned from an edit (a short name heard as `heard`, respelled as
+    /// `write`), unless one already hears those words or the user took back what it writes.
+    pub fn learn_replacement(&mut self, heard: &str, write: &str) -> bool {
+        if self.rejected.iter().any(|w| same(w, write)) || self.replacements.keys().any(|h| same(h, heard)) {
+            return false;
+        }
+        self.add_replacement(heard, write)
+    }
+
+    /// Takes back a learned replacement (Undo in the pill), recording what it wrote as rejected so
+    /// it is never learned again.
+    pub fn unlearn_replacement(&mut self, heard: &str, write: &str) {
+        if self.replacements.get(heard).is_some_and(|w| w == write) {
+            self.replacements.remove(heard);
+            self.rejected.push(write.to_owned());
+        }
+    }
+
     pub fn apply(&self, text: &str) -> String {
         let mut tokens = tokenize(text);
         let mut rules: Vec<(Vec<String>, &str)> = self
@@ -294,6 +317,11 @@ fn word_break(separator: &str) -> bool {
     separator.chars().all(|c| c == ' ' || c == '-') && separator.matches('-').count() <= 1
 }
 
+/// Whether `word` in the dictionary would already fix `heard` as a near miss, with no replacement.
+pub fn fixes_near_miss(heard: &str, word: &str) -> bool {
+    near(&heard.to_lowercase(), &word.to_lowercase())
+}
+
 /// A near miss of a dictionary word: same first letter, one edit away (two from 10 letters),
 /// and only for words of 7 letters or more. Shorter words have real neighbours one edit away
 /// ("ferries" and "Ferris", "sprawl" and "Scrawl"); those need a replacement. The word with an
@@ -338,6 +366,31 @@ mod tests {
                 .collect(),
             ..Dictionary::default()
         }
+    }
+
+    #[test]
+    fn a_learned_replacement_is_kept_once_and_never_relearned_after_undo() {
+        let mut d = Dictionary::default();
+        assert!(d.learn_replacement("shawn", "Sean"));
+        assert!(!d.learn_replacement("Shawn", "Shaun"), "the heard words already have an entry");
+        assert_eq!(d.apply("Ask Shawn."), "Ask Sean.");
+        d.unlearn_replacement("shawn", "Sean");
+        assert!(d.replacements.is_empty());
+        assert!(!d.learn_replacement("shawn", "Sean"), "taken back, so never learned again");
+        // A replacement the user edited since is theirs: Undo leaves it.
+        let mut d = Dictionary::default();
+        d.learn_replacement("shawn", "Sean");
+        d.edit_replacement("shawn", "shawn", "Shaun").unwrap();
+        d.unlearn_replacement("shawn", "Sean");
+        assert_eq!(d.replacements.get("shawn").map(String::as_str), Some("Shaun"));
+    }
+
+    #[test]
+    fn only_long_words_are_fixed_as_near_misses() {
+        let d = dict(&["Pipedrive"], &[]);
+        assert!(d.has_word("pipedrive") && !d.has_word("Pipedrove"));
+        assert!(fixes_near_miss("Pipedrove", "Pipedrive"));
+        assert!(!fixes_near_miss("Shawn", "Sean"), "short words need a replacement");
     }
 
     #[test]

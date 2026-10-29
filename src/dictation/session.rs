@@ -383,6 +383,15 @@ impl Dictation {
                     scrawl_log(format!("Dictation: could not undo a learned word: {error:#}"));
                 }
             }
+            Undo::Replacement(heard, write) => {
+                let path = crate::dictionary::default_path();
+                let _editing = crate::dictionary::edit_lock();
+                let Ok(mut dictionary) = crate::dictionary::Dictionary::load_from(&path) else { return };
+                dictionary.unlearn_replacement(&heard, &write);
+                if let Err(error) = dictionary.save_to(&path) {
+                    scrawl_log(format!("Dictation: could not undo a learned replacement: {error:#}"));
+                }
+            }
             Undo::Layout(learned, replaced) => {
                 let path = super::layout::default_path();
                 let _editing = super::layout::edit_lock();
@@ -502,8 +511,9 @@ impl Dictation {
         }
     }
 
-    /// Keeps the respellings the spell checker doesn't know, adds them to the dictionary, and
-    /// says so in the pill; saves learned layouts while the formatter is on.
+    /// Keeps the respellings the spell checker doesn't know as words, and short names it would
+    /// not fix as replacements (`learns_as_replacement`), adds them to the dictionary, and says so
+    /// in the pill; saves learned layouts while the formatter is on.
     fn take_learned(&mut self) {
         let learned: Vec<Learned> = self.learned_rx.try_iter().collect();
         let saving = self.settings.learn && self.settings.format.is_some();
@@ -518,14 +528,17 @@ impl Dictation {
                 self.notices.push(super::notices::LEARNED_LAYOUT, Some(undo));
             }
         }
-        let words: Vec<String> = words
-            .into_iter()
-            .flatten()
-            .filter(|(was, now)| self.settings.learn && spell_checker_unknown(now) && !spell_checker_typo(was, now))
-            .map(|(_, now)| now)
+        let respelled: Vec<super::learn::Respelling> =
+            words.into_iter().flatten().filter(|_| self.settings.learn).collect();
+        let words: Vec<String> = respelled
+            .iter()
+            .filter(|(was, now)| spell_checker_unknown(now) && !spell_checker_typo(was, now))
+            .map(|(_, now)| now.clone())
             .take(super::learn::MAX_LEARNED)
             .collect();
-        if words.is_empty() {
+        let replacements: Vec<(String, String)> =
+            respelled.into_iter().filter(|(was, now)| learns_as_replacement(was, now)).collect();
+        if words.is_empty() && replacements.is_empty() {
             return;
         }
         let path = crate::dictionary::default_path();
@@ -533,11 +546,25 @@ impl Dictation {
         // A dictionary that doesn't parse is left alone, as Settings leaves it.
         let Ok(mut dictionary) = crate::dictionary::Dictionary::load_from(&path) else { return };
         let added: Vec<String> = words.into_iter().filter(|w| dictionary.learn_word(w)).collect();
-        if added.is_empty() {
+        // A near miss the word list fixes needs no replacement, but only once the word is in it: a
+        // long name the spell checker knows ("Johnathan" for Jonathan) is never learned as a word.
+        let replacements: Vec<(String, String)> = replacements
+            .into_iter()
+            .filter(|(was, now)| !(crate::dictionary::fixes_near_miss(was, now) && dictionary.has_word(now)))
+            .map(|(was, now)| (was.to_lowercase(), now))
+            .take(super::learn::MAX_LEARNED)
+            .collect();
+        let replaced: Vec<(String, String)> =
+            replacements.into_iter().filter(|(heard, write)| dictionary.learn_replacement(heard, write)).collect();
+        if added.is_empty() && replaced.is_empty() {
             return;
         }
         match dictionary.save_to(&path) {
-            Ok(()) => scrawl_log(format!("Dictation: learned {} word(s) from an edit", added.len())),
+            Ok(()) => scrawl_log(format!(
+                "Dictation: learned {} word(s) and {} replacement(s) from an edit",
+                added.len(),
+                replaced.len()
+            )),
             Err(error) => return scrawl_log(format!("Dictation: could not save learned words: {error:#}")),
         }
         if self.settings.notices {
@@ -545,6 +572,10 @@ impl Dictation {
                 // As `learn_word` stored it, so Undo's exact match finds it.
                 let word = word.split_whitespace().collect::<Vec<_>>().join(" ");
                 self.notices.push(super::notices::added_word(&word), Some(super::notices::Undo::Word(word)));
+            }
+            for (heard, write) in replaced {
+                let text = super::notices::added_replacement(&heard, &write);
+                self.notices.push(text, Some(super::notices::Undo::Replacement(heard, write)));
             }
         }
     }
@@ -893,6 +924,22 @@ fn spell_checker_unknown(term: &str) -> bool {
     term.split_whitespace().any(|word| SPELL_LANGUAGES.iter().all(|&language| !spelling(word, language).0))
 }
 
+/// A short name the transcriber keeps mishearing ("Shawn" for Sean) is learned as a replacement,
+/// since the dictionary fixes a near miss only for words of 7 letters or more (and only of words
+/// it has; `take_learned` skips those). Never a common word: "close" respelled Klose would change
+/// every later "close". The spell checker tells them apart in lower case, where it knows "close"
+/// but not "shawn".
+fn learns_as_replacement(was: &str, now: &str) -> bool {
+    let one_word = |s: &str| s.split_whitespace().count() == 1;
+    one_word(was) && one_word(now) && !common_word(was) && !spell_checker_typo(was, now)
+}
+
+/// A word the spell checker knows in lower case, in English or the user's language.
+fn common_word(word: &str) -> bool {
+    let lower = word.to_lowercase();
+    SPELL_LANGUAGES.iter().any(|&language| spelling(&lower, language).0)
+}
+
 /// Whether the spell checker corrects a word of `now` to one a single edit or swapped pair of
 /// letters away ("calender", "recieved"): a typo, not a name. A correction back to what was pasted
 /// is a typo too, unless the user changed its first letter (Klose for "close", `chose_name_over`).
@@ -1073,6 +1120,16 @@ mod tests {
         assert_eq!(presentation(&listening), Pres::Dictating { latched: true });
         let both = PillState { working: true, dictating: Some(false), ..idle() };
         assert_eq!(presentation(&both), Pres::Processing);
+    }
+
+    #[test]
+    fn a_misheard_short_name_is_learned_as_a_replacement_but_a_common_word_is_not() {
+        assert!(learns_as_replacement("Shawn", "Sean"));
+        assert!(!learns_as_replacement("close", "Klose"), "every later \"close\" would change");
+        assert!(!learns_as_replacement("The", "This"));
+        // A name respelled as another is the user's choice of name, as with Sean.
+        assert!(learns_as_replacement("Jon", "John"));
+        assert!(!learns_as_replacement("blog example", "BlogExample"), "one word each way");
     }
 
     #[test]
