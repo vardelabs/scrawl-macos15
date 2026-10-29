@@ -191,6 +191,11 @@ impl Dictionary {
         self.replacements.remove(heard);
     }
 
+    /// Whether the word list has `word` (ignoring case and spacing).
+    pub fn has_word(&self, word: &str) -> bool {
+        self.words.iter().any(|w| same(w, word))
+    }
+
     /// Adds a replacement learned from an edit (a short name heard as `heard`, respelled as
     /// `write`), unless one already hears those words or the user took back what it writes.
     pub fn learn_replacement(&mut self, heard: &str, write: &str) -> bool {
@@ -382,6 +387,8 @@ mod tests {
 
     #[test]
     fn only_long_words_are_fixed_as_near_misses() {
+        let d = dict(&["Pipedrive"], &[]);
+        assert!(d.has_word("pipedrive") && !d.has_word("Pipedrove"));
         assert!(fixes_near_miss("Pipedrove", "Pipedrive"));
         assert!(!fixes_near_miss("Shawn", "Sean"), "short words need a replacement");
     }

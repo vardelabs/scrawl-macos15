@@ -536,12 +536,8 @@ impl Dictation {
             .map(|(_, now)| now.clone())
             .take(super::learn::MAX_LEARNED)
             .collect();
-        let replacements: Vec<(String, String)> = respelled
-            .into_iter()
-            .filter(|(was, now)| learns_as_replacement(was, now))
-            .map(|(was, now)| (was.to_lowercase(), now))
-            .take(super::learn::MAX_LEARNED)
-            .collect();
+        let replacements: Vec<(String, String)> =
+            respelled.into_iter().filter(|(was, now)| learns_as_replacement(was, now)).collect();
         if words.is_empty() && replacements.is_empty() {
             return;
         }
@@ -550,6 +546,14 @@ impl Dictation {
         // A dictionary that doesn't parse is left alone, as Settings leaves it.
         let Ok(mut dictionary) = crate::dictionary::Dictionary::load_from(&path) else { return };
         let added: Vec<String> = words.into_iter().filter(|w| dictionary.learn_word(w)).collect();
+        // A near miss the word list fixes needs no replacement, but only once the word is in it: a
+        // long name the spell checker knows ("Johnathan" for Jonathan) is never learned as a word.
+        let replacements: Vec<(String, String)> = replacements
+            .into_iter()
+            .filter(|(was, now)| !(crate::dictionary::fixes_near_miss(was, now) && dictionary.has_word(now)))
+            .map(|(was, now)| (was.to_lowercase(), now))
+            .take(super::learn::MAX_LEARNED)
+            .collect();
         let replaced: Vec<(String, String)> =
             replacements.into_iter().filter(|(heard, write)| dictionary.learn_replacement(heard, write)).collect();
         if added.is_empty() && replaced.is_empty() {
@@ -921,16 +925,13 @@ fn spell_checker_unknown(term: &str) -> bool {
 }
 
 /// A short name the transcriber keeps mishearing ("Shawn" for Sean) is learned as a replacement,
-/// since the dictionary fixes a near miss only for words of 7 letters or more. Never a common word:
-/// "close" respelled Klose would change every later "close". The spell checker tells them apart in
-/// lower case, where it knows "close" but not "shawn".
+/// since the dictionary fixes a near miss only for words of 7 letters or more (and only of words
+/// it has; `take_learned` skips those). Never a common word: "close" respelled Klose would change
+/// every later "close". The spell checker tells them apart in lower case, where it knows "close"
+/// but not "shawn".
 fn learns_as_replacement(was: &str, now: &str) -> bool {
     let one_word = |s: &str| s.split_whitespace().count() == 1;
-    one_word(was)
-        && one_word(now)
-        && !crate::dictionary::fixes_near_miss(was, now)
-        && !common_word(was)
-        && !spell_checker_typo(was, now)
+    one_word(was) && one_word(now) && !common_word(was) && !spell_checker_typo(was, now)
 }
 
 /// A word the spell checker knows in lower case, in English or the user's language.
@@ -1128,7 +1129,6 @@ mod tests {
         assert!(!learns_as_replacement("The", "This"));
         // A name respelled as another is the user's choice of name, as with Sean.
         assert!(learns_as_replacement("Jon", "John"));
-        assert!(!learns_as_replacement("Pipedrove", "Pipedrive"), "the word fixes that near miss");
         assert!(!learns_as_replacement("blog example", "BlogExample"), "one word each way");
     }
 
