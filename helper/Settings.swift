@@ -1374,8 +1374,6 @@ struct SettingsView: View {
     )
   }
 
-  /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
-  /// already says what it does.
   /// Where the words came from, and what the speed leaves out.
   private func speakingCaption(_ d: SettingsDictation) -> String {
     let counted = d.wordsDictated + d.wordsCaptured == 0
@@ -1384,6 +1382,8 @@ struct SettingsView: View {
     return counted + " Speed counts the time you spend talking: a pause to think counts as one second, however long it is."
   }
 
+  /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
+  /// already says what it does.
   private func learningCaption(_ d: SettingsDictation) -> String {
     var lines = ["Words marked ✨ were learned from your corrections to pasted text."]
     if !d.formattingAvailable {
