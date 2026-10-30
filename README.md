@@ -21,6 +21,9 @@ so install the fork as below.
 - **Dictation.** Hold `⌃⌥` and talk, and the text is pasted where you type; double tap for
   hands-free. A dictionary of words and replacements, filler words ("um", "uh") removed,
   spoken filenames written as `` `README.md` ``, and names learned when you correct a paste.
+- **Words spoken and speed.** Settings › Dictation and the menu bar count the words you dictate
+  and say in recordings, with your average words per minute. Speed counts only time spent
+  talking, so a pause to think doesn't lower it. The pill says each dictation's speed.
 - **Pause and resume.** A with the record shortcut's modifiers (`⌥⇧A`, or `⌃⇧A` if you record
   with `⌃⇧S`), or Pause in the capsule, holds a capture while you look around
   or think; the pause is cut from the movie, audio and transcript.

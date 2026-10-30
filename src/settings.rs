@@ -700,6 +700,13 @@ pub struct DictationView {
     pub can_clear: bool,
     /// Layouts learned from edits to laid-out text (`dictation::layout`), shown to the formatter.
     pub learned_layouts: usize,
+    /// Words spoken into Scrawl (`word_stats`): dictated, and narrated in captures.
+    pub words_dictated: u64,
+    pub words_captured: u64,
+    /// Average words per minute over both, once anything is counted.
+    pub wpm: Option<u64>,
+    /// Say each dictation's words per minute in the pill (`dictationWpm`).
+    pub wpm_notice: bool,
     pub remove_fillers: bool,
     pub words: Vec<String>,
     /// The `words` learned from edits, marked in the list.
@@ -986,6 +993,7 @@ fn dictation_view(
             )),
         ),
     };
+    let stats = crate::word_stats::load_from(&crate::word_stats::default_path());
     DictationView {
         available: cfg!(target_os = "macos"),
         on: config.dictation.unwrap_or(false),
@@ -1001,6 +1009,10 @@ fn dictation_view(
         history: config.dictation_history.unwrap_or(true),
         can_clear: crate::dictation::history::anything_kept(&crate::dictation::history::default_path()),
         learned_layouts: crate::dictation::layout::load_from(&crate::dictation::layout::path_beside(config_path)).len(),
+        words_dictated: stats.dictation.words,
+        words_captured: stats.captures.words,
+        wpm: stats.total().wpm(),
+        wpm_notice: config.dictation_wpm.unwrap_or(true),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         words: dictionary.words,
         learned: dictionary.learned,
@@ -1159,6 +1171,8 @@ pub enum Action {
     ForgetLayouts,
     /// Delete the recent dictations kept on disk, and the last in memory.
     ClearDictations,
+    /// Zero the words spoken and the average speed.
+    ResetWordStats,
     Close,
 }
 
@@ -1332,6 +1346,12 @@ impl Panel {
                 }
                 Effect::None
             }
+            Action::ResetWordStats => {
+                if let Err(error) = crate::word_stats::reset(&crate::word_stats::default_path()) {
+                    crate::capture::scrawl_log(format!("Word stats: {error:#}"));
+                }
+                Effect::None
+            }
             Action::ForgetLayouts => {
                 let layouts = crate::dictation::layout::path_beside(&host.config_path());
                 let _editing = crate::dictation::layout::edit_lock();
@@ -1438,7 +1458,7 @@ impl Panel {
             (
                 "autoSend" | "videoExport" | "lowerPlayback" | "tapChooses" | "cropWindowCaptures"
                 | "dictation" | "dictationRestoreClipboard" | "dictationPill"
-                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory"
+                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory" | "dictationWpm"
                 | "removeFillers",
                 serde_json::Value::Bool(on),
             ) => {

@@ -1248,6 +1248,7 @@ pub fn start_ingest_server(ui_sender: flume::Sender<LiveOverlayEvent>) {
         copy_clipboard: true,
         route_opencode,
         on_bundle: Some(Arc::new(move |dir, bundle, status| {
+            crate::word_stats::record_capture(&bundle);
             let _ = ui_sender.send(LiveOverlayEvent::IngestedBundle {
                 dir,
                 bundle: Box::new(bundle),

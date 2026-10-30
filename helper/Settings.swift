@@ -154,6 +154,10 @@ struct SettingsDictation: Decodable, Equatable {
   var history = true
   var canClear = false
   var learnedLayouts = 0
+  var wordsDictated = 0
+  var wordsCaptured = 0
+  var wpm: Int?
+  var wpmNotice = true
   var removeFillers = true
   var words: [String] = []
   var learned: [String] = []
@@ -1250,6 +1254,27 @@ struct SettingsView: View {
         }
       }
       SettingsCaption(text: usage)
+      SettingsHeader(title: "Speaking") {
+        SettingsButton(title: "Reset", enabled: d.wordsDictated + d.wordsCaptured > 0) { model.act("reset-word-stats") }
+      }
+      SettingsGroup {
+        SettingsRow(title: "Words spoken") {
+          Text((d.wordsDictated + d.wordsCaptured).formatted())
+            .font(.system(size: 14).monospacedDigit())
+            .foregroundStyle(SettingsTheme(scheme).secondary)
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Average speed") {
+          Text(d.wpm.map { "\($0) WPM" } ?? "Not yet measured")
+            .font(.system(size: 14).monospacedDigit())
+            .foregroundStyle(SettingsTheme(scheme).secondary)
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Show the speed after each dictation") {
+          SettingsSwitch(on: d.wpmNotice) { model.set("dictationWpm", $0) }
+        }
+      }
+      SettingsCaption(text: speakingCaption(d))
       SettingsHeader("Pasting")
       SettingsGroup {
         SettingsRow(title: "Restore the clipboard after a paste") {
@@ -1347,6 +1372,14 @@ struct SettingsView: View {
       },
       set: { if model.editing?.kind == entry.kind && model.editing?.was == entry.was { model.editing = $0 } }
     )
+  }
+
+  /// Where the words came from, and what the speed leaves out.
+  private func speakingCaption(_ d: SettingsDictation) -> String {
+    let counted = d.wordsDictated + d.wordsCaptured == 0
+      ? "Counts the words you dictate and say in recordings."
+      : "\(d.wordsDictated.formatted()) dictated and \(d.wordsCaptured.formatted()) said in recordings."
+    return counted + " Speed counts the time you spend talking: a pause to think counts as one second, however long it is."
   }
 
   /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
@@ -1962,6 +1995,9 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     dictating.dictation.words = ["Ferris", "Varde Labs", "Parakeet", "Klose"]
     dictating.dictation.learned = ["Klose"]
     dictating.dictation.learnedLayouts = 3
+    dictating.dictation.wordsDictated = 12_480
+    dictating.dictation.wordsCaptured = 3_215
+    dictating.dictation.wpm = 148
     dictating.dictation.replacements = [
       SettingsReplacement(heard: "feris", write: "Ferris"),
       SettingsReplacement(heard: "var de labs", write: "Varde Labs"),
