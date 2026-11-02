@@ -89,11 +89,13 @@ fn ends_phrase(token: &str) -> bool {
 }
 
 /// The words of `phrase` from `start`, none but the last ending a phrase, so a command never
-/// spans the transcriber's sentence break ("Any question? Mark said").
+/// spans the transcriber's sentence break ("Any question? Mark said"). Words in quotation marks
+/// are the words themselves (`"comma"`, from a spoken "quote comma unquote").
 fn spoken_at(tokens: &[&str], start: usize, phrase: &[&str]) -> bool {
     let Some(run) = tokens.get(start..start + phrase.len()) else { return false };
     let inner_open = run[..run.len() - 1].iter().all(|t| !ends_phrase(t));
-    inner_open && run.iter().zip(phrase).all(|(token, word)| key(token) == *word)
+    let quoted = run[0].starts_with(['"', '“']) || run[run.len() - 1].trim_end_matches(PHRASE_MARKS).ends_with(['"', '”']);
+    inner_open && !quoted && run.iter().zip(phrase).all(|(token, word)| key(token) == *word)
 }
 
 fn after_noun_marker(tokens: &[&str], i: usize) -> bool {
@@ -280,6 +282,8 @@ mod tests {
             "We launched our new line of products.",
             "Every new paragraph needs a heading.",
             "Line one\nline two",
+            "Write \"comma\" here.",
+            "Type \"new line\" to break.",
         ] {
             assert_eq!(apply(prose), prose);
         }

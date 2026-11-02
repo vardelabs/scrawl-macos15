@@ -41,8 +41,8 @@ struct Quoted<'a> {
     words: std::ops::Range<usize>,
     /// The first token after the spoken quotation.
     resume: usize,
-    /// Punctuation the transcriber put on the closing "unquote", kept after the closing mark.
-    after: &'a str,
+    /// For a spoken "unquote", the punctuation the transcriber put on it; `None` for scare quotes.
+    after: Option<&'a str>,
 }
 
 fn key(token: &str) -> String {
@@ -68,7 +68,7 @@ fn scare_quotes<'a>(tokens: &[&'a str], i: usize) -> Option<Quoted<'a>> {
         .take(SCARE_WORDS)
         .find(|&j| ends_phrase(tokens[j]) || j + 1 == tokens.len());
     let end = to_phrase_end.map_or(start + 1, |j| j + 1);
-    Some(Quoted { words: start..end, resume: end, after: "" })
+    Some(Quoted { words: start..end, resume: end, after: None })
 }
 
 /// "quote … unquote" or "quote … end quote" around a few words.
@@ -84,13 +84,13 @@ fn quotation<'a>(tokens: &[&'a str], i: usize) -> Option<Quoted<'a>> {
             _ => None,
         }?;
         let after = tokens[close].trim_start_matches(|c: char| !PHRASE_MARKS.contains(&c));
-        Some(Quoted { words: start..j, resume: close + 1, after })
+        Some(Quoted { words: start..j, resume: close + 1, after: Some(after) })
     })
 }
 
 /// The words between marks. A full stop or comma closes inside them (`"Hello."`), other marks
 /// outside, and the transcriber's pause comma before "unquote" goes.
-fn wrap(words: &[&str], capital: bool, after: &str) -> Vec<String> {
+fn wrap(words: &[&str], capital: bool, after: Option<&str>) -> Vec<String> {
     let mut out: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
     let first = &mut out[0];
     if capital {
@@ -101,9 +101,15 @@ fn wrap(words: &[&str], capital: bool, after: &str) -> Vec<String> {
     }
     first.insert(0, '"');
     let last = out.last_mut().expect("a quotation holds a word");
-    if !after.is_empty() {
-        last.truncate(last.trim_end_matches(',').len());
-        last.push_str(after);
+    // Before a spoken "unquote" a comma is the speaker's pause, and a mark on "unquote" itself
+    // replaces the one on the word before it ("hello. unquote." is one full stop).
+    match after {
+        Some("") => last.truncate(last.trim_end_matches(',').len()),
+        Some(mark) => {
+            last.truncate(last.trim_end_matches(PHRASE_MARKS).len());
+            last.push_str(mark);
+        }
+        None => {}
     }
     let word = last.trim_end_matches(PHRASE_MARKS).len();
     let (inside, outside) = match &last[word..] {
@@ -157,6 +163,9 @@ mod tests {
         assert_eq!(apply("He said quote ship it unquote and left."), "He said \"ship it\" and left.");
         assert_eq!(apply("He said, quote, ship it, end quote."), "He said, \"ship it.\"");
         assert_eq!(apply("The sign read quote closed unquote."), "The sign read \"closed.\"");
+        assert_eq!(apply("quote hello, unquote and goodbye"), "\"hello\" and goodbye");
+        assert_eq!(apply("quote hello. unquote."), "\"hello.\"");
+        assert_eq!(apply("Is it quote really? unquote?"), "Is it \"really\"?");
     }
 
     #[test]
