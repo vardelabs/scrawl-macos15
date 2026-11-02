@@ -63,12 +63,12 @@ Parakeet takes no vocabulary prompt, so the dictionary corrects after transcript
 
 ## Spoken quotation marks (`src/dictation/quotes.rs`)
 
-Always on, after the dictionary and before spoken commands. Nobody dictates "unquote" as a word, so this pass needs no experiment:
+Behind the experiment `spokenQuotes` (off by default; see Experiments in `AGENTS.md`). After the dictionary and before spoken commands:
 
 - "quote unquote" quotes what follows up to the phrase's end when that is 3 words or fewer ("sort of quote unquote token bait." is `sort of "token bait."`), else the next word only ("it's quote unquote fine for most people" is `it's "fine" for most people`).
 - "quote … unquote" and "quote … end quote" wrap up to 12 words between them ("he said quote ship it unquote" is `he said "ship it"`). After "a", "the", "my" and the like, "quote" is the noun and opens nothing.
 - A full stop or comma closes inside the marks, other marks outside (`is it "done"?`). The transcriber's pause comma before "unquote" goes, and a mark on "unquote" replaces the one before it.
-- Spoken commands leave quoted words alone, so "quote comma unquote" stays `"comma"`.
+- Spoken commands leave every word inside quotation marks alone, so "quote comma unquote" stays `"comma"`.
 
 ## Spoken commands (`src/dictation/commands.rs`)
 
