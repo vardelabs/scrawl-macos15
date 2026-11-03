@@ -55,15 +55,17 @@ const AT_THE_RATE: &[&str] = &["at", "the", "rate"];
 /// Text with no command in it comes back byte for byte.
 pub fn apply(text: &str) -> String {
     let tokens: Vec<&str> = text.split_whitespace().collect();
-    let marks_spoken = marks_spoken(&tokens);
+    let quoted = quoted(&tokens);
+    let marks_spoken = marks_spoken(&tokens, &quoted);
     let mut written = Written::default();
     let mut changed = false;
     let mut i = 0;
     while i < tokens.len() {
-        let spoken = if let Some((command, len)) = command_at(&tokens, i, marks_spoken) {
+        let free = |len: usize| !quoted[i..(i + len).min(tokens.len())].contains(&true);
+        let spoken = if let Some((command, len)) = command_at(&tokens, i, marks_spoken).filter(|&(_, len)| free(len)) {
             written.command(command);
             len
-        } else if let Some(handle) = handle_at(&tokens, i) {
+        } else if let Some(handle) = handle_at(&tokens, i).filter(|_| free(AT_THE_RATE.len() + 1)) {
             written.handle(handle);
             AT_THE_RATE.len() + 1
         } else {
@@ -96,6 +98,23 @@ fn spoken_at(tokens: &[&str], start: usize, phrase: &[&str]) -> bool {
     inner_open && run.iter().zip(phrase).all(|(token, word)| key(token) == *word)
 }
 
+/// Which tokens sit inside quotation marks. Quoted words are the words themselves, so no command
+/// touches them (`"comma"`, from a spoken "quote comma unquote").
+fn quoted(tokens: &[&str]) -> Vec<bool> {
+    let mut open = false;
+    tokens
+        .iter()
+        .map(|token| {
+            open |= token.starts_with(['"', '“']);
+            let inside = open;
+            if token.trim_end_matches(PHRASE_MARKS).ends_with(['"', '”']) {
+                open = false;
+            }
+            inside
+        })
+        .collect()
+}
+
 fn after_noun_marker(tokens: &[&str], i: usize) -> bool {
     i > 0 && !ends_phrase(tokens[i - 1]) && NOUN_MARKERS.contains(&key(tokens[i - 1]).as_str())
 }
@@ -116,9 +135,10 @@ fn stands_alone(tokens: &[&str], i: usize, len: usize) -> bool {
 }
 
 /// Whether a mark or line break that counts anywhere was spoken (`Boundary::StandsAloneOrMarksSpoken`).
-fn marks_spoken(tokens: &[&str]) -> bool {
+fn marks_spoken(tokens: &[&str], quoted: &[bool]) -> bool {
     (0..tokens.len()).any(|i| {
-        !after_noun_marker(tokens, i)
+        !quoted[i]
+            && !after_noun_marker(tokens, i)
             && COMMANDS.iter().any(|&(phrase, command, boundary)| {
                 boundary == Boundary::Anywhere
                     && matches!(command, Command::Mark(_) | Command::Break(_))
@@ -280,6 +300,9 @@ mod tests {
             "We launched our new line of products.",
             "Every new paragraph needs a heading.",
             "Line one\nline two",
+            "Write \"comma\" here.",
+            "Type \"new line\" to break.",
+            "Say \"press new line twice\" to them.",
         ] {
             assert_eq!(apply(prose), prose);
         }

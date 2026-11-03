@@ -52,6 +52,10 @@ Dev pages that load `/sdk.js` add what only the page knows (`src/page.rs`, `src/
 
 Off by default (see Experiments in `AGENTS.md`). With it on, dictation acts on spoken edit commands ("scratch that", "new line", "comma", "at the rate kai"). The rules are in `docs/dictation.md` (Spoken commands).
 
+## Experiment `spokenQuotes` (`src/dictation/quotes.rs`)
+
+Off by default (see Experiments in `AGENTS.md`). With it on, dictation writes a spoken "quote unquote", "quote … unquote" or "quote … end quote" as quotation marks. The rules are in `docs/dictation.md` (Spoken quotation marks).
+
 ## Experiment `liveTranscribe` (`src/live_transcribe.rs`, `helper/LiveTranscribe.swift`)
 
 Off by default (see Experiments in `AGENTS.md`). With it on and Apple Speech the transcriber, `AudioRecorder::start` also starts `scrawl-helper transcribe-stream` (one SpeechAnalyzer, finalized results only; it never downloads a model, so one that isn't installed fails at once) and a thread that feeds it the recorder's 16 kHz buffer as `audio::pcm16` every 160 ms. `RecordedAudio.live` carries it to `transcribe::transcribe`, which sends the samples it hasn't had from the finished WAV, closes its input and waits up to 6 s for the tail; the helper must report exactly the WAV's sample count. Word times are therefore the WAV's own, and match one SpeechAnalyzer pass over `audio.wav` word for word and millisecond for millisecond (the batch path splits recordings over 22 s at silences and transcribes the pieces in parallel, so long recordings can differ from it at the cuts). Any failure is logged (`Live transcription failed, …`) and the WAV is transcribed as before; Hex, iPhone and imported recordings never stream. `scrawl reprocess B --out O --bench 1 --live-speed 1` replays a bundle's audio into it in real time and logs `Live transcription: N words, … tail N ms` and the finish timings.
