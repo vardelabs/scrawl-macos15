@@ -1514,9 +1514,9 @@ struct SettingsView: View {
           SettingsSwitch(on: state.videoExport) { model.set("videoExport", $0) }
         }
       }
-      SettingsCaption(text: "Transcribing while recording (Apple Speech only) has the transcript ready sooner after you stop. "
-        + "Detailed summaries list clicks, marks, drags, window changes and what a dev page reported, at the moment each happened. "
-        + "Smart routing weighs more clues to pick which agent session gets a capture. "
+      SettingsCaption(text: "Transcribing while recording (Apple Speech only) finishes sooner after you stop. "
+        + "Detailed summaries add clicks, marks and window changes. "
+        + "Smart routing weighs more clues to pick the agent session. "
         + "Video export adds Export Last Capture as Video… to the menu.")
     }
     .animation(SettingsMotion.state, value: mic)
@@ -2060,7 +2060,10 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("recording-mic-missing", .recording, micMissing, []),
       ("recording-mic-not-allowed", .recording, micNotAllowed, []),
       ("recording-downloading", .recording, downloading, []),
+      ("recording-more", .recording, base, []),
+      ("recording-more-hex", .recording, hex, []),
       ("dictation", .dictation, dictating, []),
+      ("dictation-pasting", .dictation, dictating, []),
       ("dictation-empty", .dictation, base, []),
       ("dictation-replacements", .dictation, replacementsOnly, []),
       ("dictation-broken", .dictation, dictionaryBroken, []),
@@ -2080,6 +2083,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("about", .about, base, []),
       ("about-dev", .about, noUpdates, []),
     ]
+    let belowTheWindow: [String: CGFloat] = ["recording-more": 340, "recording-more-hex": 340, "dictation-pasting": 430]
     var index = 0
     for scheme in [ColorScheme.dark, .light] {
       for (name, pane, state, live) in samples {
@@ -2092,7 +2096,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let editing = edits[name] ?? (name == "dictation-opened" ? .word("Orbit") : nil)
         model.editing = editing
         model.highlight = name == "dictation-opened" ? DictionaryRows.word("Orbit") : nil
-        model.renderScroll = editing == nil ? 0 : 560
+        model.renderScroll = belowTheWindow[name] ?? (editing == nil ? 0 : 560)
         model.liveModifiers = live
         model.meter.level = 0.44
         let view = SettingsView(model: model)
