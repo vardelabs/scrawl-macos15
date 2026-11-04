@@ -703,9 +703,11 @@ drive two things:
   "there" count only when they coincide with a change, because they are usually filler. Speech
   pauses never cut keyframes.
 
-Every engine's transcript loses its spoken fillers before it is used: "um", "uh" and their
-variants always, and "like" where commas mark it as an aside ("it's, like, nice" or a leading
-"Like,"). A dropped filler's full stop moves to the word before it, and a sentence that started
+Every engine's transcript loses its spoken fillers before it is used: "um", "uh", "er" and
+"hmm" always, however drawn out ("ummm", "uhhh") or cut off ("uh-"), and "like" where commas mark
+it as an aside ("it's, like, nice" or a leading "Like,"). The `bareLike` experiment also drops a
+"like" without commas where it can only be filler ("so like if you open it", "it's like really
+slow"); "I like it", "looks like rain" and "it's like a car" keep theirs. A dropped filler's full stop moves to the word before it, and a sentence that started
 with one starts at the next word. `"removeFillers": false` keeps the transcript as spoken.
 
 ### Apple or Hex

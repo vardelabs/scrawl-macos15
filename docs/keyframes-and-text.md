@@ -52,6 +52,10 @@ Dev pages that load `/sdk.js` add what only the page knows (`src/page.rs`, `src/
 
 Off by default (see Experiments in `AGENTS.md`). With it on, dictation acts on spoken edit commands ("scratch that", "new line", "comma", "at the rate kai"). The rules are in `docs/dictation.md` (Spoken commands).
 
+## Experiment `bareLike` (`src/fillers.rs`)
+
+Off by default (see Experiments in `AGENTS.md`). With it and `removeFillers` on, every transcript (captures and dictation) also loses a "like" that no comma marks as an aside, where it can only be filler (`fillers::bare_like`): doubled ("like like broken" keeps one), followed by a hesitation after a joining word or at a sentence start ("so like um", "Like uh"), after "and", "but", "so", "or", "yeah", "well", "okay", "oh" or "because" unless an object or determiner follows ("and like then" goes, "and like it" and "but like the old one" stay), between a copula and an intensifier ("it's like really slow", "was like super laggy"), and opening a sentence before a clause word such as "if", "when", "so" or "maybe" ("Like if you click it"; "Like I said" and "Like the old one" stay).
+
 ## Experiment `spokenQuotes` (`src/dictation/quotes.rs`)
 
 Off by default (see Experiments in `AGENTS.md`). With it on, dictation writes a spoken "quote unquote", "quote … unquote" or "quote … end quote" as quotation marks. The rules are in `docs/dictation.md` (Spoken quotation marks).

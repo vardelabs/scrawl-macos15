@@ -116,8 +116,9 @@ impl Settings {
 enum Outcome {
     /// Pasted, with what the pill can say about it.
     Pasted(AfterPaste),
-    /// Nowhere to paste: the text is on the clipboard.
-    Copied,
+    /// Nowhere to paste: the text is on the clipboard. The pill says the speed as after a paste,
+    /// and "Copied to the clipboard" only when it has nothing else to say.
+    Copied(AfterPaste),
     NoSpeech,
     /// Too short to be speech, or it failed (logged): nothing to say.
     Quiet,
@@ -126,7 +127,7 @@ enum Outcome {
 impl Outcome {
     fn notice(&self) -> Option<&'static str> {
         match self {
-            Self::Copied => Some("Copied to the clipboard"),
+            Self::Copied(_) => Some("Copied to the clipboard"),
             Self::NoSpeech => Some("Didn't catch that"),
             Self::Pasted(_) | Self::Quiet => None,
         }
@@ -524,11 +525,12 @@ impl Dictation {
             Err(flume::TryRecvError::Disconnected) => Outcome::Quiet,
         };
         self.working = None;
-        let (text, opens) = match outcome {
-            Outcome::Pasted(after) => {
+        let (text, opens) = match &outcome {
+            Outcome::Pasted(after) | Outcome::Copied(after) => {
                 // Only a layout's notice opens its row; a speed alone opens nothing.
                 let opens = after.laid_out.filter(|_| self.settings.notices).map(|_| crate::settings::Focus::Layouts);
-                (after.notice(self.settings.notices, self.settings.wpm), opens)
+                let said = after.notice(self.settings.notices, self.settings.wpm);
+                (said.or_else(|| outcome.notice().map(str::to_owned)), opens)
             }
             other => (other.notice().map(str::to_owned), None),
         };
@@ -774,9 +776,9 @@ fn transcribe_and_paste(
     if !text.chars().any(char::is_alphanumeric) {
         return Outcome::NoSpeech;
     }
-    let wpm = spoken.wpm().filter(|_| spoken.words >= crate::word_stats::MIN_NOTICE_WORDS);
+    let wpm = spoken.wpm().filter(|_| spoken.words > 0);
     let outcome = deliver(&text, restore_clipboard, AfterPaste { laid_out, wpm });
-    if matches!(outcome, Outcome::Pasted(_) | Outcome::Copied) {
+    if matches!(outcome, Outcome::Pasted(_) | Outcome::Copied(_)) {
         let at = crate::now_epoch_ms();
         if let Err(error) = super::history::record(&history, &text, at, keep.0, keep.1) {
             scrawl_log(format!("Dictation: could not keep the dictation: {error:#}"));
@@ -1044,7 +1046,7 @@ fn lay_out(
 fn deliver(text: &str, restore_clipboard: bool, after: AfterPaste) -> Outcome {
     let delivered = match route(crate::ax::focused_takes_text()) {
         Route::Paste => paste_fitted(text, restore_clipboard).map(|()| Outcome::Pasted(after)),
-        Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied),
+        Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied(after)),
         Route::PasteAndKeep => paste_fitted(text, false).map(|()| Outcome::Pasted(after)),
     };
     delivered.unwrap_or_else(|error| {
@@ -1204,7 +1206,7 @@ mod tests {
         assert_eq!(both.notice(false, true).as_deref(), Some("152 WPM"));
         assert_eq!(both.notice(true, false).as_deref(), Some("Formatted as a list"));
         assert_eq!(both.notice(false, false), None);
-        assert_eq!(AfterPaste::default().notice(true, true), None, "a short dictation says no speed");
+        assert_eq!(AfterPaste::default().notice(true, true), None, "no words, no speed");
     }
 
     #[test]
@@ -1212,7 +1214,7 @@ mod tests {
         assert_eq!(route(Some(true)), Route::Paste);
         assert_eq!(route(Some(false)), Route::Copy);
         assert_eq!(route(None), Route::PasteAndKeep);
-        assert_eq!(Outcome::Copied.notice(), Some("Copied to the clipboard"));
+        assert_eq!(Outcome::Copied(AfterPaste::default()).notice(), Some("Copied to the clipboard"));
         assert_eq!(Outcome::NoSpeech.notice(), Some("Didn't catch that"));
         let listed = AfterPaste { laid_out: Some("Formatted as a list"), wpm: None };
         assert_eq!(Outcome::Pasted(listed).notice(), None, "a layout's notice is a setting's");
