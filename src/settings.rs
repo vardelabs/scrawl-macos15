@@ -709,8 +709,12 @@ pub struct DictationView {
     pub words_captured: u64,
     /// Average words per minute over both, once anything is counted.
     pub wpm: Option<u64>,
+    /// The fastest dictation or recording long enough to count (`word_stats::MIN_FASTEST_WORDS`).
+    pub fastest_wpm: Option<u64>,
     /// Say each dictation's words per minute in the pill (`dictationWpm`).
     pub wpm_notice: bool,
+    /// Say the total words spoken in the pill (`dictationWordTotal`).
+    pub word_total_notice: bool,
     pub remove_fillers: bool,
     /// Spoken edit commands and spoken quotation marks, each off by default.
     pub spoken_commands: bool,
@@ -1019,7 +1023,9 @@ fn dictation_view(
         words_dictated: stats.dictation.words,
         words_captured: stats.captures.words,
         wpm: stats.total().wpm(),
+        fastest_wpm: stats.fastest.and_then(|best| best.wpm()),
         wpm_notice: config.dictation_wpm.unwrap_or(true),
+        word_total_notice: config.dictation_word_total.unwrap_or(true),
         remove_fillers: config.remove_fillers.unwrap_or(true),
         spoken_commands: config.spoken_commands.unwrap_or(false),
         spoken_quotes: config.spoken_quotes.unwrap_or(false),
@@ -1468,7 +1474,7 @@ impl Panel {
             (
                 "autoSend" | "videoExport" | "lowerPlayback" | "tapChooses" | "cropWindowCaptures"
                 | "dictation" | "dictationRestoreClipboard" | "dictationPill"
-                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory" | "dictationWpm"
+                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory" | "dictationWpm" | "dictationWordTotal"
                 | "removeFillers" | "spokenCommands" | "spokenQuotes" | "agentContext" | "smartRouting"
                 | "liveTranscribe",
                 serde_json::Value::Bool(on),

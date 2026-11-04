@@ -64,6 +64,8 @@ struct Settings {
     history: bool,
     /// Say each dictation's words per minute in the pill (`dictationWpm`).
     wpm: bool,
+    /// Say the total words spoken in the pill (`dictationWordTotal`).
+    word_total: bool,
     /// A dictation to copy again: this run's, or one on disk.
     has_last: bool,
 }
@@ -97,6 +99,7 @@ impl Settings {
             notices: config.notices,
             history: config.history,
             wpm: config.wpm,
+            word_total: config.word_total,
             has_last: super::history::last(&super::history::default_path()).is_some(),
         }
     }
@@ -141,17 +144,21 @@ struct AfterPaste {
     laid_out: Option<&'static str>,
     /// The dictation's words per minute, with `dictationWpm`.
     wpm: Option<u64>,
+    /// All the words spoken into Scrawl so far, this dictation's included, with
+    /// `dictationWordTotal`.
+    total_words: Option<u64>,
 }
 
 impl AfterPaste {
-    /// "Formatted as a list  ·  152 WPM", or either part alone.
-    fn notice(self, notices: bool, wpm: bool) -> Option<String> {
-        let laid_out = self.laid_out.filter(|_| notices).map(str::to_owned);
-        let wpm = self.wpm.filter(|_| wpm).map(|wpm| format!("{wpm} WPM"));
-        match (laid_out, wpm) {
-            (Some(laid_out), Some(wpm)) => Some(format!("{laid_out}  ·  {wpm}")),
-            (laid_out, wpm) => laid_out.or(wpm),
-        }
+    /// "Formatted as a list  ·  152 WPM  ·  15,695 words", or whichever parts are on.
+    fn notice(self, notices: bool, wpm: bool, word_total: bool) -> Option<String> {
+        let parts = [
+            self.laid_out.filter(|_| notices).map(str::to_owned),
+            self.wpm.filter(|_| wpm).map(|wpm| format!("{wpm} WPM")),
+            self.total_words.filter(|_| word_total).map(crate::word_stats::words_label),
+        ];
+        let said: Vec<String> = parts.into_iter().flatten().collect();
+        (!said.is_empty()).then(|| said.join("  ·  "))
     }
 }
 
@@ -529,7 +536,7 @@ impl Dictation {
             Outcome::Pasted(after) | Outcome::Copied(after) => {
                 // Only a layout's notice opens its row; a speed alone opens nothing.
                 let opens = after.laid_out.filter(|_| self.settings.notices).map(|_| crate::settings::Focus::Layouts);
-                let said = after.notice(self.settings.notices, self.settings.wpm);
+                let said = after.notice(self.settings.notices, self.settings.wpm, self.settings.word_total);
                 (said.or_else(|| outcome.notice().map(str::to_owned)), opens)
             }
             other => (other.notice().map(str::to_owned), None),
@@ -781,7 +788,9 @@ fn transcribe_and_paste(
         return Outcome::NoSpeech;
     }
     let wpm = spoken.wpm().filter(|_| spoken.words > 0);
-    let outcome = deliver(&text, restore_clipboard, AfterPaste { laid_out, wpm });
+    let counted = crate::word_stats::load_from(&crate::word_stats::default_path()).total().words;
+    let total_words = Some(counted.saturating_add(spoken.words));
+    let outcome = deliver(&text, restore_clipboard, AfterPaste { laid_out, wpm, total_words });
     if matches!(outcome, Outcome::Pasted(_) | Outcome::Copied(_)) {
         let at = crate::now_epoch_ms();
         if let Err(error) = super::history::record(&history, &text, at, keep.0, keep.1) {
@@ -1207,12 +1216,14 @@ mod tests {
 
     #[test]
     fn a_paste_says_its_layout_and_speed_each_behind_its_setting() {
-        let both = AfterPaste { laid_out: Some("Formatted as a list"), wpm: Some(152) };
-        assert_eq!(both.notice(true, true).as_deref(), Some("Formatted as a list  ·  152 WPM"));
-        assert_eq!(both.notice(false, true).as_deref(), Some("152 WPM"));
-        assert_eq!(both.notice(true, false).as_deref(), Some("Formatted as a list"));
-        assert_eq!(both.notice(false, false), None);
-        assert_eq!(AfterPaste::default().notice(true, true), None, "no words, no speed");
+        let all = AfterPaste { laid_out: Some("Formatted as a list"), wpm: Some(152), total_words: Some(15_695) };
+        assert_eq!(all.notice(true, true, true).as_deref(), Some("Formatted as a list  ·  152 WPM  ·  15,695 words"));
+        assert_eq!(all.notice(false, true, true).as_deref(), Some("152 WPM  ·  15,695 words"));
+        assert_eq!(all.notice(false, true, false).as_deref(), Some("152 WPM"));
+        assert_eq!(all.notice(false, false, true).as_deref(), Some("15,695 words"));
+        assert_eq!(all.notice(true, false, false).as_deref(), Some("Formatted as a list"));
+        assert_eq!(all.notice(false, false, false), None);
+        assert_eq!(AfterPaste::default().notice(true, true, true), None, "no words, no speed");
     }
 
     #[test]
@@ -1222,7 +1233,7 @@ mod tests {
         assert_eq!(route(None), Route::PasteAndKeep);
         assert_eq!(Outcome::Copied(AfterPaste::default()).notice(), Some("Copied to the clipboard"));
         assert_eq!(Outcome::NoSpeech.notice(), Some("Didn't catch that"));
-        let listed = AfterPaste { laid_out: Some("Formatted as a list"), wpm: None };
+        let listed = AfterPaste { laid_out: Some("Formatted as a list"), wpm: None, total_words: None };
         assert_eq!(Outcome::Pasted(listed).notice(), None, "a layout's notice is a setting's");
         assert_eq!(Outcome::Quiet.notice(), None);
         assert!(one_slip("calender", "calendar") && one_slip("recieved", "received"));

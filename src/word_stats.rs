@@ -1,6 +1,7 @@
 //! How many words the user has spoken into Scrawl, and how fast: dictations as pasted or copied,
 //! and the narration of screen and iPhone captures recorded in the app. Settings › Dictation and
-//! the menu bar show the totals and the average speed, and the pill says each dictation's speed.
+//! the menu bar show the totals and the average speed, Settings shows the fastest long stretch,
+//! and the pill says each dictation's speed and the running total.
 //!
 //! Speed counts only time spent talking. With measured word timings each word counts in full and
 //! each gap between two words counts up to `PAUSE_ALLOWANCE_MS`, so a breath counts and stopping
@@ -23,6 +24,9 @@ use crate::model::{TranscriptData, WordTiming};
 /// The longest gap between two words that counts in full as talking. Settings › Dictation says
 /// "one second" in its caption.
 pub const PAUSE_ALLOWANCE_MS: u64 = 1_000;
+/// The fewest words that can set the fastest speed, about a paragraph: a few quick words would
+/// always win. Settings › Dictation says "50 words" in its caption.
+pub const MIN_FASTEST_WORDS: u64 = 50;
 
 /// Words and the time spent saying them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -53,6 +57,9 @@ pub struct Stats {
     pub dictation: Tally,
     #[serde(default)]
     pub captures: Tally,
+    /// The fastest single dictation or recording of at least `MIN_FASTEST_WORDS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fastest: Option<Tally>,
     /// When counting began, in epoch milliseconds: the first word after a Reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_ms: Option<u64>,
@@ -63,6 +70,16 @@ impl Stats {
         let mut total = self.dictation;
         total.add(self.captures);
         total
+    }
+
+    fn consider_fastest(&mut self, tally: Tally) {
+        let beats_best = match (tally.wpm(), self.fastest.and_then(|best| best.wpm())) {
+            (Some(new), Some(best)) => new > best,
+            (new, _) => new.is_some(),
+        };
+        if tally.words >= MIN_FASTEST_WORDS && beats_best {
+            self.fastest = Some(tally);
+        }
     }
 }
 
@@ -135,6 +152,7 @@ pub fn record(path: &Path, source: Source, tally: Tally, now_ms: u64) -> Result<
         Source::Dictation => stats.dictation.add(tally),
         Source::Capture => stats.captures.add(tally),
     }
+    stats.consider_fastest(tally);
     let mut json = serde_json::to_vec_pretty(&stats)?;
     json.push(b'\n');
     crate::dictation::history::write_private(path, &json)
@@ -171,13 +189,18 @@ pub fn grouped(n: u64) -> String {
     out
 }
 
+/// `12,480 words` or `1 word`.
+pub fn words_label(words: u64) -> String {
+    format!("{} {}", grouped(words), if words == 1 { "word" } else { "words" })
+}
+
 /// `12,480 words  ·  148 WPM`, for the menu bar menu; `None` before the first word.
 pub fn menu_label(stats: &Stats) -> Option<String> {
     let total = stats.total();
     if total.words == 0 {
         return None;
     }
-    let words = format!("{} {}", grouped(total.words), if total.words == 1 { "word" } else { "words" });
+    let words = words_label(total.words);
     Some(match total.wpm() {
         Some(wpm) => format!("{words}  ·  {wpm} WPM"),
         None => words,
@@ -259,6 +282,34 @@ mod tests {
     }
 
     #[test]
+    fn only_a_faster_long_stretch_sets_the_fastest_speed() {
+        let dir = std::env::temp_dir().join(format!("scrawl-word-stats-fastest-{}", std::process::id()));
+        let path = dir.join("word-stats.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let fastest = |path: &Path| load_from(path).fastest.and_then(|best| best.wpm());
+
+        record(&path, Source::Dictation, Tally { words: 49, speaking_ms: 1_000 }, 1).unwrap();
+        assert_eq!(fastest(&path), None, "too short to count, however quick");
+        record(&path, Source::Dictation, Tally { words: 50, speaking_ms: 20_000 }, 2).unwrap();
+        assert_eq!(fastest(&path), Some(150));
+        record(&path, Source::Dictation, Tally { words: 100, speaking_ms: 60_000 }, 3).unwrap();
+        assert_eq!(fastest(&path), Some(150), "slower keeps the best");
+        record(&path, Source::Capture, Tally { words: 60, speaking_ms: 20_000 }, 4).unwrap();
+        assert_eq!(fastest(&path), Some(180), "a recording counts too");
+
+        reset(&path).unwrap();
+        assert_eq!(fastest(&path), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn counts_saved_before_the_fastest_speed_still_load() {
+        let stats: Stats = serde_json::from_str(r#"{"dictation":{"words":5,"speakingMs":2000}}"#).unwrap();
+        assert_eq!(stats.dictation.words, 5);
+        assert_eq!(stats.fastest, None);
+    }
+
+    #[test]
     fn a_broken_file_counts_as_none() {
         let dir = std::env::temp_dir().join(format!("scrawl-word-stats-broken-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -274,6 +325,8 @@ mod tests {
         assert_eq!(grouped(999), "999");
         assert_eq!(grouped(12_480), "12,480");
         assert_eq!(grouped(1_234_567), "1,234,567");
+        assert_eq!(words_label(1), "1 word");
+        assert_eq!(words_label(15_695), "15,695 words");
         assert_eq!(menu_label(&Stats::default()), None);
         let stats = Stats { dictation: Tally { words: 12_480, speaking_ms: 5_060_000 }, ..Stats::default() };
         assert_eq!(menu_label(&stats).as_deref(), Some("12,480 words  ·  148 WPM"));

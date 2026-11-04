@@ -157,7 +157,9 @@ struct SettingsDictation: Decodable, Equatable {
   var wordsDictated = 0
   var wordsCaptured = 0
   var wpm: Int?
+  var fastestWpm: Int?
   var wpmNotice = true
+  var wordTotalNotice = true
   var removeFillers = true
   var spokenCommands = false
   var spokenQuotes = false
@@ -1275,8 +1277,18 @@ struct SettingsView: View {
             .foregroundStyle(SettingsTheme(scheme).secondary)
         }
         SettingsSeparator()
+        SettingsRow(title: "Fastest paragraph") {
+          Text(d.fastestWpm.map { "\($0) WPM" } ?? "Not yet measured")
+            .font(.system(size: 14).monospacedDigit())
+            .foregroundStyle(SettingsTheme(scheme).secondary)
+        }
+        SettingsSeparator()
         SettingsRow(title: "Show the speed after each dictation") {
           SettingsSwitch(on: d.wpmNotice) { model.set("dictationWpm", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Show total words after each dictation") {
+          SettingsSwitch(on: d.wordTotalNotice) { model.set("dictationWordTotal", $0) }
         }
       }
       SettingsCaption(text: speakingCaption(d))
@@ -1392,7 +1404,7 @@ struct SettingsView: View {
     let counted = d.wordsDictated + d.wordsCaptured == 0
       ? "Counts the words you dictate and say in recordings."
       : "\(d.wordsDictated.formatted()) dictated and \(d.wordsCaptured.formatted()) said in recordings."
-    return counted + " Speed counts the time you spend talking: a pause to think counts as one second, however long it is."
+    return counted + " Speed counts the time you spend talking: a pause to think counts as one second, however long it is. Fastest paragraph needs 50 words or more."
   }
 
   /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
@@ -2028,6 +2040,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     dictating.dictation.wordsDictated = 12_480
     dictating.dictation.wordsCaptured = 3_215
     dictating.dictation.wpm = 148
+    dictating.dictation.fastestWpm = 186
     dictating.dictation.replacements = [
       SettingsReplacement(heard: "feris", write: "Ferris"),
       SettingsReplacement(heard: "var de labs", write: "Varde Labs"),
