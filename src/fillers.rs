@@ -303,14 +303,14 @@ fn bare_like(previous: Option<&str>, next: Option<&str>) -> bool {
     };
     if next == "like"
         || is_hesitation(&next)
-            && previous.is_none_or(|p| DISCOURSE.contains(&clean_text(p).as_str()))
+            && previous.is_none_or(|p| DISCOURSE.contains(&bare(p).as_str()))
     {
         return true;
     }
     let Some(raw) = previous else {
         return OPENED.contains(&next.as_str());
     };
-    let previous = clean_text(raw);
+    let previous = bare(raw);
     (DISCOURSE.contains(&previous.as_str()) && !OBJECTS.contains(&next.as_str()))
         || (COPULAS.contains(&previous.as_str()) && INTENSIFIERS.contains(&next.as_str()))
 }
@@ -398,6 +398,19 @@ mod tests {
         assert_eq!(clean_text("it's like like broken"), "it's like broken");
         assert_eq!(clean_text("so um like then it loads"), "so then it loads");
         assert_eq!(clean_text("Like uh this one"), "This one");
+    }
+
+    #[test]
+    fn bare_like_reads_the_word_before_it_however_it_was_written() {
+        assert_eq!(
+            clean_text("Um so like if you open it, it's like really slow, I like it."),
+            "So if you open it, it's really slow, I like it."
+        );
+        assert_eq!(clean_text("So like if you open it"), "So if you open it");
+        assert_eq!(clean_text("It's like really slow"), "It's really slow");
+        assert_eq!(clean_text("It’s like really slow"), "It’s really slow");
+        assert_eq!(clean_text("Yeah, like when it loads"), "Yeah, when it loads");
+        assert_eq!(clean_text("So, um like then it loads"), "So, then it loads");
     }
 
     #[test]
