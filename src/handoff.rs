@@ -645,7 +645,8 @@ pub struct Config {
     /// Apple Speech locale (BCP-47, e.g. "zh-TW"); missing means the Mac's own language.
     #[serde(default)]
     pub apple_locale: Option<String>,
-    /// Drops "um", "uh" and filler "like" from transcripts (default on; `fillers`).
+    /// Drops "um", "uh", filler "like", stray letters and repeats from transcripts (default on;
+    /// `fillers`).
     #[serde(default)]
     pub remove_fillers: Option<bool>,
     /// Whether to use the native Metal recording pill instead of GPUI's `HudPillWindow` (default `true`).

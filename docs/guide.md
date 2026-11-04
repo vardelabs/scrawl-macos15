@@ -709,7 +709,7 @@ Every engine's transcript loses its spoken fillers before it is used: "um", "uh"
 it as an aside ("it's, like, nice" or a leading "Like,"). It also drops a "like" without commas
 where it can only be filler ("so like if you open it", "it's like really
 slow"); "I like it", "looks like rain" and "it's like a car" keep theirs. A dropped filler's full stop moves to the word before it, and a sentence that started
-with one starts at the next word. `"removeFillers": false` keeps the transcript as spoken.
+with one starts at the next word. Stumbles go too: a stray lowercase letter ("my f fastest", but not "the x height" or "A and B"), and a word or short phrase said twice in a row ("the the button", "it's a little it's a little awkward", but not "Testing, testing.", "very very" or "this and this and this"). `"removeFillers": false` keeps the transcript as spoken.
 
 ### Apple or Hex
 
