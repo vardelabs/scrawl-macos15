@@ -23,8 +23,6 @@ use crate::model::{TranscriptData, WordTiming};
 /// The longest gap between two words that counts in full as talking. Settings › Dictation says
 /// "one second" in its caption.
 pub const PAUSE_ALLOWANCE_MS: u64 = 1_000;
-/// A dictation shorter than this says no speed in the pill: a few words make a noisy number.
-pub const MIN_NOTICE_WORDS: u64 = 8;
 
 /// Words and the time spent saying them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
