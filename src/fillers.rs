@@ -411,7 +411,7 @@ fn is_repeated_word(tokens: &[String], at: usize) -> bool {
         return false;
     };
     let word = spoken_form(&tokens[at]);
-    if !runs_on(&tokens[at]) || !word.chars().all(|c| c.is_alphabetic() || c == '\'') || word.is_empty() {
+    if !runs_on(&tokens[at]) || !is_plain_word(&word) {
         return false;
     }
     if word == "i" && spoken_form(next).starts_with("i'") {
@@ -428,9 +428,17 @@ fn is_repeated_phrase(tokens: &[String], at: usize, len: usize) -> bool {
         return false;
     };
     let (first, second) = pair.split_at(len);
+    let spoken: Vec<String> = first.iter().map(|token| spoken_form(token)).collect();
     first.iter().all(|token| runs_on(token))
-        && first.iter().zip(second).all(|(a, b)| spoken_form(a) == spoken_form(b))
-        && !first.iter().any(|token| LISTING.contains(&spoken_form(token).as_str()))
+        && spoken.iter().all(|word| is_plain_word(word))
+        && spoken.iter().zip(second).all(|(word, token)| *word == spoken_form(token))
+        && !spoken.iter().any(|word| LISTING.contains(&word.as_str()))
+        && !spoken.iter().all(|word| MEANT_TWICE.contains(&word.as_str()))
+}
+
+/// Numbers and paths repeat on purpose ("10 20 10 20", "src/a src/a").
+fn is_plain_word(spoken: &str) -> bool {
+    !spoken.is_empty() && spoken.chars().all(|c| c.is_alphabetic() || c == '\'')
 }
 
 fn is_punctuation(token: &str) -> bool {
@@ -601,6 +609,10 @@ mod tests {
             "very very slow",
             "bye bye",
             "no no no",
+            "no no no no",
+            "very very very very",
+            "the code is 10 20 10 20",
+            "open src/a src/b src/a src/b",
             "when you open it it does that",
             "I told you you can",
             "she had had enough",
