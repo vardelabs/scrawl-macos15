@@ -1,5 +1,5 @@
 //! What clicks and marks land on, from UI Automation: Windows' counterpart of the macOS
-//! Accessibility lookups in `crate::ax` (the `agentContext` experiment). Desktop apps may read
+//! Accessibility lookups in `crate::ax` (`agentContext`). Desktop apps may read
 //! UI Automation without a grant. Only names, control types and automation ids are read, never
 //! a control's value, so nothing typed into a field (passwords included) leaves it.
 

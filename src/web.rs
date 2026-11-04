@@ -8,7 +8,7 @@
 //! Without the ingest token, only a page on a loopback origin, calling from this Mac, may
 //! register, and only for its own origin. Any other origin must send the token as a bearer.
 //!
-//! With the `agentContext` experiment on, a loopback page also posts what it sees under clicks
+//! With `agentContext` on, a loopback page also posts what it sees under clicks
 //! and marks, plus errors, failed requests and video playback, to `/web/context` (`crate::page`).
 
 use std::io::{Read as _, Write as _};
@@ -363,7 +363,7 @@ pub fn handle(stream: &mut TcpStream, header: &str, expected_token: &str) -> Res
                 );
                 return Ok(true);
             };
-            let wanted = crate::handoff::experiment(crate::handoff::AGENT_CONTEXT);
+            let wanted = crate::handoff::agent_context();
             if wanted && let Ok(post) = serde_json::from_slice::<crate::page::Post>(&bytes) {
                 crate::page::record(&page_origin, post);
             }
@@ -406,7 +406,7 @@ pub fn handle(stream: &mut TcpStream, header: &str, expected_token: &str) -> Res
                     ));
                     // `context`: the page may send what it sees (`crate::page`); loopback only.
                     let context = origin.is_some_and(is_loopback_origin)
-                        && crate::handoff::experiment(crate::handoff::AGENT_CONTEXT);
+                        && crate::handoff::agent_context();
                     registry().register(reg, crate::now_epoch_ms());
                     respond_json(
                         stream,
@@ -626,7 +626,7 @@ mod tests {
         );
         assert!(unregister.starts_with("HTTP/1.1 200"), "{unregister}");
 
-        // Page context is loopback-only even with the token, and ignored with the experiment off.
+        // Page context is loopback-only even with the token, and ignored with `agentContext` off.
         let context = r#"{"tab":"zz","events":[]}"#;
         let refused = request(
             &format!(

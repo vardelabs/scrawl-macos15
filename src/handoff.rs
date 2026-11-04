@@ -645,7 +645,7 @@ pub struct Config {
     /// Apple Speech locale (BCP-47, e.g. "zh-TW"); missing means the Mac's own language.
     #[serde(default)]
     pub apple_locale: Option<String>,
-    /// Drops "um", "uh" and comma-wrapped "like" from transcripts (default on; `fillers`).
+    /// Drops "um", "uh" and filler "like" from transcripts (default on; `fillers`).
     #[serde(default)]
     pub remove_fillers: Option<bool>,
     /// Whether to use the native Metal recording pill instead of GPUI's `HudPillWindow` (default `true`).
@@ -654,10 +654,21 @@ pub struct Config {
     /// Visual style of the native recording pill: `"black"` (default) or `"glass"` (`NSGlassEffectView`).
     #[serde(default)]
     pub pill_style: Option<String>,
-    /// Behaviour Kit tries locally before it ships (`{"agentContext": true}`); see `experiment`.
-    /// Read leniently (`lenient_experiments`), so a stray value never fails the file.
-    #[serde(default, deserialize_with = "lenient_experiments")]
-    pub experiments: std::collections::BTreeMap<String, bool>,
+    /// Marks, clicks, drags, windows and dev-page events inline in `summary.md` (default off).
+    #[serde(default)]
+    pub agent_context: Option<bool>,
+    /// Routes Mac captures with `routing::smart` instead of the ladder (default off).
+    #[serde(default)]
+    pub smart_routing: Option<bool>,
+    /// Transcribes Apple Speech recordings while they record (default off; `live_transcribe`).
+    #[serde(default)]
+    pub live_transcribe: Option<bool>,
+    /// Dictation acts on spoken edit commands ("scratch that", "new line"; default off).
+    #[serde(default)]
+    pub spoken_commands: Option<bool>,
+    /// Dictation writes a spoken "quote unquote" as quotation marks (default off).
+    #[serde(default)]
+    pub spoken_quotes: Option<bool>,
     /// The microphone Mac captures record from (`mic`); absent follows the macOS default.
     #[serde(default)]
     pub microphone: Option<crate::mic::Choice>,
@@ -728,46 +739,6 @@ pub struct RoutingConfig {
     pub servers: std::collections::BTreeMap<String, String>,
 }
 
-/// `true`/`false`, `"yes"`/`"on"`/`"1"` and their opposites, or a number (non-zero is on). Other
-/// values are skipped and logged once, as is an `experiments` that isn't an object.
-fn lenient_experiments<'de, D>(
-    deserializer: D,
-) -> std::result::Result<std::collections::BTreeMap<String, bool>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde_json::Value;
-    let value = Value::deserialize(deserializer)?;
-    let mut out = std::collections::BTreeMap::new();
-    let Value::Object(map) = value else {
-        if !value.is_null() {
-            log_config_once(format!("config.json: ignoring \"experiments\": {value} (expected an object)"));
-        }
-        return Ok(out);
-    };
-    for (name, value) in map {
-        let on = match &value {
-            Value::Bool(b) => Some(*b),
-            Value::Number(n) => n.as_f64().map(|n| n != 0.0),
-            Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-                "true" | "yes" | "on" | "1" => Some(true),
-                "false" | "no" | "off" | "0" | "" => Some(false),
-                _ => None,
-            },
-            _ => None,
-        };
-        match on {
-            Some(on) => {
-                out.insert(name, on);
-            }
-            None => log_config_once(format!(
-                "config.json: ignoring experiment \"{name}\": {value} (expected true or false)"
-            )),
-        }
-    }
-    Ok(out)
-}
-
 /// Config problems are logged once per process, not on every read.
 fn log_config_once(message: String) {
     static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -778,36 +749,36 @@ fn log_config_once(message: String) {
     }
 }
 
-/// More of what Scrawl already knows in the summary: marks, shortcuts, drags and windows inline
-/// at their time, numbered marks on shared frames, where a screen changed.
-pub const AGENT_CONTEXT: &str = "agentContext";
-
-/// Transcribe Mac recordings while they record, so finishing only waits for the last words
-/// (`live_transcribe`).
-pub const LIVE_TRANSCRIBE: &str = "liveTranscribe";
-
-static EXPERIMENT_OVERRIDES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-/// Turns an experiment on for this process (`scrawl reprocess --experiment <name>`).
-pub fn enable_experiment(name: &str) {
-    EXPERIMENT_OVERRIDES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(name.to_owned());
+/// Optional features, each off by default and switched in Settings or by its `config.json` key.
+/// Tests never read the config file, so they see each one off.
+fn switch(on: impl Fn(&Config) -> Option<bool>) -> bool {
+    !cfg!(test) && on(&config()).unwrap_or(false)
 }
 
-/// Whether an experiment is on: `"experiments": {"<name>": true}` in `config.json`, or
-/// `enable_experiment` in this process. Off by default; tests see only `enable_experiment`.
-pub fn experiment(name: &str) -> bool {
-    let overridden = EXPERIMENT_OVERRIDES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .any(|n| n == name);
-    if overridden || cfg!(test) {
-        return overridden;
-    }
-    config().experiments.get(name).copied().unwrap_or(false)
+/// More of what Scrawl already knows in the summary (`agentContext`): marks, shortcuts, drags
+/// and windows inline at their time, and what a dev page saw.
+pub fn agent_context() -> bool {
+    switch(|c| c.agent_context)
+}
+
+/// Route Mac captures with `routing::smart` (`smartRouting`).
+pub fn smart_routing() -> bool {
+    switch(|c| c.smart_routing)
+}
+
+/// Transcribe Apple Speech recordings while they record (`liveTranscribe`).
+pub fn live_transcribe() -> bool {
+    switch(|c| c.live_transcribe)
+}
+
+/// Dictation acts on spoken edit commands (`spokenCommands`).
+pub fn spoken_commands() -> bool {
+    switch(|c| c.spoken_commands)
+}
+
+/// Dictation writes spoken quotation marks (`spokenQuotes`).
+pub fn spoken_quotes() -> bool {
+    switch(|c| c.spoken_quotes)
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -2362,38 +2333,16 @@ mod tests {
     }
 
     #[test]
-    fn experiments_are_read_from_config_and_off_by_default() {
+    fn optional_features_are_plain_settings() {
         let fixture = Fixture::new();
         let path = fixture.0.join("config.json");
-        fs::write(
-            &path,
-            r#"{"experiments": {"agentContext": true, "other": false}}"#,
-        )
-        .unwrap();
+        fs::write(&path, r#"{"agentContext": true, "spokenQuotes": false}"#).unwrap();
         let cfg = load_config_from(&path);
-        assert_eq!(cfg.experiments.get(AGENT_CONTEXT), Some(&true));
-        assert_eq!(cfg.experiments.get("other"), Some(&false));
-        assert!(Config::default().experiments.is_empty());
-        // A bad value skips that experiment, never the file.
-        fs::write(
-            &path,
-            r#"{"autoSend": false, "experiments": {"agentContext": "yes", "a": 1, "b": "maybe", "c": [1], "d": "off"}}"#,
-        )
-        .unwrap();
-        let cfg = load_config_from(&path);
-        assert_eq!(cfg.auto_send, Some(false));
-        assert_eq!(cfg.experiments.get(AGENT_CONTEXT), Some(&true));
-        assert_eq!(cfg.experiments.get("a"), Some(&true));
-        assert_eq!(cfg.experiments.get("d"), Some(&false));
-        assert!(!cfg.experiments.contains_key("b") && !cfg.experiments.contains_key("c"));
-        fs::write(&path, r#"{"autoSend": false, "experiments": true}"#).unwrap();
-        let cfg = load_config_from(&path);
-        assert_eq!(cfg.auto_send, Some(false));
-        assert!(cfg.experiments.is_empty());
-        // Tests never read Kit's config, only what this process turned on.
-        assert!(!experiment("neverEnabled"));
-        enable_experiment("enabledForThisTest");
-        assert!(experiment("enabledForThisTest"));
+        assert_eq!(cfg.agent_context, Some(true));
+        assert_eq!(cfg.spoken_quotes, Some(false));
+        assert_eq!(cfg.smart_routing, None);
+        // Tests never read the config file.
+        assert!(!agent_context() && !smart_routing() && !live_transcribe());
     }
 
     #[test]

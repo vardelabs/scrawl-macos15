@@ -7,15 +7,12 @@
 //!    that directory's git root, and the most recently active root session in it.
 //! 3. Otherwise nothing: the capture stays on the clipboard.
 //!
-//! With `"experiments": {"smartRouting": true}`, [`smart`] decides instead, from clues
+//! With **Smart routing** on (`smartRouting`), [`smart`] decides instead, from clues
 //! [`look`] gathers (`docs/routing.md`).
 
 pub mod look;
 pub mod served;
 pub mod smart;
-
-/// The experiment that routes Mac captures with [`smart`] (`handoff::experiment`).
-pub const SMART_ROUTING: &str = "smartRouting";
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

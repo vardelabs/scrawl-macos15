@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Before/after comparison of what agents get from real captures, for an experiment.
+# Before/after comparison of what agents get from real captures, for one on/off setting.
 #
-#   scripts/agent-eval.sh [--experiment agentContext] [--out DIR] [bundle…]
+#   scripts/agent-eval.sh [--setting agentContext] [--out DIR] [bundle…]
 #
-# Reprocesses each bundle twice with target/debug/scrawl (build it first): once with no
-# experiments and once with the named one (for the images), then writes DIR/<bundle>/
+# Reprocesses each bundle twice with target/debug/scrawl (build it first): once with the setting
+# off and once with it on (for the images), then writes DIR/<bundle>/
 # {before,after}.md (both from the baseline run's transcript), each run's contact sheet and
 # frames, and DIR/index.md with both summaries one after the other.
 # The original bundles are only read. Without bundle arguments it uses a default set of Kit's
@@ -12,12 +12,12 @@
 # reprocess keeps whatever the capture recorded.
 set -euo pipefail
 
-experiment="agentContext"
+setting="agentContext"
 out="$HOME/code/home/artifacts/scrawl-context"
 bundles=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --experiment) experiment="$2"; shift 2 ;;
+    --setting) setting="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     *) bundles+=("$1"); shift ;;
   esac
@@ -44,24 +44,25 @@ scrawl="$root/target/debug/scrawl"
 work="$(mktemp -d "${TMPDIR:-/tmp}/scrawl-agent-eval.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-# The baseline must not pick up experiments from Kit's own config.
-config="$work/config.json"
-python3 - "$HOME/.config/scrawl/config.json" "$config" <<'PY'
+# Kit's own config with the setting off (before) and on (after).
+for variant in before after; do
+  python3 - "$HOME/.config/scrawl/config.json" "$work/$variant.json" "$setting" "$variant" <<'PY'
 import json, sys
 try:
     data = json.load(open(sys.argv[1]))
 except Exception:
     data = {}
-data.pop("experiments", None)
+data[sys.argv[3]] = sys.argv[4] == "after"
 json.dump(data, open(sys.argv[2], "w"))
 PY
+done
 
 mkdir -p "$out"
 index="$out/index.md"
 {
-  echo "# Scrawl experiment \`$experiment\`: before and after"
+  echo "# Scrawl setting \`$setting\`: before and after"
   echo
-  echo "Generated $(date '+%Y-%m-%d %H:%M') from $(git -C "$root" rev-parse --short HEAD). Each bundle was reprocessed from its own video, audio and input log twice, without and with \`--experiment $experiment\`."
+  echo "Generated $(date '+%Y-%m-%d %H:%M') from $(git -C "$root" rev-parse --short HEAD). Each bundle was reprocessed from its own video, audio and input log twice, with \`$setting\` off and on."
 } > "$index"
 
 for bundle in "${bundles[@]}"; do
@@ -71,8 +72,7 @@ for bundle in "${bundles[@]}"; do
   for variant in before after; do
     run="$work/$name-$variant.scrawl"
     args=(reprocess "$bundle" --out "$run")
-    [[ "$variant" == after ]] && args+=(--experiment "$experiment")
-    if ! SCRAWL_CONFIG="$config" "$scrawl" "${args[@]}" > "$work/$name-$variant.log" 2>&1; then
+    if ! SCRAWL_CONFIG="$work/$variant.json" "$scrawl" "${args[@]}" > "$work/$name-$variant.log" 2>&1; then
       echo "$name: $variant failed (see below)" >&2
       tail -5 "$work/$name-$variant.log" >&2
       continue 2
@@ -84,7 +84,7 @@ for bundle in "${bundles[@]}"; do
     if [[ "$variant" == before ]]; then
       sed "s|$run|$bundle|g" "$run/summary.md" > "$dest/$variant.md"
     else
-      SCRAWL_CONFIG="$config" "$scrawl" inspect "$base" --experiment "$experiment" | sed "s|$base|$bundle|g" > "$dest/$variant.md"
+      SCRAWL_CONFIG="$work/after.json" "$scrawl" inspect "$base" | sed "s|$base|$bundle|g" > "$dest/$variant.md"
     fi
     cp "$run/contact-sheet.png" "$dest/$variant-contact-sheet.png"
     rm -rf "$dest/$variant-frames"

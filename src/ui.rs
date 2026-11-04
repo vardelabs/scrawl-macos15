@@ -3008,7 +3008,7 @@ impl ScrawlCoordinator {
 
         // A capture that ends on a dev site goes to its project's session; work that out (reading
         // the browser tab, the port's process, the sessions) while the bundle is built.
-        let smart = crate::handoff::experiment(crate::routing::SMART_ROUTING);
+        let smart = crate::handoff::smart_routing();
         let screen = matches!(source, CaptureSource::Screen { .. });
         // A window capture is of that window's app, whatever is in front at the end.
         let front = screen
