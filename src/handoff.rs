@@ -709,6 +709,9 @@ pub struct Config {
     /// Says each dictation's words per minute in the pill (default on).
     #[serde(default)]
     pub dictation_wpm: Option<bool>,
+    /// Says the total words spoken in the pill after each dictation (default on).
+    #[serde(default)]
+    pub dictation_word_total: Option<bool>,
     /// Smart routing's settings (`routing::look`).
     #[serde(default)]
     pub routing: Option<RoutingConfig>,
@@ -981,6 +984,8 @@ pub struct DictationConfig {
     pub history: bool,
     /// Say each dictation's words per minute in the pill (`word_stats`).
     pub wpm: bool,
+    /// Say the total words spoken in the pill (`word_stats`).
+    pub word_total: bool,
 }
 
 /// `formatCommand` when it can run: an argv whose first entry is an absolute path, as the app
@@ -1004,6 +1009,7 @@ pub fn dictation() -> DictationConfig {
         notices: config.dictation_notices.unwrap_or(true),
         history: config.dictation_history.unwrap_or(true),
         wpm: config.dictation_wpm.unwrap_or(true),
+        word_total: config.dictation_word_total.unwrap_or(true),
     }
 }
 
