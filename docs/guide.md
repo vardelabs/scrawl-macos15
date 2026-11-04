@@ -170,7 +170,8 @@ granted and each on-demand sheet: `target/debug/scrawl-helper onboarding --rende
   (`⌥⇧S`) and Paste last capture (`⌥⇧V`, which can be turned off).
 - **Recording**: the microphone, with its input level, the transcriber (Apple Speech with its
   language, Hex while it runs, with its model and language, or Command when it's configured) and,
-  under Experimental, Video export.
+  under More, Transcribe while recording, Detailed summaries for agents, Smart routing and
+  Video export.
 - **Storage**: how long recordings are kept, how much space the captures take, and Show in Finder.
 - **Permissions**: the onboarding checklist, so a permission can be turned on later.
 - **Agents**: Install or Uninstall the `scrawl` command (see [Agents](#agents)), and the skill's
@@ -703,10 +704,12 @@ drive two things:
   "there" count only when they coincide with a change, because they are usually filler. Speech
   pauses never cut keyframes.
 
-Every engine's transcript loses its spoken fillers before it is used: "um", "uh" and their
-variants always, and "like" where commas mark it as an aside ("it's, like, nice" or a leading
-"Like,"). A dropped filler's full stop moves to the word before it, and a sentence that started
-with one starts at the next word. `"removeFillers": false` keeps the transcript as spoken.
+Every engine's transcript loses its spoken fillers before it is used: "um", "uh", "er" and
+"hmm" always, however drawn out ("ummm", "uhhh") or cut off ("uh-"), and "like" where commas mark
+it as an aside ("it's, like, nice" or a leading "Like,"). It also drops a "like" without commas
+where it can only be filler ("so like if you open it", "it's like really
+slow"); "I like it", "looks like rain" and "it's like a car" keep theirs. A dropped filler's full stop moves to the word before it, and a sentence that started
+with one starts at the next word. Stumbles go too: a stray lowercase letter that starts the next word or comes before a new phrase ("my f fastest", "like m a half", but not "the x height", "A and B" or "command k to open"), and a word or short phrase said twice in a row ("the the button", "it's a little it's a little awkward", but not "Testing, testing.", "very very" or "this and this and this"). `"removeFillers": false` keeps the transcript as spoken.
 
 ### Apple or Hex
 
@@ -859,13 +862,10 @@ client offline so no recording makes a network request.
 Run the installed Python directly rather than `uv run --script`: launched from Scrawl.app,
 `uv run` can stall on uv's cache lock until the timeout, which holds the capture for minutes.
 
-### Transcribing while recording (experiment)
+### Transcribing while recording
 
-```json
-{ "experiments": { "liveTranscribe": true } }
-```
-
-With this in `~/.config/scrawl/config.json`, a Mac recording transcribed by Apple Speech streams the
+With **Transcribe while recording** on in Settings › Recording (`"liveTranscribe": true` in
+`~/.config/scrawl/config.json`), a Mac recording transcribed by Apple Speech streams the
 microphone to `scrawl-helper transcribe-stream` as it records, so finishing only waits for the last
 words (tens of milliseconds) instead of transcribing the whole recording. The streamed samples are
 exactly the ones `audio.wav` holds, so word times are on the same clock. If the stream fails, the

@@ -660,6 +660,10 @@ pub struct View {
     pub lower_playback: bool,
     pub playback_level: u8,
     pub video_export: bool,
+    /// Optional features (`handoff::agent_context` and the rest), each off by default.
+    pub agent_context: bool,
+    pub smart_routing: bool,
+    pub live_transcribe: bool,
     pub tap_chooses: bool,
     pub crop_window_captures: bool,
     pub dictation: DictationView,
@@ -705,9 +709,16 @@ pub struct DictationView {
     pub words_captured: u64,
     /// Average words per minute over both, once anything is counted.
     pub wpm: Option<u64>,
+    /// The fastest dictation or recording long enough to count (`word_stats::MIN_FASTEST_WORDS`).
+    pub fastest_wpm: Option<u64>,
     /// Say each dictation's words per minute in the pill (`dictationWpm`).
     pub wpm_notice: bool,
+    /// Say the total words spoken in the pill (`dictationWordTotal`).
+    pub word_total_notice: bool,
     pub remove_fillers: bool,
+    /// Spoken edit commands and spoken quotation marks, each off by default.
+    pub spoken_commands: bool,
+    pub spoken_quotes: bool,
     pub words: Vec<String>,
     /// The `words` learned from edits, marked in the list.
     pub learned: Vec<String>,
@@ -1012,8 +1023,12 @@ fn dictation_view(
         words_dictated: stats.dictation.words,
         words_captured: stats.captures.words,
         wpm: stats.total().wpm(),
+        fastest_wpm: stats.fastest.and_then(|best| best.wpm()),
         wpm_notice: config.dictation_wpm.unwrap_or(true),
+        word_total_notice: config.dictation_word_total.unwrap_or(true),
         remove_fillers: config.remove_fillers.unwrap_or(true),
+        spoken_commands: config.spoken_commands.unwrap_or(false),
+        spoken_quotes: config.spoken_quotes.unwrap_or(false),
         words: dictionary.words,
         learned: dictionary.learned,
         replacements: dictionary
@@ -1099,7 +1114,8 @@ pub enum Action {
     /// A settings control: `launchAtLogin`, `autoSend`, `videoExport`, `lowerPlayback`,
     /// `tapChooses`, `cropWindowCaptures`, `dictation`, `dictationRestoreClipboard`,
     /// `dictationPill`, `dictationCodeFormatting`, `dictationFormatting`, `dictationLearn`,
-    /// `removeFillers` (bool), `dictationShortcut` (a chord), `microphone`
+    /// `removeFillers`, `spokenCommands`, `spokenQuotes`, `agentContext`, `smartRouting`,
+    /// `liveTranscribe` (bool), `dictationShortcut` (a chord), `microphone`
     /// ("default" or a device id), `transcriber` (an `Engine` name), `hexModel` (an id),
     /// `hexLanguage` (a code), `appleLocale` (a locale id or "auto"), `retention` (a preset id).
     /// ("default" or a device id), `transcriber` (an `Engine` name), `hexModel` (an id),
@@ -1458,8 +1474,9 @@ impl Panel {
             (
                 "autoSend" | "videoExport" | "lowerPlayback" | "tapChooses" | "cropWindowCaptures"
                 | "dictation" | "dictationRestoreClipboard" | "dictationPill"
-                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory" | "dictationWpm"
-                | "removeFillers",
+                | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory" | "dictationWpm" | "dictationWordTotal"
+                | "removeFillers" | "spokenCommands" | "spokenQuotes" | "agentContext" | "smartRouting"
+                | "liveTranscribe",
                 serde_json::Value::Bool(on),
             ) => {
                 write(key, (*on).into())
@@ -1646,6 +1663,9 @@ impl Panel {
                 command,
             },
             video_export: config.video_export.unwrap_or(false),
+            agent_context: config.agent_context.unwrap_or(false),
+            smart_routing: config.smart_routing.unwrap_or(false),
+            live_transcribe: config.live_transcribe.unwrap_or(false),
             tap_chooses: config.tap_chooses.unwrap_or(false),
             crop_window_captures: config.crop_window_captures.unwrap_or(true),
             dictation: dictation_view(&config, &host.config_path(), self.dictionary_error.as_deref()),

@@ -1,4 +1,4 @@
-//! What's under a click or a mark, from the Accessibility tree (the `agentContext` experiment):
+//! What's under a click or a mark, from the Accessibility tree (`agentContext`):
 //! the element's role, label, identifier and the document its window shows. Lookups run on one
 //! background thread with a short messaging timeout, so a hung app never holds up input. Secure
 //! text fields are never read, and text is cut short. Lookups for a click or mark never read input
@@ -35,6 +35,11 @@ unsafe extern "C" {
         out: *mut CFTypeRef,
     ) -> i32;
     fn AXUIElementSetMessagingTimeout(element: AxElement, seconds: f32) -> i32;
+    fn AXUIElementSetAttributeValue(
+        element: AxElement,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> i32;
     fn AXUIElementIsAttributeSettable(
         element: AxElement,
         attribute: CFStringRef,
@@ -99,7 +104,17 @@ pub fn focused_takes_text() -> Option<bool> {
     unsafe { AXUIElementSetMessagingTimeout(system.0, MESSAGE_TIMEOUT_S) };
     let element = match attribute_status(system.0, "AXFocusedUIElement") {
         Ok(element) => element,
-        Err(AX_ERROR_NO_VALUE) => return Some(false),
+        // An Electron app whose tree is still off says nothing is focused over a real field:
+        // ask it to build the tree and look once more.
+        Err(AX_ERROR_NO_VALUE) => {
+            wake_frontmost_tree();
+            std::thread::sleep(WAKE_SETTLE);
+            match attribute_status(system.0, "AXFocusedUIElement") {
+                Ok(element) => element,
+                Err(AX_ERROR_NO_VALUE) => return Some(false),
+                Err(_) => return None,
+            }
+        }
         Err(_) => return None,
     };
     let role = string_attribute(element.0, "AXRole")?;
@@ -108,6 +123,26 @@ pub fn focused_takes_text() -> Option<bool> {
     let text = is_input(&role, &subrole)
         || attribute(element.0, "AXSelectedTextRange").is_some() && settable(element.0, "AXValue");
     text.then_some(true)
+}
+
+/// How long an app gets to build its tree before focus is asked again.
+#[cfg(target_os = "macos")]
+const WAKE_SETTLE: Duration = Duration::from_millis(150);
+
+/// Electron and Chromium apps (Claude, Slack, VS Code, Discord) build their Accessibility tree
+/// only once something asks with `AXManualAccessibility`; until then `AXFocusedUIElement` says
+/// nothing is focused although a text field has focus. Setting it on the frontmost app is
+/// harmless where an app doesn't know the attribute. Blocking, under the messaging timeout.
+#[cfg(target_os = "macos")]
+pub fn wake_frontmost_tree() {
+    let Some((pid, _, _)) = crate::capture::frontmost_app_info() else {
+        return;
+    };
+    let app = Owned(unsafe { AXUIElementCreateApplication(pid) });
+    unsafe { AXUIElementSetMessagingTimeout(app.0, MESSAGE_TIMEOUT_S) };
+    let key = CFString::from_static_string("AXManualAccessibility");
+    let yes = core_foundation::boolean::CFBoolean::true_value();
+    unsafe { AXUIElementSetAttributeValue(app.0, key.as_concrete_TypeRef(), yes.as_CFTypeRef()) };
 }
 
 #[cfg(target_os = "macos")]

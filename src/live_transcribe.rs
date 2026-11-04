@@ -1,4 +1,4 @@
-//! Transcribing while recording (`"experiments": {"liveTranscribe": true}`, Apple Speech only).
+//! Transcribing while recording (`liveTranscribe`, Apple Speech only).
 //!
 //! A long-lived `scrawl-helper transcribe-stream` gets the microphone's 16 kHz samples, quantized
 //! exactly as `audio.wav` will store them, about every 160 ms, and keeps SpeechAnalyzer's
@@ -30,7 +30,7 @@ const TAIL_TIMEOUT: Duration = Duration::from_secs(6);
 /// SpeechAnalyzer, so only on macOS (Windows transcribes after the recording).
 pub fn wanted() -> bool {
     cfg!(target_os = "macos")
-        && crate::handoff::experiment(crate::handoff::LIVE_TRANSCRIBE)
+        && crate::handoff::live_transcribe()
         && crate::transcribe::Engine::preferred() == crate::transcribe::Engine::Apple
 }
 

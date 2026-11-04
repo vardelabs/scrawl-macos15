@@ -886,7 +886,7 @@ pub struct SharedCaptureTelemetry {
     mouse_live: AtomicBool,
     last_shortcut_ms: AtomicU64,
     drag_start: Mutex<Option<(u64, f32, f32, Option<String>, TargetFrame)>>,
-    /// The `agentContext` experiment was on when this capture started: clicks and strokes are
+    /// `agentContext` was on when this capture started: clicks and strokes are
     /// looked up in the Accessibility tree (`crate::ax`, macOS only).
     agent_context: AtomicBool,
     /// A ⇧-press inside the target: when, where (global points) and on which frame.
@@ -1090,7 +1090,7 @@ impl SharedCaptureTelemetry {
             .clear();
         self.shift_held.store(false, Ordering::Release);
         self.window_log_request.store(false, Ordering::Release);
-        let agent_context = crate::handoff::experiment(crate::handoff::AGENT_CONTEXT);
+        let agent_context = crate::handoff::agent_context();
         self.agent_context.store(agent_context, Ordering::Release);
         if agent_context {
             crate::ax::Prober::shared().begin();

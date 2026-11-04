@@ -1,14 +1,15 @@
 //! Drops spoken fillers from a transcript, as dictation apps do, so pasted quotes read as
-//! written text (`removeFillers`, default on). Hesitations ("um", "uh") always go. "Like" goes
-//! only where the transcriber's commas mark it as an aside ("it's, like, nice" or a leading
-//! "Like,"), because "it looks like rain" needs it.
+//! written text (`removeFillers`, default on). Hesitations ("um", "uh", drawn out as "ummm" or
+//! cut off as "uh-") always go. "Like" goes where the transcriber's commas mark it as an aside
+//! ("it's, like, nice" or a leading "Like,"), because "it looks like rain" needs it, and without
+//! commas where it can only be filler (`bare_like`). Stumbles go too: a stray letter before the
+//! word it started ("my f fastest"), and a word or short phrase said twice ("the the button",
+//! "it's a little it's a little awkward"), which transcribers write down as heard.
 
 use crate::model::{TranscriptData, TranscriptSegment, WordTiming};
 
-/// Matched as spoken, lowercase or capitalized, so "ER" and "UM" as written words survive.
-/// "mm" is left out because it is also millimetres.
-const HESITATIONS: &[&str] = &["um", "umm", "ummm", "uh", "uhh", "uhm", "er", "erm", "hmm"];
-const TRAILING: &[char] = &[',', '.', '?', '!', ';', ':', '…'];
+/// A cut-off hesitation ("uh-", "um—") keeps its dash, so dashes trail like punctuation.
+const TRAILING: &[char] = &[',', '.', '?', '!', ';', ':', '…', '-', '–', '—'];
 const SENTENCE_END: &[char] = &['.', '?', '!', '…'];
 /// How close a segment's first word must start to it to count as the clause boundary
 /// `keyframes` looks for.
@@ -122,10 +123,16 @@ fn clean_tokens(tokens: &[&str]) -> Vec<Option<String>> {
             .find(|&k| out[k].as_deref().is_some_and(|t| !t.is_empty()));
         let previous = last_kept.and_then(|k| out[k].as_deref());
         let sentence_start = previous.map_or(true, |p| p.ends_with(SENTENCE_END));
-        let aside_like = matches!(word, "like" | "Like")
+        let is_like = matches!(word, "like" | "Like");
+        let aside_like = is_like
             && trail.starts_with(',')
             && (sentence_start || previous.is_some_and(|p| p.ends_with(',')));
-        if !(aside_like || is_hesitation(word)) {
+        let bare = is_like
+            && bare_like(
+                (!sentence_start).then_some(previous).flatten(),
+                tokens.get(end).copied(),
+            );
+        if !(aside_like || bare || is_hesitation(word)) {
             if std::mem::take(&mut capitalize_next) {
                 out[i] = Some(capitalize(tokens[i]));
             }
@@ -139,6 +146,7 @@ fn clean_tokens(tokens: &[&str]) -> Vec<Option<String>> {
         }
         i = end;
     }
+    drop_stumbles(&mut out);
     out
 }
 
@@ -154,10 +162,291 @@ fn hand_back(kept: &mut String, trail: &str) {
     }
 }
 
+/// "um", "uh", "uhm", "er", "erm" and "hmm", however drawn out ("ummm", "uhhh", "hmmmm"),
+/// lowercase or capitalized, so "ER" and "UM" as written words survive. "mm" is left out because
+/// it is also millimetres, and "uh-huh" and "mhm" because they answer yes.
 fn is_hesitation(word: &str) -> bool {
-    HESITATIONS
-        .iter()
-        .any(|filler| word == *filler || word == capitalize(filler))
+    let lower = word.to_lowercase();
+    if word != lower && word != capitalize(&lower) {
+        return false;
+    }
+    let runs = runs(&lower);
+    let letters: String = runs.iter().map(|(c, _)| *c).collect();
+    match letters.as_str() {
+        "uh" | "um" | "uhm" | "hm" => true,
+        // "er" and "erm", but not "err", which is a word.
+        "er" | "erm" => runs[1].1 == 1,
+        _ => false,
+    }
+}
+
+/// Each letter with how many times it repeats in a row: "ummm" is `[('u', 1), ('m', 3)]`.
+fn runs(word: &str) -> Vec<(char, usize)> {
+    let mut runs: Vec<(char, usize)> = Vec::new();
+    for c in word.chars() {
+        match runs.last_mut() {
+            Some((last, n)) if *last == c => *n += 1,
+            _ => runs.push((c, 1)),
+        }
+    }
+    runs
+}
+
+/// Words that join on a filler "like" ("and like then", "so like if").
+const DISCOURSE: &[&str] = &[
+    "and", "but", "so", "or", "yeah", "well", "okay", "ok", "oh", "because", "cause",
+];
+/// After those, "like" is a verb or a preposition: "and like it", "but like the old one".
+const OBJECTS: &[&str] = &[
+    "it",
+    "them",
+    "him",
+    "her",
+    "me",
+    "you",
+    "us",
+    "that",
+    "this",
+    "these",
+    "those",
+    "the",
+    "a",
+    "an",
+    "to",
+    "my",
+    "your",
+    "his",
+    "their",
+    "our",
+    "its",
+    "what",
+    "how",
+    "i",
+    "we",
+    "they",
+    "he",
+    "she",
+    "some",
+    "any",
+    "all",
+    "each",
+    "every",
+    "one",
+    "something",
+    "anything",
+];
+/// "it's like really slow", but "it's like a car" compares.
+const COPULAS: &[&str] = &[
+    "is", "was", "are", "were", "be", "been", "it's", "that's", "he's", "she's", "they're",
+    "we're", "you're", "i'm", "there's",
+];
+const INTENSIFIERS: &[&str] = &[
+    "really",
+    "very",
+    "so",
+    "super",
+    "totally",
+    "literally",
+    "actually",
+    "kind",
+    "kinda",
+    "sort",
+    "sorta",
+    "basically",
+    "just",
+    "pretty",
+    "completely",
+    "way",
+    "too",
+    "almost",
+    "honestly",
+    "not",
+    "always",
+    "never",
+];
+/// What a sentence-opening "Like" leads into when it is filler ("Like if you click it"), not a
+/// comparison ("Like the old one") or "Like I said".
+const OPENED: &[&str] = &[
+    "if",
+    "when",
+    "so",
+    "maybe",
+    "honestly",
+    "basically",
+    "literally",
+    "really",
+    "right",
+    "yeah",
+    "okay",
+    "ok",
+    "then",
+    "there's",
+    "it's",
+    "this",
+    "is",
+    "can",
+    "could",
+    "should",
+    "why",
+];
+
+/// Whether a "like" with no comma around it is filler: doubled ("like like"), joined on with
+/// "and", "so" or "but" before anything but an object, between a copula and an intensifier, or
+/// opening a sentence before a clause. `previous` is the kept word before it, `None` at a
+/// sentence start; `next` the token after it.
+fn bare_like(previous: Option<&str>, next: Option<&str>) -> bool {
+    let bare = |token: &str| {
+        token
+            .trim_end_matches(TRAILING)
+            .replace('’', "'")
+            .to_lowercase()
+    };
+    let Some(next) = next.map(bare).filter(|next| !next.is_empty()) else {
+        return false;
+    };
+    if next == "like"
+        || is_hesitation(&next)
+            && previous.is_none_or(|p| DISCOURSE.contains(&bare(p).as_str()))
+    {
+        return true;
+    }
+    let Some(raw) = previous else {
+        return OPENED.contains(&next.as_str());
+    };
+    let previous = bare(raw);
+    (DISCOURSE.contains(&previous.as_str()) && !OBJECTS.contains(&next.as_str()))
+        || (COPULAS.contains(&previous.as_str()) && INTENSIFIERS.contains(&next.as_str()))
+}
+
+/// Said twice on purpose ("very very", "bye bye", "twenty twenty six").
+const MEANT_TWICE: &[&str] = &[
+    "very", "really", "so", "no", "yes", "yeah", "yep", "ok", "okay", "bye", "ha", "hey", "now",
+    "there", "far", "many", "much", "more", "long", "knock", "blah", "twenty", "thirty", "forty",
+    "fifty", "sixty", "seventy", "eighty", "ninety",
+];
+/// Can end one clause and open the next ("when you open it it does", "told you you can", "had
+/// had"), so a pair of these counts as a stumble only where a sentence starts.
+const CLAUSE_EDGE: &[&str] = &["it", "you", "that", "her", "had"];
+/// Letters that are usually the thing being talked about ("set x to 5", "n words").
+const NAMED_LETTERS: &[&str] = &["a", "i", "x", "y", "z", "n"];
+/// A lone letter after these is being named ("the f key", "plan b", "command c copies").
+const NAMES_A_LETTER: &[&str] = &[
+    "the", "a", "an", "this", "that", "letter", "option", "plan", "press", "command", "cmd",
+    "control", "ctrl", "shift", "alt", "type", "vitamin",
+];
+/// A lone letter before these was abandoned ("go up like m a half"), since a letter being named
+/// runs on into what it names ("column f has", "hit k to").
+const OPENS_A_PHRASE: &[&str] = &["a", "an", "the", "it", "it's", "you", "we", "they", "this", "that"];
+/// "this and this and this" lists things; it doesn't stumble.
+const LISTING: &[&str] = &["and", "or"];
+const LONGEST_REPEATED_PHRASE: usize = 4;
+
+/// Drops the first copy of anything said twice, and stray letters, among the tokens still kept.
+/// Runs after the fillers go, so "the um the button" is a repeat too.
+fn drop_stumbles(out: &mut [Option<String>]) {
+    let mut kept: Vec<usize> = (0..out.len())
+        .filter(|&i| out[i].as_deref().is_some_and(|token| !token.is_empty()))
+        .collect();
+    let mut tokens: Vec<String> = kept.iter().filter_map(|&i| out[i].clone()).collect();
+    let mut at = 0;
+    while at < tokens.len() {
+        let span = stumble_at(&tokens, at);
+        if span == 0 {
+            at += 1;
+            continue;
+        }
+        if tokens[at].starts_with(char::is_uppercase) && at + span < tokens.len() {
+            tokens[at + span] = capitalize(&tokens[at + span]);
+            out[kept[at + span]] = Some(tokens[at + span].clone());
+        }
+        for i in kept.drain(at..at + span) {
+            out[i] = None;
+        }
+        tokens.drain(at..at + span);
+        // What's left can now repeat what came before it: "it's t it's".
+        at = at.saturating_sub(2 * LONGEST_REPEATED_PHRASE);
+    }
+}
+
+/// How many tokens from `at` are a stumble: the first copy of a repeat or a stray letter.
+fn stumble_at(tokens: &[String], at: usize) -> usize {
+    if is_stray_letter(tokens, at) || is_repeated_word(tokens, at) {
+        return 1;
+    }
+    (2..=LONGEST_REPEATED_PHRASE)
+        .rev()
+        .find(|&len| is_repeated_phrase(tokens, at, len))
+        .unwrap_or(0)
+}
+
+fn spoken_form(token: &str) -> String {
+    split_trailing(token).0.replace('’', "'").to_lowercase()
+}
+
+/// Nothing but a cut-off dash after a word, so a pause the transcriber marked ("Testing,
+/// testing." or "that I wanted. I wanted this") is not a stumble.
+fn runs_on(token: &str) -> bool {
+    split_trailing(token).1.chars().all(|c| matches!(c, '-' | '–' | '—'))
+}
+
+fn is_lone_letter(token: &str) -> bool {
+    token.len() == 1 && token.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Capital letters are written on purpose ("the X", "A and B"), and two letters in a row spell
+/// something ("x y z", "b c").
+fn is_stray_letter(tokens: &[String], at: usize) -> bool {
+    let token = tokens[at].as_str();
+    if !is_lone_letter(token) || !token.chars().all(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    let Some(next) = tokens.get(at + 1) else {
+        return false;
+    };
+    let previous = at.checked_sub(1).map(|i| tokens[i].as_str());
+    let spells = |neighbor: &str| is_lone_letter(neighbor) && !matches!(neighbor, "a" | "i" | "A" | "I");
+    let heard_next = spoken_form(next);
+    !NAMED_LETTERS.contains(&token)
+        && (heard_next.starts_with(token) || OPENS_A_PHRASE.contains(&heard_next.as_str()))
+        && !spells(next)
+        && !previous.is_some_and(|previous| {
+            spells(previous) || NAMES_A_LETTER.contains(&spoken_form(previous).as_str())
+        })
+}
+
+fn is_repeated_word(tokens: &[String], at: usize) -> bool {
+    let Some(next) = tokens.get(at + 1) else {
+        return false;
+    };
+    let word = spoken_form(&tokens[at]);
+    if !runs_on(&tokens[at]) || !is_plain_word(&word) {
+        return false;
+    }
+    if word == "i" && spoken_form(next).starts_with("i'") {
+        return true;
+    }
+    let sentence_start = at == 0 || tokens[at - 1].ends_with(SENTENCE_END);
+    word == spoken_form(next)
+        && !MEANT_TWICE.contains(&word.as_str())
+        && (sentence_start || !CLAUSE_EDGE.contains(&word.as_str()))
+}
+
+fn is_repeated_phrase(tokens: &[String], at: usize, len: usize) -> bool {
+    let Some(pair) = tokens.get(at..at + 2 * len) else {
+        return false;
+    };
+    let (first, second) = pair.split_at(len);
+    let spoken: Vec<String> = first.iter().map(|token| spoken_form(token)).collect();
+    first.iter().all(|token| runs_on(token))
+        && spoken.iter().all(|word| is_plain_word(word))
+        && spoken.iter().zip(second).all(|(word, token)| *word == spoken_form(token))
+        && !spoken.iter().any(|word| LISTING.contains(&word.as_str()))
+        && !spoken.iter().all(|word| MEANT_TWICE.contains(&word.as_str()))
+}
+
+/// Numbers and paths repeat on purpose ("10 20 10 20", "src/a src/a").
+fn is_plain_word(spoken: &str) -> bool {
+    !spoken.is_empty() && spoken.chars().all(|c| c.is_alphabetic() || c == '\'')
 }
 
 fn is_punctuation(token: &str) -> bool {
@@ -197,6 +486,208 @@ fn join(kept: Vec<Option<String>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drawn_out_and_cut_off_hesitations_go() {
+        assert_eq!(
+            clean_text("so uhhh we click ummmm here"),
+            "so we click here"
+        );
+        assert_eq!(clean_text("Hmmm, that works"), "That works");
+        assert_eq!(
+            clean_text("it's uh- the button um— there"),
+            "it's the button there"
+        );
+        assert_eq!(clean_text("Erm, close it"), "Close it");
+    }
+
+    #[test]
+    fn answers_and_words_that_look_like_hesitations_stay() {
+        assert_eq!(
+            clean_text("uh-huh, mhm, that's right"),
+            "uh-huh, mhm, that's right"
+        );
+        assert_eq!(clean_text("to err is human"), "to err is human");
+        assert_eq!(clean_text("the UMM build"), "the UMM build");
+        assert_eq!(
+            clean_text("a well-known — but slow — app"),
+            "a well-known — but slow — app"
+        );
+    }
+
+    #[test]
+    fn bare_like_goes_where_it_can_only_be_filler() {
+        assert_eq!(
+            clean_text("and like then we click it"),
+            "and then we click it"
+        );
+        assert_eq!(clean_text("so like if you open it"), "so if you open it");
+        assert_eq!(clean_text("it's like really slow"), "it's really slow");
+        assert_eq!(clean_text("it was like super laggy"), "it was super laggy");
+        assert_eq!(clean_text("Like if you click it"), "If you click it");
+        assert_eq!(
+            clean_text("Done. Like when it loads"),
+            "Done. When it loads"
+        );
+        assert_eq!(clean_text("it's like like broken"), "it's like broken");
+        assert_eq!(clean_text("so um like then it loads"), "so then it loads");
+        assert_eq!(clean_text("Like uh this one"), "This one");
+    }
+
+    #[test]
+    fn bare_like_reads_the_word_before_it_however_it_was_written() {
+        assert_eq!(
+            clean_text("Um so like if you open it, it's like really slow, I like it."),
+            "So if you open it, it's really slow, I like it."
+        );
+        assert_eq!(clean_text("So like if you open it"), "So if you open it");
+        assert_eq!(clean_text("It's like really slow"), "It's really slow");
+        assert_eq!(clean_text("It’s like really slow"), "It’s really slow");
+        assert_eq!(clean_text("Yeah, like when it loads"), "Yeah, when it loads");
+        assert_eq!(clean_text("So, um like then it loads"), "So, then it loads");
+    }
+
+    #[test]
+    fn bare_like_stays_as_a_verb_or_comparison() {
+        for text in [
+            "it looks like rain",
+            "I like it",
+            "I'd like to see that",
+            "and like it a lot",
+            "but like the old one",
+            "it's like a car",
+            "Like I said, it works",
+            "Like the old one",
+            "feels like it's broken",
+            "something like this",
+            "I like really fast cars",
+            "what is it like",
+        ] {
+            assert_eq!(clean_text(text), text);
+        }
+        assert_eq!(clean_text("I like uh pizza"), "I like pizza");
+        assert_eq!(clean_text("so um like the button"), "so like the button");
+    }
+
+    #[test]
+    fn a_stray_letter_goes_with_the_word_it_started() {
+        assert_eq!(clean_text("what my f fastest words"), "what my fastest words");
+        assert_eq!(clean_text("obviously g good real estate"), "obviously good real estate");
+        assert_eq!(clean_text("you see it's t it's listening"), "you see it's listening");
+        assert_eq!(clean_text("go up like m a half"), "go up like a half");
+        assert_eq!(clean_text("the colony and s you know"), "the colony and you know");
+    }
+
+    #[test]
+    fn letters_being_named_stay() {
+        for text in [
+            "tell, but the X looks off",
+            "that clicking X doesn't delete",
+            "A and B. Now",
+            "centered with the x height",
+            "set x to 5",
+            "take away the w key",
+            "plan b works",
+            "a b c d",
+            "Extra F like extra letters.",
+            "and then f",
+            "hit command k to open it",
+            "press control c to stop",
+            "the shift d shortcut works",
+            "plug in the type c cable",
+            "take vitamin d every day",
+            "vitamin d daily",
+            "hit command c copies it",
+            "column f has it",
+            "written in c or rust",
+            "a t shirt",
+            "get a t shirt",
+            "my t shirt",
+        ] {
+            assert_eq!(clean_text(text), text);
+        }
+    }
+
+    #[test]
+    fn a_word_said_twice_goes_once() {
+        assert_eq!(clean_text("rather than the the quick pop"), "rather than the quick pop");
+        assert_eq!(clean_text("It it does show"), "It does show");
+        assert_eq!(clean_text("looks like it's I I I'm not"), "looks like it's I'm not");
+        assert_eq!(clean_text("we're we're using it"), "we're using it");
+        assert_eq!(clean_text("the the the button"), "the button");
+        assert_eq!(clean_text("the um the button"), "the button");
+        assert_eq!(clean_text("with- with the button"), "with the button");
+        assert_eq!(clean_text("Why why can't we"), "Why can't we");
+    }
+
+    #[test]
+    fn words_meant_twice_stay() {
+        for text in [
+            "Testing, testing.",
+            "aligned like this. This is how",
+            "October twenty twenty six",
+            "very very slow",
+            "bye bye",
+            "no no no",
+            "no no no no",
+            "very very very very",
+            "the code is 10 20 10 20",
+            "open src/a src/b src/a src/b",
+            "when you open it it does that",
+            "I told you you can",
+            "she had had enough",
+            "I think that that works",
+            "you open it it's really slow",
+        ] {
+            assert_eq!(clean_text(text), text);
+        }
+    }
+
+    #[test]
+    fn a_phrase_said_twice_goes_once() {
+        assert_eq!(
+            clean_text("it's a little it's a little awkward"),
+            "it's a little awkward"
+        );
+        assert_eq!(clean_text("when I'm when I'm hovering"), "when I'm hovering");
+        assert_eq!(clean_text("I could do I could do this"), "I could do this");
+        assert_eq!(clean_text("You have you have the problem"), "You have the problem");
+    }
+
+    #[test]
+    fn phrases_that_list_or_cross_a_sentence_stay() {
+        for text in [
+            "got this and this and this and this",
+            "again and again and again",
+            "that I wanted. I wanted this",
+            "step by step",
+        ] {
+            assert_eq!(clean_text(text), text);
+        }
+    }
+
+    #[test]
+    fn a_repeat_keeps_its_words_times_in_step_with_the_text() {
+        let mut transcript = TranscriptData {
+            text: "The the button".into(),
+            segments: vec![segment(0, 900, "The the button")],
+            words: vec![word(0, "The"), word(200, "the"), word(400, "button")],
+            ..Default::default()
+        };
+        clean(&mut transcript);
+        assert_eq!(transcript.text, "The button");
+        assert_eq!(transcript.words, vec![word(200, "The"), word(400, "button")]);
+    }
+
+    #[test]
+    fn long_runs_of_a_repeat_stay_quick() {
+        let run = "the ".repeat(20_000);
+        let plain: String = (0..60_000).map(|n| format!("word{n} ")).collect();
+        let started = std::time::Instant::now();
+        assert_eq!(clean_text(&run), "the");
+        assert_eq!(clean_text(&plain), plain);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     fn word(t0: u64, text: &str) -> WordTiming {
         WordTiming {
@@ -244,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn like_goes_only_as_a_comma_aside() {
+    fn like_goes_as_a_comma_aside() {
         assert_eq!(
             clean_text("Like, if you click it again"),
             "If you click it again"
@@ -254,7 +745,6 @@ mod tests {
             clean_text("things like, say, buttons"),
             "things like, say, buttons"
         );
-        assert_eq!(clean_text("Like if you click it"), "Like if you click it");
     }
 
     #[test]

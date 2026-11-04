@@ -2064,8 +2064,8 @@ mod tests {
             .filter(|p| p[..3] != [20, 20, 20] && !(p[0] > p[1] && p[0] > p[2]))
             .count();
         assert_eq!(foreign, 0, "pixels that are neither backdrop nor ink");
-        // Tests run with experiments off, so also check the images never depend on agentContext.
-        assert!(!include_str!("render.rs").contains(concat!("handoff::", "AGENT_CONTEXT")));
+        // Tests run with optional features off, so also check the images never depend on agentContext.
+        assert!(!include_str!("render.rs").contains(concat!("handoff::", "agent_context")));
     }
 
     /// The box of pixels in `frame` that differ from `base`, as `[x0, y0, x1, y1]` inclusive.

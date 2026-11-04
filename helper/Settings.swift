@@ -157,8 +157,12 @@ struct SettingsDictation: Decodable, Equatable {
   var wordsDictated = 0
   var wordsCaptured = 0
   var wpm: Int?
+  var fastestWpm: Int?
   var wpmNotice = true
+  var wordTotalNotice = true
   var removeFillers = true
+  var spokenCommands = false
+  var spokenQuotes = false
   var words: [String] = []
   var learned: [String] = []
   var replacements: [SettingsReplacement] = []
@@ -179,6 +183,9 @@ struct SettingsState: Decodable, Equatable {
   var lowerPlayback = true
   var playbackLevel = 0
   var videoExport = false
+  var agentContext = false
+  var smartRouting = false
+  var liveTranscribe = false
   var tapChooses = false
   var cropWindowCaptures = true
   var dictation = SettingsDictation()
@@ -1270,8 +1277,18 @@ struct SettingsView: View {
             .foregroundStyle(SettingsTheme(scheme).secondary)
         }
         SettingsSeparator()
+        SettingsRow(title: "Fastest paragraph") {
+          Text(d.fastestWpm.map { "\($0) WPM" } ?? "Not yet measured")
+            .font(.system(size: 14).monospacedDigit())
+            .foregroundStyle(SettingsTheme(scheme).secondary)
+        }
+        SettingsSeparator()
         SettingsRow(title: "Show the speed after each dictation") {
           SettingsSwitch(on: d.wpmNotice) { model.set("dictationWpm", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Show total words after each dictation") {
+          SettingsSwitch(on: d.wordTotalNotice) { model.set("dictationWordTotal", $0) }
         }
       }
       SettingsCaption(text: speakingCaption(d))
@@ -1283,6 +1300,14 @@ struct SettingsView: View {
         SettingsSeparator()
         SettingsRow(title: "Remove filler words") {
           SettingsSwitch(on: d.removeFillers) { model.set("removeFillers", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Act on spoken commands") {
+          SettingsSwitch(on: d.spokenCommands) { model.set("spokenCommands", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Write spoken quotation marks") {
+          SettingsSwitch(on: d.spokenQuotes) { model.set("spokenQuotes", $0) }
         }
         SettingsSeparator()
         SettingsRow(title: "Format code and filenames") {
@@ -1379,7 +1404,7 @@ struct SettingsView: View {
     let counted = d.wordsDictated + d.wordsCaptured == 0
       ? "Counts the words you dictate and say in recordings."
       : "\(d.wordsDictated.formatted()) dictated and \(d.wordsCaptured.formatted()) said in recordings."
-    return counted + " Speed counts the time you spend talking: a pause to think counts as one second, however long it is."
+    return counted + " Speed counts the time you spend talking: a pause to think counts as one second, however long it is. Fastest paragraph needs 50 words or more."
   }
 
   /// The Pasting group's caption; the formatter's line only when it can't run, since the switch
@@ -1481,13 +1506,30 @@ struct SettingsView: View {
       if t.engine == "apple", let line = t.speech?.line {
         SettingsCaption(text: line)
       }
-      SettingsHeader("Experimental")
+      SettingsHeader("More")
       SettingsGroup {
+        SettingsRow(title: "Transcribe while recording", enabled: t.engine == "apple") {
+          SettingsSwitch(on: state.liveTranscribe && t.engine == "apple", enabled: t.engine == "apple") {
+            model.set("liveTranscribe", $0)
+          }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Detailed summaries for agents") {
+          SettingsSwitch(on: state.agentContext) { model.set("agentContext", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Smart routing") {
+          SettingsSwitch(on: state.smartRouting) { model.set("smartRouting", $0) }
+        }
+        SettingsSeparator()
         SettingsRow(title: "Video export") {
           SettingsSwitch(on: state.videoExport) { model.set("videoExport", $0) }
         }
       }
-      SettingsCaption(text: "Adds Export Last Capture as Video… to the menu.")
+      SettingsCaption(text: "Transcribing while recording (Apple Speech only) finishes sooner after you stop. "
+        + "Detailed summaries add clicks, marks and window changes. "
+        + "Smart routing weighs more clues to pick the agent session. "
+        + "Video export adds Export Last Capture as Video… to the menu.")
     }
     .animation(SettingsMotion.state, value: mic)
   }
@@ -1998,6 +2040,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
     dictating.dictation.wordsDictated = 12_480
     dictating.dictation.wordsCaptured = 3_215
     dictating.dictation.wpm = 148
+    dictating.dictation.fastestWpm = 186
     dictating.dictation.replacements = [
       SettingsReplacement(heard: "feris", write: "Ferris"),
       SettingsReplacement(heard: "var de labs", write: "Varde Labs"),
@@ -2030,7 +2073,10 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("recording-mic-missing", .recording, micMissing, []),
       ("recording-mic-not-allowed", .recording, micNotAllowed, []),
       ("recording-downloading", .recording, downloading, []),
+      ("recording-more", .recording, base, []),
+      ("recording-more-hex", .recording, hex, []),
       ("dictation", .dictation, dictating, []),
+      ("dictation-pasting", .dictation, dictating, []),
       ("dictation-empty", .dictation, base, []),
       ("dictation-replacements", .dictation, replacementsOnly, []),
       ("dictation-broken", .dictation, dictionaryBroken, []),
@@ -2050,6 +2096,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
       ("about", .about, base, []),
       ("about-dev", .about, noUpdates, []),
     ]
+    let belowTheWindow: [String: CGFloat] = ["recording-more": 340, "recording-more-hex": 340, "dictation-pasting": 430]
     var index = 0
     for scheme in [ColorScheme.dark, .light] {
       for (name, pane, state, live) in samples {
@@ -2062,7 +2109,7 @@ final class SettingsWindow: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let editing = edits[name] ?? (name == "dictation-opened" ? .word("Orbit") : nil)
         model.editing = editing
         model.highlight = name == "dictation-opened" ? DictionaryRows.word("Orbit") : nil
-        model.renderScroll = editing == nil ? 0 : 560
+        model.renderScroll = belowTheWindow[name] ?? (editing == nil ? 0 : 560)
         model.liveModifiers = live
         model.meter.level = 0.44
         let view = SettingsView(model: model)

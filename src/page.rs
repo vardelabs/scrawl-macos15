@@ -1,4 +1,4 @@
-//! What a dev page saw during a capture (the `agentContext` experiment): `sdk.js` on a loopback
+//! What a dev page saw during a capture (`agentContext`): `sdk.js` on a loopback
 //! page posts the element and component under clicks and ⇧ marks, `<video>` seeks and play/pause,
 //! console errors and failed requests to `/web/context`. The app keeps the last few minutes per
 //! tab; when a capture finishes, `apply` names its clicks and strokes from them and adds the rest

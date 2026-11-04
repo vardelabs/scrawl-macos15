@@ -1,4 +1,4 @@
-//! The `agentContext` experiment's text: each keyframe's speech broken up by what happened while
+//! The `agentContext` summary text: each keyframe's speech broken up by what happened while
 //! it was said (marks, clicks, drags, shortcuts, windows opening and closing, app events), so the
 //! agent reads "this part" next to the mark drawn as it was said. Marks sharing a keyframe are
 //! numbered ①②③ in drawing order (the images show only the ink; `scrawl zoom --mark` and
@@ -1184,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_uses_these_lines_only_with_the_experiment() {
+    fn the_summary_uses_these_lines_only_with_agent_context() {
         let mut b = bundle(
             words(&[(500, "Look"), (800, "here.")]),
             vec![keyframe(1, 1_000, KeyframeReason::Click, "Look here.")],
