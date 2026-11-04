@@ -35,9 +35,11 @@ import wave
 
 DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 MODEL_NAME = os.environ.get("SCRAWL_PARAKEET_MODEL", DEFAULT_MODEL)
-# Long recordings are decoded in windows so memory stays flat; the overlap keeps words whole.
-CHUNK_SECONDS = 120.0
-OVERLAP_SECONDS = 15.0
+# One pass over a long recording can drop whole sentences that the same model hears in a shorter
+# window (a 99 s capture kept 100 of 192 words), so decode in windows; the overlap keeps words
+# whole.
+CHUNK_SECONDS = 30.0
+OVERLAP_SECONDS = 5.0
 
 # Scrawl.app runs this without a shell PATH, and parakeet-mlx decodes audio by finding ffmpeg
 # on it; Homebrew's prefixes are where a Mac has ffmpeg.
