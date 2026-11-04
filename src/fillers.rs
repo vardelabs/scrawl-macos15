@@ -329,8 +329,14 @@ const MEANT_TWICE: &[&str] = &[
 const CLAUSE_EDGE: &[&str] = &["it", "you", "that", "her", "had"];
 /// Letters that are usually the thing being talked about ("set x to 5", "n words").
 const NAMED_LETTERS: &[&str] = &["a", "i", "x", "y", "z", "n"];
-/// A lone letter after these is being named ("the f key", "plan b").
-const NAMES_A_LETTER: &[&str] = &["the", "a", "an", "this", "that", "letter", "option", "plan", "press"];
+/// A lone letter after these is being named ("the f key", "plan b", "command c copies").
+const NAMES_A_LETTER: &[&str] = &[
+    "the", "a", "an", "this", "that", "letter", "option", "plan", "press", "command", "cmd",
+    "control", "ctrl", "shift", "alt", "type", "vitamin",
+];
+/// A lone letter before these was abandoned ("go up like m a half"), since a letter being named
+/// runs on into what it names ("column f has", "hit k to").
+const OPENS_A_PHRASE: &[&str] = &["a", "an", "the", "it", "it's", "you", "we", "they", "this", "that"];
 /// "this and this and this" lists things; it doesn't stumble.
 const LISTING: &[&str] = &["and", "or"];
 const LONGEST_REPEATED_PHRASE: usize = 4;
@@ -399,7 +405,9 @@ fn is_stray_letter(tokens: &[String], at: usize) -> bool {
     };
     let previous = at.checked_sub(1).map(|i| tokens[i].as_str());
     let spells = |neighbor: &str| is_lone_letter(neighbor) && !matches!(neighbor, "a" | "i" | "A" | "I");
+    let heard_next = spoken_form(next);
     !NAMED_LETTERS.contains(&token)
+        && (heard_next.starts_with(token) || OPENS_A_PHRASE.contains(&heard_next.as_str()))
         && !spells(next)
         && !previous.is_some_and(|previous| {
             spells(previous) || NAMES_A_LETTER.contains(&spoken_form(previous).as_str())
@@ -583,6 +591,18 @@ mod tests {
             "a b c d",
             "Extra F like extra letters.",
             "and then f",
+            "hit command k to open it",
+            "press control c to stop",
+            "the shift d shortcut works",
+            "plug in the type c cable",
+            "take vitamin d every day",
+            "vitamin d daily",
+            "hit command c copies it",
+            "column f has it",
+            "written in c or rust",
+            "a t shirt",
+            "get a t shirt",
+            "my t shirt",
         ] {
             assert_eq!(clean_text(text), text);
         }
