@@ -1172,7 +1172,7 @@ impl SettingsWindow {
             .when_some(speech, |pane, (text, error)| {
                 pane.child(caption(theme, &text, error))
             })
-            .child(header(theme, "Experimental"))
+            .child(header(theme, "More"))
             .child(group(
                 theme,
                 vec![

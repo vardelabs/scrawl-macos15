@@ -1,5 +1,5 @@
 //! Spoken quotation marks: "quote unquote token bait" writes `"token bait"`, and "quote ship it
-//! unquote" (or "end quote") writes `"ship it"`. Behind the experiment `spokenQuotes`. Pure, so it
+//! unquote" (or "end quote") writes `"ship it"`. Behind the `spokenQuotes` setting. Pure, so it
 //! is tested without a Mac.
 
 const EDGE_PUNCTUATION: &[char] = &['.', ',', '!', '?', ';', ':', '…', '"', '“', '”'];

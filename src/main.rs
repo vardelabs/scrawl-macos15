@@ -312,10 +312,6 @@ enum Command {
         /// Transcribe with `parakeet`, `whisper`, `apple`, `hex` or `command` instead of the configured transcriber.
         #[arg(long, value_parser = parse_engine)]
         transcriber: Option<crate::transcribe::Engine>,
-        /// Turn an experiment on for this run, as `"experiments"` in `config.json` would
-        /// (e.g. `agentContext`). Repeatable.
-        #[arg(long = "experiment", value_name = "NAME")]
-        experiments: Vec<String>,
     },
     /// Build the bundles whose build died with the app (no `scrawl.json`) in place, once each:
     /// from their input log (`unfinished.json`) if they have one, else from `recording.mp4` and
@@ -363,9 +359,6 @@ enum Command {
         /// was drawn on, and id, for `scrawl zoom --mark`.
         #[arg(long)]
         marks: bool,
-        /// Turn an experiment on for this summary (e.g. `agentContext`). Repeatable.
-        #[arg(long = "experiment", value_name = "NAME")]
-        experiments: Vec<String>,
     },
     /// Extract a dense burst of frames from a `.scrawl` bundle's time range (`M:SS` or seconds).
     Frames {
@@ -1759,13 +1752,9 @@ fn main() -> Result<()> {
             bench,
             live_speed,
             transcriber,
-            experiments,
         } => {
             if let Some(engine) = transcriber {
                 transcribe::set_override(engine);
-            }
-            for name in &experiments {
-                handoff::enable_experiment(name);
             }
             let (dir, old) = handoff::load_bundle(&bundle)?;
             let video = old
@@ -2102,11 +2091,7 @@ fn main() -> Result<()> {
             bundle,
             json,
             marks,
-            experiments,
         } => {
-            for name in &experiments {
-                handoff::enable_experiment(name);
-            }
             let (dir, loaded) = handoff::load_bundle(&bundle)?;
             if marks {
                 let entries = agent_context::mark_entries(&loaded);

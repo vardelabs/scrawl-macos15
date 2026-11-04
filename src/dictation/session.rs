@@ -742,12 +742,12 @@ fn transcribe_and_paste(
     }
     // The dictionary first, so a user's rule for "design dot md" still sees what was said.
     let text = crate::dictionary::Dictionary::load().apply(transcript.text.trim());
-    let text = if crate::handoff::experiment("spokenQuotes") {
+    let text = if crate::handoff::spoken_quotes() {
         super::quotes::apply(&text)
     } else {
         text
     };
-    let text = if crate::handoff::experiment("spokenCommands") {
+    let text = if crate::handoff::spoken_commands() {
         super::commands::apply(&text)
     } else {
         text

@@ -1,5 +1,5 @@
-//! What's under a click or a mark comes from the macOS Accessibility tree (`ax.rs`, the
-//! `agentContext` experiment). Elsewhere clicks and marks are recorded without it; these keep the
+//! What's under a click or a mark comes from the macOS Accessibility tree (`ax.rs`,
+//! `agentContext`). Elsewhere clicks and marks are recorded without it; these keep the
 //! same items so the capture code is the same everywhere.
 
 use std::collections::HashMap;

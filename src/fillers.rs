@@ -1,8 +1,8 @@
 //! Drops spoken fillers from a transcript, as dictation apps do, so pasted quotes read as
 //! written text (`removeFillers`, default on). Hesitations ("um", "uh", drawn out as "ummm" or
 //! cut off as "uh-") always go. "Like" goes where the transcriber's commas mark it as an aside
-//! ("it's, like, nice" or a leading "Like,"), because "it looks like rain" needs it. With the
-//! `bareLike` experiment it also goes without commas where it can only be filler (`bare_like`).
+//! ("it's, like, nice" or a leading "Like,"), because "it looks like rain" needs it, and without
+//! commas where it can only be filler (`bare_like`).
 
 use crate::model::{TranscriptData, TranscriptSegment, WordTiming};
 
@@ -13,29 +13,19 @@ const SENTENCE_END: &[char] = &['.', '?', '!', '…'];
 /// `keyframes` looks for.
 const BOUNDARY_SLACK_MS: u64 = 20;
 
-/// Which "like"s go besides comma asides.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Rules {
-    /// The `bareLike` experiment: "like" without commas where it can only be filler.
-    bare_like: bool,
-}
-
 pub fn clean(transcript: &mut TranscriptData) {
-    let rules = Rules {
-        bare_like: crate::handoff::experiment("bareLike"),
-    };
-    transcript.text = clean_text(&transcript.text, rules);
-    clean_segments(&mut transcript.segments, rules);
-    let dropped = clean_words(&mut transcript.words, rules);
+    transcript.text = clean_text(&transcript.text);
+    clean_segments(&mut transcript.segments);
+    let dropped = clean_words(&mut transcript.words);
     for segment in &mut transcript.segments {
         realign_start(segment, &transcript.words, &dropped);
     }
 }
 
 /// Text with nothing to drop comes back byte for byte, line breaks included.
-fn clean_text(text: &str, rules: Rules) -> String {
+fn clean_text(text: &str) -> String {
     let tokens: Vec<&str> = text.split_whitespace().collect();
-    let kept = clean_tokens(&tokens, rules);
+    let kept = clean_tokens(&tokens);
     if unchanged(&kept, &tokens) {
         return text.to_owned();
     }
@@ -44,13 +34,13 @@ fn clean_text(text: &str, rules: Rules) -> String {
 
 /// Segments are cleaned as one stream, as words are, so a filler at a segment's edge reads
 /// the same in both.
-fn clean_segments(segments: &mut Vec<TranscriptSegment>, rules: Rules) {
+fn clean_segments(segments: &mut Vec<TranscriptSegment>) {
     let per_segment: Vec<Vec<&str>> = segments
         .iter()
         .map(|segment| segment.text.split_whitespace().collect())
         .collect();
     let stream: Vec<&str> = per_segment.iter().flatten().copied().collect();
-    let mut kept = clean_tokens(&stream, rules).into_iter();
+    let mut kept = clean_tokens(&stream).into_iter();
     let texts: Vec<Option<String>> = per_segment
         .iter()
         .map(|tokens| {
@@ -67,9 +57,9 @@ fn clean_segments(segments: &mut Vec<TranscriptSegment>, rules: Rules) {
 }
 
 /// Drops filler words and returns when each dropped one started.
-fn clean_words(words: &mut Vec<WordTiming>, rules: Rules) -> Vec<u64> {
+fn clean_words(words: &mut Vec<WordTiming>) -> Vec<u64> {
     let texts: Vec<&str> = words.iter().map(|word| word.text.as_str()).collect();
-    let kept = clean_tokens(&texts, rules);
+    let kept = clean_tokens(&texts);
     let mut dropped = Vec::new();
     *words = std::mem::take(words)
         .into_iter()
@@ -109,7 +99,7 @@ fn realign_start(segment: &mut TranscriptSegment, words: &[WordTiming], dropped:
 /// belongs to the word before it. A dropped filler hands its sentence-ending mark to the word
 /// before it, takes a comma pair with it ("it's, um, nice" reads "it's nice"), and hands its
 /// sentence start to the word after it.
-fn clean_tokens(tokens: &[&str], rules: Rules) -> Vec<Option<String>> {
+fn clean_tokens(tokens: &[&str]) -> Vec<Option<String>> {
     let mut out: Vec<Option<String>> = tokens
         .iter()
         .map(|token| Some((*token).to_owned()))
@@ -135,8 +125,7 @@ fn clean_tokens(tokens: &[&str], rules: Rules) -> Vec<Option<String>> {
         let aside_like = is_like
             && trail.starts_with(',')
             && (sentence_start || previous.is_some_and(|p| p.ends_with(',')));
-        let bare = rules.bare_like
-            && is_like
+        let bare = is_like
             && bare_like(
                 (!sentence_start).then_some(previous).flatten(),
                 tokens.get(end).copied(),
@@ -313,14 +302,15 @@ fn bare_like(previous: Option<&str>, next: Option<&str>) -> bool {
         return false;
     };
     if next == "like"
-        || is_hesitation(&next) && previous.is_none_or(|p| DISCOURSE.contains(&bare(p).as_str()))
+        || is_hesitation(&next)
+            && previous.is_none_or(|p| DISCOURSE.contains(&clean_text(p).as_str()))
     {
         return true;
     }
     let Some(raw) = previous else {
         return OPENED.contains(&next.as_str());
     };
-    let previous = bare(raw);
+    let previous = clean_text(raw);
     (DISCOURSE.contains(&previous.as_str()) && !OBJECTS.contains(&next.as_str()))
         || (COPULAS.contains(&previous.as_str()) && INTENSIFIERS.contains(&next.as_str()))
 }
@@ -363,23 +353,6 @@ fn join(kept: Vec<Option<String>>) -> String {
 mod tests {
     use super::*;
 
-    // Glob imports yield to these, so the tests below run the default rules.
-    fn clean_text(text: &str) -> String {
-        super::clean_text(text, Rules::default())
-    }
-
-    fn clean_tokens(tokens: &[&str]) -> Vec<Option<String>> {
-        super::clean_tokens(tokens, Rules::default())
-    }
-
-    fn clean_segments(segments: &mut Vec<TranscriptSegment>) {
-        super::clean_segments(segments, Rules::default())
-    }
-
-    fn bare(text: &str) -> String {
-        super::clean_text(text, Rules { bare_like: true })
-    }
-
     #[test]
     fn drawn_out_and_cut_off_hesitations_go() {
         assert_eq!(
@@ -410,15 +383,21 @@ mod tests {
 
     #[test]
     fn bare_like_goes_where_it_can_only_be_filler() {
-        assert_eq!(bare("and like then we click it"), "and then we click it");
-        assert_eq!(bare("so like if you open it"), "so if you open it");
-        assert_eq!(bare("it's like really slow"), "it's really slow");
-        assert_eq!(bare("it was like super laggy"), "it was super laggy");
-        assert_eq!(bare("Like if you click it"), "If you click it");
-        assert_eq!(bare("Done. Like when it loads"), "Done. When it loads");
-        assert_eq!(bare("it's like like broken"), "it's like broken");
-        assert_eq!(bare("so um like then it loads"), "so then it loads");
-        assert_eq!(bare("Like uh this one"), "This one");
+        assert_eq!(
+            clean_text("and like then we click it"),
+            "and then we click it"
+        );
+        assert_eq!(clean_text("so like if you open it"), "so if you open it");
+        assert_eq!(clean_text("it's like really slow"), "it's really slow");
+        assert_eq!(clean_text("it was like super laggy"), "it was super laggy");
+        assert_eq!(clean_text("Like if you click it"), "If you click it");
+        assert_eq!(
+            clean_text("Done. Like when it loads"),
+            "Done. When it loads"
+        );
+        assert_eq!(clean_text("it's like like broken"), "it's like broken");
+        assert_eq!(clean_text("so um like then it loads"), "so then it loads");
+        assert_eq!(clean_text("Like uh this one"), "This one");
     }
 
     #[test]
@@ -437,10 +416,10 @@ mod tests {
             "I like really fast cars",
             "what is it like",
         ] {
-            assert_eq!(bare(text), text);
+            assert_eq!(clean_text(text), text);
         }
-        assert_eq!(bare("I like uh pizza"), "I like pizza");
-        assert_eq!(bare("so um like the button"), "so like the button");
+        assert_eq!(clean_text("I like uh pizza"), "I like pizza");
+        assert_eq!(clean_text("so um like the button"), "so like the button");
     }
 
     fn word(t0: u64, text: &str) -> WordTiming {
@@ -489,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn like_goes_only_as_a_comma_aside() {
+    fn like_goes_as_a_comma_aside() {
         assert_eq!(
             clean_text("Like, if you click it again"),
             "If you click it again"
@@ -499,7 +478,6 @@ mod tests {
             clean_text("things like, say, buttons"),
             "things like, say, buttons"
         );
-        assert_eq!(clean_text("Like if you click it"), "Like if you click it");
     }
 
     #[test]

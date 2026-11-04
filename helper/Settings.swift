@@ -159,6 +159,8 @@ struct SettingsDictation: Decodable, Equatable {
   var wpm: Int?
   var wpmNotice = true
   var removeFillers = true
+  var spokenCommands = false
+  var spokenQuotes = false
   var words: [String] = []
   var learned: [String] = []
   var replacements: [SettingsReplacement] = []
@@ -179,6 +181,9 @@ struct SettingsState: Decodable, Equatable {
   var lowerPlayback = true
   var playbackLevel = 0
   var videoExport = false
+  var agentContext = false
+  var smartRouting = false
+  var liveTranscribe = false
   var tapChooses = false
   var cropWindowCaptures = true
   var dictation = SettingsDictation()
@@ -1285,6 +1290,14 @@ struct SettingsView: View {
           SettingsSwitch(on: d.removeFillers) { model.set("removeFillers", $0) }
         }
         SettingsSeparator()
+        SettingsRow(title: "Act on spoken commands") {
+          SettingsSwitch(on: d.spokenCommands) { model.set("spokenCommands", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Write spoken quotation marks") {
+          SettingsSwitch(on: d.spokenQuotes) { model.set("spokenQuotes", $0) }
+        }
+        SettingsSeparator()
         SettingsRow(title: "Format code and filenames") {
           SettingsSwitch(on: d.codeFormatting) { model.set("dictationCodeFormatting", $0) }
         }
@@ -1481,13 +1494,30 @@ struct SettingsView: View {
       if t.engine == "apple", let line = t.speech?.line {
         SettingsCaption(text: line)
       }
-      SettingsHeader("Experimental")
+      SettingsHeader("More")
       SettingsGroup {
+        SettingsRow(title: "Transcribe while recording", enabled: t.engine == "apple") {
+          SettingsSwitch(on: state.liveTranscribe && t.engine == "apple", enabled: t.engine == "apple") {
+            model.set("liveTranscribe", $0)
+          }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Detailed summaries for agents") {
+          SettingsSwitch(on: state.agentContext) { model.set("agentContext", $0) }
+        }
+        SettingsSeparator()
+        SettingsRow(title: "Smart routing") {
+          SettingsSwitch(on: state.smartRouting) { model.set("smartRouting", $0) }
+        }
+        SettingsSeparator()
         SettingsRow(title: "Video export") {
           SettingsSwitch(on: state.videoExport) { model.set("videoExport", $0) }
         }
       }
-      SettingsCaption(text: "Adds Export Last Capture as Video… to the menu.")
+      SettingsCaption(text: "Transcribing while recording (Apple Speech only) has the transcript ready sooner after you stop. "
+        + "Detailed summaries list clicks, marks, drags, window changes and what a dev page reported, at the moment each happened. "
+        + "Smart routing weighs more clues to pick which agent session gets a capture. "
+        + "Video export adds Export Last Capture as Video… to the menu.")
     }
     .animation(SettingsMotion.state, value: mic)
   }

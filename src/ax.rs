@@ -1,4 +1,4 @@
-//! What's under a click or a mark, from the Accessibility tree (the `agentContext` experiment):
+//! What's under a click or a mark, from the Accessibility tree (`agentContext`):
 //! the element's role, label, identifier and the document its window shows. Lookups run on one
 //! background thread with a short messaging timeout, so a hung app never holds up input. Secure
 //! text fields are never read, and text is cut short. Lookups for a click or mark never read input
