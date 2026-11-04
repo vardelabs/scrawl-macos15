@@ -1048,7 +1048,9 @@ fn lay_out(
 /// the text stays on the clipboard to paste by hand. An app that doesn't say gets the paste and
 /// keeps the text on the clipboard too, so nothing is lost.
 fn deliver(text: &str, restore_clipboard: bool, after: AfterPaste) -> Outcome {
-    let delivered = match route(crate::ax::focused_takes_text()) {
+    let route = route(crate::ax::focused_takes_text());
+    scrawl_log(format!("Dictation: route {route:?}"));
+    let delivered = match route {
         Route::Paste => paste_fitted(text, restore_clipboard).map(|()| Outcome::Pasted(after)),
         Route::Copy => crate::handoff::paste_text(text, false).map(|()| Outcome::Copied(after)),
         Route::PasteAndKeep => paste_fitted(text, false).map(|()| Outcome::Pasted(after)),
