@@ -636,6 +636,10 @@ impl Dictation {
                 }
                 self.formatter = None;
                 self.formatter_started = false;
+                // While the user talks, so an Electron app's tree is built by the paste.
+                let _ = std::thread::Builder::new()
+                    .name("scrawl-dictation-wake".into())
+                    .spawn(crate::ax::wake_frontmost_tree);
                 self.playback = self.playback.take().or_else(crate::playback::Guard::start_quick);
                 self.started = Some(Instant::now());
             }
