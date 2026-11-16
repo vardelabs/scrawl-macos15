@@ -498,6 +498,25 @@ fn start_video_export() {
     }
 }
 
+/// What a press of the record shortcut starts under `followLastMode`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PressStart {
+    Screen,
+    Picker(SelectionMode),
+    Iphone,
+}
+
+/// Screen records at once; Window and Area need a click or a drag, so the picker opens on them;
+/// iPhone records the phone while one is cabled, else the screen.
+fn press_start(last: SelectionMode, has_iphone: bool) -> PressStart {
+    match last {
+        SelectionMode::Screen => PressStart::Screen,
+        SelectionMode::Window | SelectionMode::Area => PressStart::Picker(last),
+        SelectionMode::Iphone if has_iphone && cfg!(target_os = "macos") => PressStart::Iphone,
+        SelectionMode::Iphone => PressStart::Screen,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelectionMode {
     Area,
@@ -1309,6 +1328,9 @@ impl ScrawlCoordinator {
                 // Esc can cancel before the picker or a recording exists.
                 self.playback.take();
             }
+            Action::RecordScreen if crate::handoff::follow_last_mode() => {
+                self.record_last_mode(cx)
+            }
             Action::RecordScreen => self.record_screen_now(cx),
             Action::RecordSelected => self.record_selected_mode(cx),
             Action::Finish => self.finish_recording(cx),
@@ -1326,6 +1348,20 @@ impl ScrawlCoordinator {
         }
     }
 
+    /// A press of the record shortcut with `followLastMode` on: starts the mode the last
+    /// recording used.
+    fn record_last_mode(&mut self, cx: &mut Context<Self>) {
+        match press_start(self.last_mode, self.iphone.is_some()) {
+            PressStart::Screen => self.record_screen_now(cx),
+            PressStart::Picker(mode) => {
+                if self.ready_to_record() {
+                    self.open_picker(Some(mode), cx);
+                }
+            }
+            PressStart::Iphone => self.start_recording_iphone(cx),
+        }
+    }
+
     /// Records the display under the cursor straight away (no picker), auto-cropped.
     pub fn record_screen_now(&mut self, cx: &mut Context<Self>) {
         let target = if self.lab {
@@ -1335,6 +1371,7 @@ impl ScrawlCoordinator {
         };
         self.start_recording_with_target(target, cx);
         if self.is_recording() {
+            self.remember_mode(SelectionMode::Screen);
             self.show_reveal(cx);
         }
     }
@@ -2051,6 +2088,8 @@ impl ScrawlCoordinator {
         self.dictation_shown = None;
         if crate::handoff::tap_chooses() {
             self.begin_target_selection(cx);
+        } else if crate::handoff::follow_last_mode() && !self.is_recording() && !self.is_selecting() && !self.is_processing() {
+            self.record_last_mode(cx);
         } else {
             self.record_or_finish(cx);
         }
@@ -5755,6 +5794,17 @@ mod tests {
         let area = area_rect([-150.0, 200.0], [160.0, 400.0], left).unwrap();
         let (i, rect) = crate::screens::area_on_display(&screens, area).unwrap();
         assert_eq!((screens[i].id, rect), (2, area));
+    }
+
+    #[test]
+    fn a_press_starts_the_last_used_mode() {
+        use SelectionMode::{Area, Iphone, Screen, Window};
+        assert_eq!(press_start(Screen, false), PressStart::Screen);
+        assert_eq!(press_start(Window, false), PressStart::Picker(Window));
+        assert_eq!(press_start(Area, true), PressStart::Picker(Area));
+        assert_eq!(press_start(Iphone, false), PressStart::Screen);
+        let cabled = if cfg!(target_os = "macos") { PressStart::Iphone } else { PressStart::Screen };
+        assert_eq!(press_start(Iphone, true), cabled);
     }
 
     #[test]
