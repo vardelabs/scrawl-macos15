@@ -2088,7 +2088,11 @@ impl ScrawlCoordinator {
         self.dictation_shown = None;
         if crate::handoff::tap_chooses() {
             self.begin_target_selection(cx);
-        } else if crate::handoff::follow_last_mode() && !self.is_recording() && !self.is_selecting() && !self.is_processing() {
+        } else if crate::handoff::follow_last_mode()
+            && !self.is_recording()
+            && !self.is_selecting()
+            && !self.is_processing()
+        {
             self.record_last_mode(cx);
         } else {
             self.record_or_finish(cx);
@@ -5803,7 +5807,11 @@ mod tests {
         assert_eq!(press_start(Window, false), PressStart::Picker(Window));
         assert_eq!(press_start(Area, true), PressStart::Picker(Area));
         assert_eq!(press_start(Iphone, false), PressStart::Screen);
-        let cabled = if cfg!(target_os = "macos") { PressStart::Iphone } else { PressStart::Screen };
+        let cabled = if cfg!(target_os = "macos") {
+            PressStart::Iphone
+        } else {
+            PressStart::Screen
+        };
         assert_eq!(press_start(Iphone, true), cabled);
     }
 
