@@ -498,23 +498,11 @@ fn start_video_export() {
     }
 }
 
-/// What a press of the record shortcut starts under `followLastMode`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PressStart {
-    Screen,
-    Picker(SelectionMode),
-    Iphone,
-}
-
-/// Screen records at once; Window and Area need a click or a drag, so the picker opens on them;
-/// iPhone records the phone while one is cabled, else the screen.
-fn press_start(last: SelectionMode, has_iphone: bool) -> PressStart {
-    match last {
-        SelectionMode::Screen => PressStart::Screen,
-        SelectionMode::Window | SelectionMode::Area => PressStart::Picker(last),
-        SelectionMode::Iphone if has_iphone && cfg!(target_os = "macos") => PressStart::Iphone,
-        SelectionMode::Iphone => PressStart::Screen,
-    }
+/// Under `followLastMode`, whether a press records at once. Window, Area and iPhone open the
+/// picker instead: the first two need a click or a drag, and the picker finds a cabled phone
+/// (`self.iphone` is only a cache, empty at launch).
+fn press_records_at_once(last: SelectionMode) -> bool {
+    last == SelectionMode::Screen
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1351,14 +1339,10 @@ impl ScrawlCoordinator {
     /// A press of the record shortcut with `followLastMode` on: starts the mode the last
     /// recording used.
     fn record_last_mode(&mut self, cx: &mut Context<Self>) {
-        match press_start(self.last_mode, self.iphone.is_some()) {
-            PressStart::Screen => self.record_screen_now(cx),
-            PressStart::Picker(mode) => {
-                if self.ready_to_record() {
-                    self.open_picker(Some(mode), cx);
-                }
-            }
-            PressStart::Iphone => self.start_recording_iphone(cx),
+        if press_records_at_once(self.last_mode) {
+            self.record_screen_now(cx);
+        } else {
+            self.begin_target_selection(cx);
         }
     }
 
@@ -5801,18 +5785,11 @@ mod tests {
     }
 
     #[test]
-    fn a_press_starts_the_last_used_mode() {
-        use SelectionMode::{Area, Iphone, Screen, Window};
-        assert_eq!(press_start(Screen, false), PressStart::Screen);
-        assert_eq!(press_start(Window, false), PressStart::Picker(Window));
-        assert_eq!(press_start(Area, true), PressStart::Picker(Area));
-        assert_eq!(press_start(Iphone, false), PressStart::Screen);
-        let cabled = if cfg!(target_os = "macos") {
-            PressStart::Iphone
-        } else {
-            PressStart::Screen
-        };
-        assert_eq!(press_start(Iphone, true), cabled);
+    fn a_press_records_at_once_only_after_screen() {
+        assert!(press_records_at_once(SelectionMode::Screen));
+        for mode in [SelectionMode::Area, SelectionMode::Window, SelectionMode::Iphone] {
+            assert!(!press_records_at_once(mode), "{mode:?}");
+        }
     }
 
     #[test]

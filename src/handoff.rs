@@ -617,8 +617,7 @@ pub struct Config {
     #[serde(default)]
     pub tap_chooses: Option<bool>,
     /// A press of the record shortcut starts the mode the last recording used: Screen records
-    /// at once, Window and Area open the picker on that mode, iPhone records a cabled phone
-    /// (default on).
+    /// at once, and the other modes open the picker on that mode (default on).
     #[serde(default)]
     pub follow_last_mode: Option<bool>,
     /// Zooms a window capture's keyframes in to the activity inside the window, as full-screen
