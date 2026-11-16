@@ -1355,7 +1355,6 @@ impl ScrawlCoordinator {
         };
         self.start_recording_with_target(target, cx);
         if self.is_recording() {
-            self.remember_mode(SelectionMode::Screen);
             self.show_reveal(cx);
         }
     }
@@ -2737,7 +2736,13 @@ impl ScrawlCoordinator {
             quick && target.mode == CaptureMode::Display,
             std::sync::atomic::Ordering::Release,
         );
-        if let IslandPhase::Selecting { mode } = self.island_phase {
+        // A full display is Screen even from the Window or Area picker (Return or the shortcut).
+        let used = match self.island_phase {
+            _ if target.mode == CaptureMode::Display => Some(SelectionMode::Screen),
+            IslandPhase::Selecting { mode } => Some(mode),
+            _ => None,
+        };
+        if let Some(mode) = used {
             self.remember_mode(mode);
         }
         self.recording_shortcut_key = false;
