@@ -30,9 +30,10 @@ export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${HOME}=/home"
 SCRAWL_BUILD_COMMIT="$(git -C "${REPO_DIR}" rev-parse HEAD)" SCRAWL_NO_SPARKLE=1 SCRAWL_PROFILE=release SCRAWL_APP_DIR="${APP}" SCRAWL_NO_LAUNCH=1 \
   "${BUILD_DIR}/scripts/install-app.sh"
 
-leaks="$(strings "${APP}/Contents/MacOS/scrawl" "${APP}/Contents/MacOS/scrawl-helper" | grep -cF -- "${USER}" || true)"
+# A short user name also turns up in data tables and random bytes, so look for the home folder path.
+leaks="$(strings "${APP}/Contents/MacOS/scrawl" "${APP}/Contents/MacOS/scrawl-helper" | grep -cF -- "${HOME}" || true)"
 if ((leaks > 0)); then
-  echo "The binaries still contain the build user's name ${leaks} times; not packaging." >&2
+  echo "The binaries still contain the build Mac's home folder ${leaks} times; not packaging." >&2
   exit 1
 fi
 
