@@ -27,6 +27,16 @@ fn main() {
     }
 }
 
+/// `target/<profile>`, where the binaries land. OUT_DIR sits under its `build` directory at a
+/// depth that depends on Cargo's version: `build/scrawl-<hash>/out` before Rust 1.100 and
+/// `build/scrawl/<hash>/out` from it.
+fn profile_dir(out_dir: &std::path::Path) -> Option<&std::path::Path> {
+    out_dir
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
+        .and_then(std::path::Path::parent)
+}
+
 /// transcribe.cpp's DLLs (`dynamic-backends`: `transcribe.dll`, `ggml*.dll`) beside `scrawl.exe`
 /// and the test binaries, which load them at start. Its own build script copies them there too,
 /// but only when it runs, and a build restored from CI's cache skips it.
@@ -37,8 +47,7 @@ fn stage_transcribe_dlls() {
         return;
     };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    // OUT_DIR is <target>/<profile>/build/scrawl-<hash>/out.
-    let Some(profile) = out_dir.ancestors().nth(3) else {
+    let Some(profile) = profile_dir(&out_dir) else {
         return;
     };
     let dlls: Vec<PathBuf> = std::fs::read_dir(&runtime)
@@ -164,12 +173,8 @@ fn compile_helper() {
     }
     let plist = helper_dir.join("Info.plist");
     println!("cargo:rerun-if-changed={}", plist.display());
-    // OUT_DIR is target/<profile>/build/scrawl-<hash>/out.
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let profile_dir = out_dir
-        .ancestors()
-        .nth(3)
-        .expect("Unexpected OUT_DIR layout");
+    let profile_dir = profile_dir(&out_dir).expect("Unexpected OUT_DIR layout");
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("aarch64") => "arm64",
         Ok(other) => other,

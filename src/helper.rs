@@ -20,13 +20,28 @@ pub fn path() -> Result<PathBuf> {
     }
     let raw_exe = std::env::current_exe().context("Could not locate scrawl")?;
     let exe = std::fs::canonicalize(&raw_exe).unwrap_or(raw_exe);
-    // Beside the app binary, or one level up from `target/*/deps` for tests.
-    exe.ancestors()
-        .skip(1)
-        .take(2)
-        .map(|dir| dir.join("scrawl-helper"))
+    helper_candidates(&exe)
+        .into_iter()
         .find(|path| path.is_file())
         .context("scrawl-helper is missing; rebuild Scrawl")
+}
+
+/// Beside the app binary, else in `target/<profile>`, where `build.rs` puts it: a test binary
+/// sits in `target/<profile>/deps` before Rust 1.100 and in
+/// `target/<profile>/build/scrawl/<hash>/out` from it.
+fn helper_candidates(exe: &Path) -> Vec<PathBuf> {
+    let beside = exe.parent().map(Path::to_path_buf);
+    let profile = exe
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.file_name().is_some_and(|name| name == "deps" || name == "build"))
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    [beside, profile]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join("scrawl-helper"))
+        .collect()
 }
 
 /// Runs a helper command to completion and parses its JSON output.
@@ -422,6 +437,23 @@ pub fn qr(text: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_helper_is_found_beside_the_app_and_in_either_cargo_layout() {
+        let found = |exe: &str| helper_candidates(Path::new(exe));
+        assert_eq!(
+            found("/Apps/Scrawl.app/Contents/MacOS/scrawl"),
+            [PathBuf::from("/Apps/Scrawl.app/Contents/MacOS/scrawl-helper")]
+        );
+        assert_eq!(
+            found("/r/target/debug/deps/scrawl-1a2b")[1],
+            PathBuf::from("/r/target/debug/scrawl-helper")
+        );
+        assert_eq!(
+            found("/r/target/debug/build/scrawl/1a2b/out/scrawl-1a2b")[1],
+            PathBuf::from("/r/target/debug/scrawl-helper")
+        );
+    }
 
     #[test]
     fn a_superseded_install_stops_without_waiting_for_the_helper() {
