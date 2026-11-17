@@ -498,6 +498,13 @@ fn start_video_export() {
     }
 }
 
+/// Under `followLastMode`, whether a press records at once. Window, Area and iPhone open the
+/// picker instead: the first two need a click or a drag, and the picker finds a cabled phone
+/// (`self.iphone` is only a cache, empty at launch).
+fn press_records_at_once(last: SelectionMode) -> bool {
+    last == SelectionMode::Screen
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SelectionMode {
     Area,
@@ -1309,6 +1316,9 @@ impl ScrawlCoordinator {
                 // Esc can cancel before the picker or a recording exists.
                 self.playback.take();
             }
+            Action::RecordScreen if crate::handoff::follow_last_mode() => {
+                self.record_last_mode(cx)
+            }
             Action::RecordScreen => self.record_screen_now(cx),
             Action::RecordSelected => self.record_selected_mode(cx),
             Action::Finish => self.finish_recording(cx),
@@ -1323,6 +1333,16 @@ impl ScrawlCoordinator {
             self.record_selected_mode(cx);
         } else if !self.is_processing() {
             self.record_screen_now(cx);
+        }
+    }
+
+    /// A press of the record shortcut with `followLastMode` on: starts the mode the last
+    /// recording used.
+    fn record_last_mode(&mut self, cx: &mut Context<Self>) {
+        if press_records_at_once(self.last_mode) {
+            self.record_screen_now(cx);
+        } else {
+            self.begin_target_selection(cx);
         }
     }
 
@@ -2051,6 +2071,12 @@ impl ScrawlCoordinator {
         self.dictation_shown = None;
         if crate::handoff::tap_chooses() {
             self.begin_target_selection(cx);
+        } else if crate::handoff::follow_last_mode()
+            && !self.is_recording()
+            && !self.is_selecting()
+            && !self.is_processing()
+        {
+            self.record_last_mode(cx);
         } else {
             self.record_or_finish(cx);
         }
@@ -2710,7 +2736,13 @@ impl ScrawlCoordinator {
             quick && target.mode == CaptureMode::Display,
             std::sync::atomic::Ordering::Release,
         );
-        if let IslandPhase::Selecting { mode } = self.island_phase {
+        // A full display is Screen even from the Window or Area picker (Return or the shortcut).
+        let used = match self.island_phase {
+            _ if target.mode == CaptureMode::Display => Some(SelectionMode::Screen),
+            IslandPhase::Selecting { mode } => Some(mode),
+            _ => None,
+        };
+        if let Some(mode) = used {
             self.remember_mode(mode);
         }
         self.recording_shortcut_key = false;
@@ -5755,6 +5787,14 @@ mod tests {
         let area = area_rect([-150.0, 200.0], [160.0, 400.0], left).unwrap();
         let (i, rect) = crate::screens::area_on_display(&screens, area).unwrap();
         assert_eq!((screens[i].id, rect), (2, area));
+    }
+
+    #[test]
+    fn a_press_records_at_once_only_after_screen() {
+        assert!(press_records_at_once(SelectionMode::Screen));
+        for mode in [SelectionMode::Area, SelectionMode::Window, SelectionMode::Iphone] {
+            assert!(!press_records_at_once(mode), "{mode:?}");
+        }
     }
 
     #[test]

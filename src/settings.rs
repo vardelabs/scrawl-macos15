@@ -665,6 +665,7 @@ pub struct View {
     pub smart_routing: bool,
     pub live_transcribe: bool,
     pub tap_chooses: bool,
+    pub follow_last_mode: bool,
     pub crop_window_captures: bool,
     pub dictation: DictationView,
     pub retention: RetentionView,
@@ -1112,7 +1113,7 @@ fn shortcut_view(
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
     /// A settings control: `launchAtLogin`, `autoSend`, `videoExport`, `lowerPlayback`,
-    /// `tapChooses`, `cropWindowCaptures`, `dictation`, `dictationRestoreClipboard`,
+    /// `tapChooses`, `followLastMode`, `cropWindowCaptures`, `dictation`, `dictationRestoreClipboard`,
     /// `dictationPill`, `dictationCodeFormatting`, `dictationFormatting`, `dictationLearn`,
     /// `removeFillers`, `spokenCommands`, `spokenQuotes`, `agentContext`, `smartRouting`,
     /// `liveTranscribe` (bool), `dictationShortcut` (a chord), `microphone`
@@ -1472,7 +1473,7 @@ impl Panel {
                 write(key, value.clone());
             }
             (
-                "autoSend" | "videoExport" | "lowerPlayback" | "tapChooses" | "cropWindowCaptures"
+                "autoSend" | "videoExport" | "lowerPlayback" | "tapChooses" | "followLastMode" | "cropWindowCaptures"
                 | "dictation" | "dictationRestoreClipboard" | "dictationPill"
                 | "dictationCodeFormatting" | "dictationFormatting" | "dictationLearn" | "dictationNotices" | "dictationHistory" | "dictationWpm" | "dictationWordTotal"
                 | "removeFillers" | "spokenCommands" | "spokenQuotes" | "agentContext" | "smartRouting"
@@ -1667,6 +1668,7 @@ impl Panel {
             smart_routing: config.smart_routing.unwrap_or(false),
             live_transcribe: config.live_transcribe.unwrap_or(false),
             tap_chooses: config.tap_chooses.unwrap_or(false),
+            follow_last_mode: config.follow_last_mode.unwrap_or(true),
             crop_window_captures: config.crop_window_captures.unwrap_or(true),
             dictation: dictation_view(&config, &host.config_path(), self.dictionary_error.as_deref()),
             retention: RetentionView {
