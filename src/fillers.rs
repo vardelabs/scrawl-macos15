@@ -2,7 +2,8 @@
 //! written text (`removeFillers`, default on). Hesitations ("um", "uh", drawn out as "ummm" or
 //! cut off as "uh-") always go. "Like" goes where the transcriber's commas mark it as an aside
 //! ("it's, like, nice" or a leading "Like,"), because "it looks like rain" needs it, and without
-//! commas where it can only be filler (`bare_like`). Stumbles go too: a stray letter before the
+//! commas where it can only be filler (`bare_like`). A sentence that opens "Cause like" loses
+//! both. Stumbles go too: a stray letter before the
 //! word it started ("my f fastest"), and a word or short phrase said twice ("the the button",
 //! "it's a little it's a little awkward"), which transcribers write down as heard.
 
@@ -204,7 +205,7 @@ fn runs(word: &str) -> Vec<(char, usize)> {
 
 /// Words that join on a filler "like" ("and like then", "so like if").
 const DISCOURSE: &[&str] = &[
-    "and", "but", "so", "or", "yeah", "well", "okay", "ok", "oh", "because", "cause", "maybe",
+    "and", "but", "so", "or", "yeah", "well", "okay", "ok", "oh", "because", "cause",
 ];
 /// After those, "like" is a verb or a preposition: "and like it", "but like the old one".
 const OBJECTS: &[&str] = &[
@@ -368,7 +369,13 @@ fn bare_like(previous: Option<&str>, rest: &[&str], before_that: Option<&str>) -
             && (previous == "of" || !POINTS.contains(&next.as_str())))
             || (previous == "in"
                 && (NUMBERS.contains(&next.as_str()) || next.starts_with(|c: char| c.is_ascii_digit())))
-            || (matches!(previous.as_str(), "that" | "which") && next.ends_with("ally")))
+            || (matches!(previous.as_str(), "that" | "which") && next.ends_with("ally"))
+            // "Maybe like Stripe does" compares, so only words that can't be what it compares to.
+            || (previous == "maybe"
+                && (INTENSIFIERS.contains(&next.as_str())
+                    || NUMBERS.contains(&next.as_str())
+                    || next.ends_with("ing")
+                    || next.ends_with("ly"))))
     {
         return true;
     }
@@ -632,7 +639,8 @@ mod tests {
             ("decides and says like oh what goes where", "decides and says oh what goes where"),
             ("a system that like automatically handles that", "a system that automatically handles that"),
             ("the routes to me like maybe could be combined", "the routes to me maybe could be combined"),
-            ("maybe like pull it left", "maybe pull it left"),
+            ("maybe like adding custom ones", "maybe adding custom ones"),
+            ("maybe like two or three", "maybe two or three"),
             ("Nothing. Like what was the reason for that?", "Nothing. What was the reason for that?"),
             ("Like what's the case that this would show?", "What's the case that this would show?"),
         ] {
@@ -648,6 +656,8 @@ mod tests {
             "it's like okay you can't",
             "something like maybe three",
             "maybe like the old one",
+            "maybe like Stripe does",
+            "maybe like before",
             "Like what?",
             "Like what we had before",
             "people that like it",
