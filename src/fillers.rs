@@ -307,7 +307,21 @@ const PREPOSITIONS: &[&str] = &["of", "for", "into"];
 /// "objects of like size" are alike.
 const ALIKE: &[&str] = &["size", "sizes", "kind", "kinds", "mind", "minds", "age", "quality", "value", "nature"];
 /// "Cause like you said" points back to something said.
-const SAID: &[&str] = &["said", "say", "says", "mentioned", "told"];
+const SAID: &[&str] = &[
+    "said", "say", "says", "mentioned", "told", "discussed", "talked", "agreed", "described", "explained",
+    "noted", "wrote",
+];
+/// "a system that like automatically handles it". A verb "like" takes a noun ("fans that like rally
+/// cars"), so only adverbs a noun can't be.
+const ADVERBS: &[&str] = &[
+    "automatically", "actually", "basically", "literally", "totally", "technically", "essentially",
+    "specifically", "generally", "normally", "usually", "eventually", "immediately", "constantly",
+];
+/// Nouns in "ly" and "ing", which "maybe like family" compares to.
+const NOUNS: &[&str] = &[
+    "family", "reply", "supply", "assembly", "string", "spring", "nothing", "something", "anything",
+    "everything", "thing", "king", "ring", "wing", "morning", "evening", "building", "meeting",
+];
 /// "kind of like a car" compares.
 const HEDGED_OF: &[&str] = &["kind", "sort", "type", "kinds", "sorts"];
 /// "What's it for like this" compares, so a demonstrative or a pronoun keeps its "like" after `for`.
@@ -322,7 +336,8 @@ const ASIDES: &[&str] = &["oh", "okay", "ok", "maybe"];
 const HOLDS_LIKE: &[&str] = &[
     "look", "looks", "looked", "looking", "feel", "feels", "felt", "feeling", "seem", "seems", "seemed",
     "sound", "sounds", "sounded", "something", "anything", "nothing", "things", "stuff", "i", "you", "we",
-    "they", "would", "i'd", "you'd", "we'd", "they'd", "don't", "really", "also", "kinda", "just",
+    "they", "would", "i'd", "you'd", "we'd", "they'd", "he'd", "she'd", "it'd", "who'd", "that'd",
+    "don't", "doesn't", "didn't", "wouldn't", "will", "might", "to", "really", "also", "kinda", "just",
 ];
 /// After a sentence-opening "Like what" in a question: "Like what was the reason for that?"
 const ASKS: &[&str] = &["is", "was", "are", "were", "do", "does", "did", "would", "when"];
@@ -340,6 +355,7 @@ fn is_question(tokens: &[&str]) -> bool {
 /// after it.
 fn bare_like(previous: Option<&str>, rest: &[&str], before_that: Option<&str>) -> bool {
     let next = rest.first().copied();
+    let named = next.is_some_and(|next| next.starts_with(char::is_uppercase));
     let bare = |token: &str| {
         token
             .trim_end_matches(TRAILING)
@@ -374,13 +390,14 @@ fn bare_like(previous: Option<&str>, rest: &[&str], before_that: Option<&str>) -
             && (previous == "of" || !POINTS.contains(&next.as_str())))
             || (previous == "in"
                 && (NUMBERS.contains(&next.as_str()) || next.starts_with(|c: char| c.is_ascii_digit())))
-            || (matches!(previous.as_str(), "that" | "which") && next.ends_with("ally"))
+            || (matches!(previous.as_str(), "that" | "which") && ADVERBS.contains(&next.as_str()))
             // "Maybe like Stripe does" compares, so only words that can't be what it compares to.
             || (previous == "maybe"
                 && (INTENSIFIERS.contains(&next.as_str())
                     || NUMBERS.contains(&next.as_str())
-                    || next.ends_with("ing")
-                    || next.ends_with("ly"))))
+                    || ((next.ends_with("ing") || next.ends_with("ly"))
+                        && !named
+                        && !NOUNS.contains(&next.as_str())))))
     {
         return true;
     }
@@ -663,6 +680,12 @@ mod tests {
             "something like maybe three",
             "maybe like the old one",
             "maybe like Stripe does",
+            "Maybe like Emily did",
+            "maybe like Italy",
+            "maybe like family",
+            "fans that like rally cars",
+            "kids that like Sally",
+            "she'd like maybe a coffee",
             "maybe like before",
             "Like what?",
             "Like what we had before",
@@ -684,6 +707,8 @@ mod tests {
             "Cause this moves",
             "Cause like I said, it moves",
             "Cause like you said, it works",
+            "Cause like we discussed, it works",
+            "Cause like we talked about, it works",
             "Cause like the docs say, it works",
         ] {
             assert_eq!(clean_text(text), text);
