@@ -139,7 +139,7 @@ fn clean_tokens(tokens: &[&str]) -> Vec<Option<String>> {
             && trail.is_empty()
             && spoken_form(word).trim_start_matches('\'') == "cause"
             && tokens.get(end).is_some_and(|next| *next == "like")
-            && !tokens.get(end + 1).is_some_and(|next| spoken_form(next) == "i");
+            && !tokens.iter().skip(end + 1).take(3).any(|next| SAID.contains(&spoken_form(next).as_str()));
         if cause_like {
             end += 1;
         }
@@ -304,6 +304,10 @@ const OPENED: &[&str] = &[
 /// "for like writing". "Sign in like before" and "log on like this" end in one too, so `in`, `on`
 /// and the rest that make phrasal verbs are left out.
 const PREPOSITIONS: &[&str] = &["of", "for", "into"];
+/// "objects of like size" are alike.
+const ALIKE: &[&str] = &["size", "sizes", "kind", "kinds", "mind", "minds", "age", "quality", "value", "nature"];
+/// "Cause like you said" points back to something said.
+const SAID: &[&str] = &["said", "say", "says", "mentioned", "told"];
 /// "kind of like a car" compares.
 const HEDGED_OF: &[&str] = &["kind", "sort", "type", "kinds", "sorts"];
 /// "What's it for like this" compares, so a demonstrative or a pronoun keeps its "like" after `for`.
@@ -366,6 +370,7 @@ fn bare_like(previous: Option<&str>, rest: &[&str], before_that: Option<&str>) -
     if joined
         && ((PREPOSITIONS.contains(&previous.as_str())
             && !hedged
+            && !ALIKE.contains(&next.as_str())
             && (previous == "of" || !POINTS.contains(&next.as_str())))
             || (previous == "in"
                 && (NUMBERS.contains(&next.as_str()) || next.starts_with(|c: char| c.is_ascii_digit())))
@@ -648,6 +653,7 @@ mod tests {
         }
         for text in [
             "it's kind of like a car",
+            "objects of like size",
             "sign in like before",
             "fade in like a ghost",
             "what it's for, like this",
@@ -673,7 +679,13 @@ mod tests {
             "Should we simplify this at all? The two routes could be one."
         );
         assert_eq!(clean_text("Cause like um the two"), "The two");
-        for text in ["Cause this moves", "Cause like I said, it moves"] {
+        assert_eq!(clean_text("Cause like I can't click it"), "I can't click it");
+        for text in [
+            "Cause this moves",
+            "Cause like I said, it moves",
+            "Cause like you said, it works",
+            "Cause like the docs say, it works",
+        ] {
             assert_eq!(clean_text(text), text);
         }
         assert_eq!(clean_tokens(&["Cause", "like"]), vec![None, None]);
