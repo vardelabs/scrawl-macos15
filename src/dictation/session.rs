@@ -1082,7 +1082,12 @@ fn fitted(text: &str) -> String {
     let field = crate::ax::FocusedText::current();
     match field.and_then(|field| field.around_insertion(AROUND_UNITS, MAX_FIELD_CHARS)) {
         Some((before, selected, after)) => {
-            super::spacing::fit(text, &super::spacing::Around { before: &before, selected, after: after.as_deref() })
+            let fitted =
+                super::spacing::fit(text, &super::spacing::Around { before: &before, selected, after: after.as_deref() });
+            if fitted.starts_with(' ') && !text.starts_with(' ') {
+                scrawl_log(format!("Dictation: space added after {}", super::spacing::kind_before(&before)));
+            }
+            fitted
         }
         None => match after_last_paste() {
             Some(before) => {

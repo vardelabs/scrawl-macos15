@@ -2,7 +2,8 @@
 //! written text (`removeFillers`, default on). Hesitations ("um", "uh", drawn out as "ummm" or
 //! cut off as "uh-") always go. "Like" goes where the transcriber's commas mark it as an aside
 //! ("it's, like, nice" or a leading "Like,"), because "it looks like rain" needs it, and without
-//! commas where it can only be filler (`bare_like`). Stumbles go too: a stray letter before the
+//! commas where it can only be filler (`bare_like`). A sentence that opens "Cause like" loses
+//! both. Stumbles go too: a stray letter before the
 //! word it started ("my f fastest"), and a word or short phrase said twice ("the the button",
 //! "it's a little it's a little awkward"), which transcribers write down as heard.
 
@@ -130,9 +131,19 @@ fn clean_tokens(tokens: &[&str]) -> Vec<Option<String>> {
         let bare = is_like
             && bare_like(
                 (!sentence_start).then_some(previous).flatten(),
-                tokens.get(end).copied(),
+                &tokens[end..],
+                (0..last_kept.unwrap_or(0)).rev().find_map(|k| out[k].as_deref().filter(|t| !t.is_empty())),
             );
-        if !(aside_like || bare || is_hesitation(word)) {
+        // "Cause like the two routes" opens a sentence with nothing but filler.
+        let cause_like = sentence_start
+            && trail.is_empty()
+            && spoken_form(word).trim_start_matches('\'') == "cause"
+            && tokens.get(end).is_some_and(|next| *next == "like")
+            && !tokens.iter().skip(end + 1).take(3).any(|next| SAID.contains(&spoken_form(next).as_str()));
+        if cause_like {
+            end += 1;
+        }
+        if !(aside_like || bare || cause_like || is_hesitation(word)) {
             if std::mem::take(&mut capitalize_next) {
                 out[i] = Some(capitalize(tokens[i]));
             }
@@ -290,11 +301,61 @@ const OPENED: &[&str] = &[
     "why",
 ];
 
+/// "for like writing". "Sign in like before" and "log on like this" end in one too, so `in`, `on`
+/// and the rest that make phrasal verbs are left out.
+const PREPOSITIONS: &[&str] = &["of", "for", "into"];
+/// "objects of like size" are alike.
+const ALIKE: &[&str] = &["size", "sizes", "kind", "kinds", "mind", "minds", "age", "quality", "value", "nature"];
+/// "Cause like you said" points back to something said.
+const SAID: &[&str] = &[
+    "said", "say", "says", "mentioned", "told", "discussed", "talked", "agreed", "described", "explained",
+    "noted", "wrote",
+];
+/// "a system that like automatically handles it". A verb "like" takes a noun ("fans that like rally
+/// cars"), so only adverbs a noun can't be.
+const ADVERBS: &[&str] = &[
+    "automatically", "actually", "basically", "literally", "totally", "technically", "essentially",
+    "specifically", "generally", "normally", "usually", "eventually", "immediately", "constantly",
+];
+/// Nouns in "ly" and "ing", which "maybe like family" compares to.
+const NOUNS: &[&str] = &[
+    "family", "reply", "supply", "assembly", "string", "spring", "nothing", "something", "anything",
+    "everything", "thing", "king", "ring", "wing", "morning", "evening", "building", "meeting",
+];
+/// "kind of like a car" compares.
+const HEDGED_OF: &[&str] = &["kind", "sort", "type", "kinds", "sorts"];
+/// "What's it for like this" compares, so a demonstrative or a pronoun keeps its "like" after `for`.
+const POINTS: &[&str] = &["this", "that", "these", "those", "it", "me", "you", "him", "her", "us", "them"];
+const NUMBERS: &[&str] = &[
+    "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+    "fifteen", "twenty", "thirty", "forty", "fifty", "sixty", "ninety",
+];
+/// "says like oh what goes where", "to me like maybe": what follows is an aside.
+const ASIDES: &[&str] = &["oh", "okay", "ok", "maybe"];
+/// Before an aside, these still need their "like": "looks like maybe it broke", "I like okay".
+const HOLDS_LIKE: &[&str] = &[
+    "look", "looks", "looked", "looking", "feel", "feels", "felt", "feeling", "seem", "seems", "seemed",
+    "sound", "sounds", "sounded", "something", "anything", "nothing", "things", "stuff", "i", "you", "we",
+    "they", "would", "i'd", "you'd", "we'd", "they'd", "he'd", "she'd", "it'd", "who'd", "that'd",
+    "don't", "doesn't", "didn't", "wouldn't", "will", "might", "to", "really", "also", "kinda", "just",
+];
+/// After a sentence-opening "Like what" in a question: "Like what was the reason for that?"
+const ASKS: &[&str] = &["is", "was", "are", "were", "do", "does", "did", "would", "when"];
+
+/// Whether the sentence `tokens` starts in ends as a question.
+fn is_question(tokens: &[&str]) -> bool {
+    tokens.iter().find(|t| t.ends_with(SENTENCE_END)).is_some_and(|t| t.ends_with('?'))
+}
+
 /// Whether a "like" with no comma around it is filler: doubled ("like like"), joined on with
-/// "and", "so" or "but" before anything but an object, between a copula and an intensifier, or
-/// opening a sentence before a clause. `previous` is the kept word before it, `None` at a
-/// sentence start; `next` the token after it.
-fn bare_like(previous: Option<&str>, next: Option<&str>) -> bool {
+/// "and", "so" or "but" before anything but an object, after a preposition ("for like writing"),
+/// before a number ("in like ten") or an aside ("says like oh"), between a copula and an
+/// intensifier, or opening a sentence before a clause or a question. `previous` is the kept word
+/// before it, `None` at a sentence start, and `before_that` the one before that; `rest` the tokens
+/// after it.
+fn bare_like(previous: Option<&str>, rest: &[&str], before_that: Option<&str>) -> bool {
+    let next = rest.first().copied();
+    let named = next.is_some_and(|next| next.starts_with(char::is_uppercase));
     let bare = |token: &str| {
         token
             .trim_end_matches(TRAILING)
@@ -311,9 +372,43 @@ fn bare_like(previous: Option<&str>, next: Option<&str>) -> bool {
         return true;
     }
     let Some(raw) = previous else {
-        return OPENED.contains(&next.as_str());
+        let asks = match next.as_str() {
+            "what's" => true,
+            "what" => rest.get(1).is_some_and(|after| ASKS.contains(&bare(after).as_str())),
+            _ => false,
+        };
+        return OPENED.contains(&next.as_str()) || (asks && is_question(rest));
     };
     let previous = bare(raw);
+    // A comma or colon before it opens a new clause ("what it's for, like this").
+    let joined = split_trailing(raw).1.is_empty();
+    let hedged = previous == "of" && before_that.is_some_and(|word| HEDGED_OF.contains(&bare(word).as_str()));
+    if joined
+        && ((PREPOSITIONS.contains(&previous.as_str())
+            && !hedged
+            && !ALIKE.contains(&next.as_str())
+            && (previous == "of" || !POINTS.contains(&next.as_str())))
+            || (previous == "in"
+                && (NUMBERS.contains(&next.as_str()) || next.starts_with(|c: char| c.is_ascii_digit())))
+            || (matches!(previous.as_str(), "that" | "which") && ADVERBS.contains(&next.as_str()))
+            // "Maybe like Stripe does" compares, so only words that can't be what it compares to.
+            || (previous == "maybe"
+                && (INTENSIFIERS.contains(&next.as_str())
+                    || NUMBERS.contains(&next.as_str())
+                    || ((next.ends_with("ing") || next.ends_with("ly"))
+                        && !named
+                        && !NOUNS.contains(&next.as_str())))))
+    {
+        return true;
+    }
+    if joined
+        && ASIDES.contains(&next.as_str())
+        && !HOLDS_LIKE.contains(&previous.as_str())
+        && !COPULAS.contains(&previous.as_str())
+        && !hedged
+    {
+        return true;
+    }
     (DISCOURSE.contains(&previous.as_str()) && !OBJECTS.contains(&next.as_str()))
         || (COPULAS.contains(&previous.as_str()) && INTENSIFIERS.contains(&next.as_str()))
 }
@@ -337,6 +432,12 @@ const NAMES_A_LETTER: &[&str] = &[
 /// A lone letter before these was abandoned ("go up like m a half"), since a letter being named
 /// runs on into what it names ("column f has", "hit k to").
 const OPENS_A_PHRASE: &[&str] = &["a", "an", "the", "it", "it's", "you", "we", "they", "this", "that"];
+/// Said again after a lone letter, these restart the phrase it broke ("if s if Nova"), unlike a
+/// list ("row b row c").
+const RESTARTS: &[&str] = &[
+    "if", "when", "so", "but", "because", "he", "she", "i", "can", "could", "should", "would", "what",
+    "how", "why", "where",
+];
 /// "this and this and this" lists things; it doesn't stumble.
 const LISTING: &[&str] = &["and", "or"];
 const LONGEST_REPEATED_PHRASE: usize = 4;
@@ -407,7 +508,10 @@ fn is_stray_letter(tokens: &[String], at: usize) -> bool {
     let spells = |neighbor: &str| is_lone_letter(neighbor) && !matches!(neighbor, "a" | "i" | "A" | "I");
     let heard_next = spoken_form(next);
     !NAMED_LETTERS.contains(&token)
-        && (heard_next.starts_with(token) || OPENS_A_PHRASE.contains(&heard_next.as_str()))
+        && (heard_next.starts_with(token)
+            || OPENS_A_PHRASE.contains(&heard_next.as_str())
+            || (RESTARTS.contains(&heard_next.as_str())
+                && previous.is_some_and(|previous| spoken_form(previous) == heard_next)))
         && !spells(next)
         && !previous.is_some_and(|previous| {
             spells(previous) || NAMES_A_LETTER.contains(&spoken_form(previous).as_str())
@@ -548,6 +652,71 @@ mod tests {
     }
 
     #[test]
+    fn bare_like_goes_after_a_preposition_before_an_aside_and_before_a_question() {
+        for (said, written) in [
+            ("responds in like ten to fifteen minutes", "responds in ten to fifteen minutes"),
+            ("too in depth for like your work", "too in depth for your work"),
+            ("it's more of like that routing system", "it's more of that routing system"),
+            ("for dispatch for like writing", "for dispatch for writing"),
+            ("decides and says like oh what goes where", "decides and says oh what goes where"),
+            ("a system that like automatically handles that", "a system that automatically handles that"),
+            ("the routes to me like maybe could be combined", "the routes to me maybe could be combined"),
+            ("maybe like adding custom ones", "maybe adding custom ones"),
+            ("maybe like two or three", "maybe two or three"),
+            ("Nothing. Like what was the reason for that?", "Nothing. What was the reason for that?"),
+            ("Like what's the case that this would show?", "What's the case that this would show?"),
+        ] {
+            assert_eq!(clean_text(said), written);
+        }
+        for text in [
+            "it's kind of like a car",
+            "objects of like size",
+            "sign in like before",
+            "fade in like a ghost",
+            "what it's for, like this",
+            "the one I asked for like this one",
+            "looks like maybe it broke",
+            "it's like okay you can't",
+            "something like maybe three",
+            "maybe like the old one",
+            "maybe like Stripe does",
+            "Maybe like Emily did",
+            "maybe like Italy",
+            "maybe like family",
+            "fans that like rally cars",
+            "kids that like Sally",
+            "she'd like maybe a coffee",
+            "maybe like before",
+            "Like what?",
+            "Like what we had before",
+            "people that like it",
+        ] {
+            assert_eq!(clean_text(text), text);
+        }
+    }
+
+    #[test]
+    fn a_cause_like_that_opens_a_sentence_goes_whole() {
+        assert_eq!(
+            clean_text("Should we simplify this at all? Cause like the two routes could be one."),
+            "Should we simplify this at all? The two routes could be one."
+        );
+        assert_eq!(clean_text("Cause like um the two"), "The two");
+        assert_eq!(clean_text("Cause like I can't click it"), "I can't click it");
+        for text in [
+            "Cause this moves",
+            "Cause like I said, it moves",
+            "Cause like you said, it works",
+            "Cause like we discussed, it works",
+            "Cause like we talked about, it works",
+            "Cause like the docs say, it works",
+        ] {
+            assert_eq!(clean_text(text), text);
+        }
+        assert_eq!(clean_tokens(&["Cause", "like"]), vec![None, None]);
+    }
+
+    #[test]
     fn bare_like_stays_as_a_verb_or_comparison() {
         for text in [
             "it looks like rain",
@@ -579,8 +748,18 @@ mod tests {
     }
 
     #[test]
+    fn a_letter_between_a_word_and_its_restart_goes_with_it() {
+        assert_eq!(clean_text("So if s if Nova is requested"), "So if Nova is requested");
+        assert_eq!(clean_text("but when c when it loads"), "but when it loads");
+    }
+
+    #[test]
     fn letters_being_named_stay() {
         for text in [
+            "row b row c",
+            "grade c grade d",
+            "c and d and e",
+            "if x if y",
             "tell, but the X looks off",
             "that clicking X doesn't delete",
             "A and B. Now",

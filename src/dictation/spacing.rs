@@ -22,6 +22,10 @@ pub struct Around<'a> {
     pub after: Option<&'a str>,
 }
 
+/// Characters nobody sees, which editors such as Slate (Discord) keep in an empty field to hold the
+/// caret. They are not text to set a dictation apart from.
+const INVISIBLE: &[char] = &['\u{FEFF}', '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}'];
+
 /// `text` as it should be pasted at `at`: with a space in front when it lands right after a word
 /// or punctuation, and with the closer of an opening bracket it lands right after, unless the
 /// field or the text already closes it.
@@ -48,6 +52,18 @@ pub fn after_last_paste(
     (same_spot && presses_since == 0 && age < LAST_PASTE_FOR).then(|| last.to_string())
 }
 
+/// What sits before the caret, for the log: its kind and how many characters were read, never the
+/// text. A field that looks empty but gets a space shows up here.
+pub fn kind_before(before: &str) -> String {
+    let kind = match before.chars().rfind(|c| !INVISIBLE.contains(c)) {
+        None => "nothing".to_owned(),
+        Some(c) if c.is_alphanumeric() => "a word".to_owned(),
+        Some(c) if c.is_ascii_punctuation() => "punctuation".to_owned(),
+        Some(c) => format!("U+{:04X}", c as u32),
+    };
+    format!("{kind} ({} characters read)", before.chars().count())
+}
+
 fn starts_word(text: &str) -> bool {
     text.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '`')
 }
@@ -56,7 +72,7 @@ fn leading_space(before: &str, selected: usize, text: &str) -> bool {
     if selected > 0 || !starts_word(text) {
         return false;
     }
-    let mut back = before.chars().rev();
+    let mut back = before.chars().rev().filter(|c| !INVISIBLE.contains(c));
     let Some(last) = back.next() else { return false };
     if last.is_whitespace() || OPENERS.iter().any(|&(open, _)| open == last) {
         return false;
@@ -69,7 +85,7 @@ fn leading_space(before: &str, selected: usize, text: &str) -> bool {
 }
 
 fn closer(at: &Around, text: &str) -> Option<char> {
-    let last = at.before.chars().next_back()?;
+    let last = at.before.chars().rfind(|c| !INVISIBLE.contains(c))?;
     let &(open, close) = OPENERS.iter().find(|&&(open, _)| open == last && CLOSES.contains(&open))?;
     // Text right after the caret ("(see below)" with the caret after "(") already belongs to the
     // bracket, so only a caret with nothing after it, or a space, gets a closer.
@@ -121,6 +137,15 @@ mod tests {
             assert!(!after(before, "Hello").starts_with(' '), "{before:?}");
         }
         assert_eq!(fit("replacement", &Around { before: "word", selected: 4, after: Some("") }), "replacement");
+    }
+
+    #[test]
+    fn an_editors_invisible_characters_are_not_text_before_the_caret() {
+        for before in ["\u{FEFF}", "\u{200B}", "\n\u{FEFF}", "\u{2060}\u{FEFF}", " \u{200B}"] {
+            assert_eq!(after(before, "Hello"), "Hello", "{before:?}");
+        }
+        assert_eq!(after("ok.\u{FEFF}", "Next"), " Next");
+        assert_eq!(after("(\u{FEFF}", "see below."), "see below.)");
     }
 
     #[test]

@@ -227,6 +227,10 @@ impl Dictionary {
         for (from, to) in &rules {
             replace_phrase(&mut tokens, from, to, |a, b| a == b);
         }
+        // A shorter replacement can complete a longer word ("vart labs" is now "Varde labs").
+        for word in self.words.iter().filter(|w| w.contains(' ')) {
+            replace_phrase(&mut tokens, &words_of(word), word, |a, b| a == b);
+        }
         for word in &self.words {
             let joined = squash(word);
             replace_phrase(&mut tokens, &[joined.clone()], word, |a, _| a == joined);
@@ -296,20 +300,35 @@ fn replace_phrase(
     let span = from.len() * 2 - 1;
     let mut i = 0;
     while i + span <= tokens.len() {
-        let hit = tokens[i].chars().next().is_some_and(is_word_char)
-            && (0..span).all(|k| {
-                let token = &tokens[i + k];
-                if k % 2 == 1 {
-                    word_break(token)
-                } else {
-                    matches(&token.to_lowercase(), &from[k / 2])
-                }
-            });
-        if hit {
-            tokens.splice(i..i + span, [to.to_owned()]);
+        let matched = |last: &str| {
+            tokens[i].chars().next().is_some_and(is_word_char)
+                && (0..span).all(|k| match &tokens[i + k] {
+                    token if k % 2 == 1 => word_break(token),
+                    _ if k == span - 1 => matches(&last.to_lowercase(), &from[k / 2]),
+                    token => matches(&token.to_lowercase(), &from[k / 2]),
+                })
+        };
+        let last = tokens[i + span - 1].as_str();
+        let (stem, ending) = split_possessive(last);
+        let ending = if matched(last) {
+            Some("")
+        } else {
+            (!ending.is_empty() && matched(stem)).then_some(ending)
+        };
+        if let Some(written) = ending.map(|ending| format!("{to}{ending}")) {
+            tokens.splice(i..i + span, [written]);
         }
         i += 1;
     }
+}
+
+/// "sean's" → ("sean", "'s") and "labs'" → ("labs", "'"): a token holds its apostrophes, so a
+/// possessive would otherwise never match its name.
+fn split_possessive(word: &str) -> (&str, &str) {
+    ["'s", "'S", "'"]
+        .iter()
+        .find_map(|ending| Some(word.split_at(word.strip_suffix(ending)?.len())))
+        .unwrap_or((word, ""))
 }
 
 /// Spaces with at most one hyphen among them: "cuber netes", "cuber-netes", "cuber- netes".
@@ -415,6 +434,25 @@ mod tests {
             d.apply("Ask Feris about var de labs, not ferisx."),
             "Ask Ferris about Varde Labs, not ferisx."
         );
+    }
+
+    #[test]
+    fn a_possessive_keeps_its_ending() {
+        let d = dict(&["Varde Labs", "Parakeet"], &[("shawn", "Sean"), ("vart", "Varde"), ("agent's md", "AGENTS.md")]);
+        assert_eq!(
+            d.apply("It's Shawn's account, and Shawn’s. VART's, varde labs', parakeat's."),
+            "It's Sean's account, and Sean’s. Varde's, Varde Labs', Parakeet's."
+        );
+        // An entry that spells the possessive is matched whole, and contractions are left alone.
+        assert_eq!(d.apply("the agent's md, let's, parakeets"), "the AGENTS.md, let's, parakeets");
+    }
+
+    #[test]
+    fn a_word_phrase_is_fixed_after_a_replacement_fixes_part_of_it() {
+        let d = dict(&["Varde Labs", "Varde"], &[("vart", "Varde"), ("face", "Fayce")]);
+        assert_eq!(d.apply("VART labs, vart agent"), "Varde Labs, Varde agent");
+        let d = dict(&["Hugging Face"], &[("face", "Fayce")]);
+        assert_eq!(d.apply("hugging face, a face"), "Hugging Face, a Fayce");
     }
 
     #[test]
