@@ -507,6 +507,23 @@ pub enum SelectionMode {
     Iphone,
 }
 
+/// What a tap of the record shortcut starts when nothing is recording.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TapStart {
+    Screen,
+    Picker,
+}
+
+/// `tap_chooses` always picks. With `uses_last_mode`, a last recording of the screen records the
+/// screen at once; Area, Window and iPhone need a target, so the picker opens on that mode.
+fn tap_start(tap_chooses: bool, uses_last_mode: bool, last: SelectionMode) -> TapStart {
+    if tap_chooses || (uses_last_mode && last != SelectionMode::Screen) {
+        TapStart::Picker
+    } else {
+        TapStart::Screen
+    }
+}
+
 impl SelectionMode {
     const ALL: [SelectionMode; 4] = [Self::Area, Self::Window, Self::Screen, Self::Iphone];
 
@@ -1301,15 +1318,11 @@ impl ScrawlCoordinator {
         }
         match action {
             Action::None => {}
-            // On a large screen a full-screen capture costs the most, so a press can pick instead.
-            Action::RecordScreen if crate::handoff::tap_chooses() => {
-                self.begin_target_selection(cx)
-            }
             Action::Cancel => {
                 // Esc can cancel before the picker or a recording exists.
                 self.playback.take();
             }
-            Action::RecordScreen => self.record_screen_now(cx),
+            Action::RecordScreen => self.start_by_tap(cx),
             Action::RecordSelected => self.record_selected_mode(cx),
             Action::Finish => self.finish_recording(cx),
         }
@@ -1322,7 +1335,19 @@ impl ScrawlCoordinator {
         } else if self.is_selecting() {
             self.record_selected_mode(cx);
         } else if !self.is_processing() {
-            self.record_screen_now(cx);
+            self.start_by_tap(cx);
+        }
+    }
+
+    /// What a tap of the record shortcut starts (see `tap_start`).
+    fn start_by_tap(&mut self, cx: &mut Context<Self>) {
+        match tap_start(
+            crate::handoff::tap_chooses(),
+            crate::handoff::tap_uses_last_mode(),
+            self.last_mode,
+        ) {
+            TapStart::Picker => self.begin_target_selection(cx),
+            TapStart::Screen => self.record_screen_now(cx),
         }
     }
 
@@ -2049,7 +2074,12 @@ impl ScrawlCoordinator {
     /// Record on the hovered bar: what a tap of the record shortcut does.
     fn record_from_pill(&mut self, cx: &mut Context<Self>) {
         self.dictation_shown = None;
-        if crate::handoff::tap_chooses() {
+        let start = tap_start(
+            crate::handoff::tap_chooses(),
+            crate::handoff::tap_uses_last_mode(),
+            self.last_mode,
+        );
+        if start == TapStart::Picker {
             self.begin_target_selection(cx);
         } else {
             self.record_or_finish(cx);
@@ -2712,6 +2742,9 @@ impl ScrawlCoordinator {
         );
         if let IslandPhase::Selecting { mode } = self.island_phase {
             self.remember_mode(mode);
+        } else if target.mode == CaptureMode::Display {
+            // A tap that skipped the picker recorded the screen.
+            self.remember_mode(SelectionMode::Screen);
         }
         self.recording_shortcut_key = false;
         self.iphone_preview = None;
@@ -5511,7 +5544,7 @@ pub fn run_app(
         }
         if start_recording_immediately {
             let coord_clone = coordinator.clone();
-            coord_clone.update(cx, |coord, cx| coord.record_or_finish(cx));
+            coord_clone.update(cx, |coord, cx| coord.record_screen_now(cx));
         }
         if start_iphone_immediately {
             coordinator.update(cx, |coord, cx| coord.start_recording_iphone(cx));
@@ -5950,6 +5983,20 @@ mod tests {
             split_timeline_line("0:01 “hello”"),
             ("0:01", "“hello”", false)
         );
+    }
+
+    #[test]
+    fn a_tap_starts_the_last_used_mode_only_when_asked() {
+        use SelectionMode::{Area, Iphone, Screen, Window};
+        for last in [Area, Window, Screen, Iphone] {
+            assert_eq!(tap_start(false, false, last), TapStart::Screen);
+            assert_eq!(tap_start(true, false, last), TapStart::Picker);
+            assert_eq!(tap_start(true, true, last), TapStart::Picker);
+        }
+        assert_eq!(tap_start(false, true, Screen), TapStart::Screen);
+        for last in [Area, Window, Iphone] {
+            assert_eq!(tap_start(false, true, last), TapStart::Picker);
+        }
     }
 
     #[test]

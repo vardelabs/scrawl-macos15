@@ -616,6 +616,10 @@ pub struct Config {
     /// (default off).
     #[serde(default)]
     pub tap_chooses: Option<bool>,
+    /// A press of the record shortcut starts the mode the last recording used: Screen records at
+    /// once; Area, Window and iPhone open the picker on that mode (default off).
+    #[serde(default)]
+    pub tap_uses_last_mode: Option<bool>,
     /// Zooms a window capture's keyframes in to the activity inside the window, as full-screen
     /// captures are (default on; `autocrop`).
     #[serde(default)]
@@ -1031,6 +1035,11 @@ fn crops_mode_in(config: &Config, mode: crate::model::CaptureMode) -> bool {
 /// Whether a tap of the record shortcut opens the picker (`tapChooses`, default off).
 pub fn tap_chooses() -> bool {
     config().tap_chooses.unwrap_or(false)
+}
+
+/// Whether a tap of the record shortcut starts the last-used mode (`tapUsesLastMode`, default off).
+pub fn tap_uses_last_mode() -> bool {
+    config().tap_uses_last_mode.unwrap_or(false)
 }
 
 /// Whether Esc discards a running recording (`escapeCancels`, default on).

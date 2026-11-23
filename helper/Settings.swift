@@ -187,6 +187,7 @@ struct SettingsState: Decodable, Equatable {
   var smartRouting = false
   var liveTranscribe = false
   var tapChooses = false
+  var tapUsesLastMode = false
   var cropWindowCaptures = true
   var dictation = SettingsDictation()
   var retention = SettingsRetention()
@@ -1231,8 +1232,14 @@ struct SettingsView: View {
         ShortcutRecorder(
           model: model, shortcut: shortcut, tapChooses: state.tapChooses,
           footer: shortcut.kind == "record"
-            ? AnyView(SettingsRow(title: "Tap opens the picker") {
-                SettingsSwitch(on: state.tapChooses) { model.set("tapChooses", $0) }
+            ? AnyView(VStack(spacing: 0) {
+                SettingsRow(title: "Tap opens the picker") {
+                  SettingsSwitch(on: state.tapChooses) { model.set("tapChooses", $0) }
+                }
+                SettingsSeparator()
+                SettingsRow(title: "Tap uses the last mode") {
+                  SettingsSwitch(on: state.tapUsesLastMode) { model.set("tapUsesLastMode", $0) }
+                }
               })
             : nil)
       }
