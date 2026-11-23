@@ -712,8 +712,9 @@ Every engine's transcript loses its spoken fillers before it is used: "um", "uh"
 "hmm" always, however drawn out ("ummm", "uhhh") or cut off ("uh-"), and "like" where commas mark
 it as an aside ("it's, like, nice" or a leading "Like,"). It also drops a "like" without commas
 where it can only be filler ("so like if you open it", "it's like really
-slow"); "I like it", "looks like rain" and "it's like a car" keep theirs. A dropped filler's full stop moves to the word before it, and a sentence that started
-with one starts at the next word. Stumbles go too: a stray lowercase letter that starts the next word or comes before a new phrase ("my f fastest", "like m a half", but not "the x height", "A and B" or "command k to open"), and a word or short phrase said twice in a row ("the the button", "it's a little it's a little awkward", but not "Testing, testing.", "very very" or "this and this and this"). `"removeFillers": false` keeps the transcript as spoken.
+slow", "for like writing", "in like ten minutes", "Like what was the reason for that?"); "I like it",
+"looks like rain" and "it's like a car" keep theirs. A sentence that opens "Cause like" loses both words. A dropped filler's full stop moves to the word before it, and a sentence that started
+with one starts at the next word. Stumbles go too: a stray lowercase letter that starts the next word or comes before a new phrase ("my f fastest", "like m a half", "if s if you", but not "the x height", "A and B" or "command k to open"), and a word or short phrase said twice in a row ("the the button", "it's a little it's a little awkward", but not "Testing, testing.", "very very" or "this and this and this"). `"removeFillers": false` keeps the transcript as spoken.
 
 ### Apple or Hex
 
