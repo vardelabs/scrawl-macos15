@@ -983,6 +983,7 @@ struct ShortcutRecorder: View {
   @ObservedObject var model: SettingsModel
   let shortcut: SettingsShortcut
   var tapChooses = false
+  var tapUsesLastMode = false
   /// A setting that belongs to this shortcut, drawn in the same box under its keys.
   var footer: AnyView? = nil
 
@@ -1047,9 +1048,9 @@ struct ShortcutRecorder: View {
     if shortcut.recording { return "Press the new shortcut. Esc cancels." }
     if let error = shortcut.error { return error }
     if shortcut.kind == "paste" { return "Pastes the last capture into the app in front." }
-    return tapChooses
-      ? "Opens the picker to choose what to record. Press again to finish."
-      : "Records the screen. Press again to finish."
+    if tapChooses { return "Opens the picker to choose what to record. Press again to finish." }
+    if tapUsesLastMode { return "Starts the mode you used last. Press again to finish." }
+    return "Records the screen. Press again to finish."
   }
 }
 
@@ -1231,6 +1232,7 @@ struct SettingsView: View {
       ForEach(state.shortcuts) { shortcut in
         ShortcutRecorder(
           model: model, shortcut: shortcut, tapChooses: state.tapChooses,
+          tapUsesLastMode: state.tapUsesLastMode,
           footer: shortcut.kind == "record"
             ? AnyView(VStack(spacing: 0) {
                 SettingsRow(title: "Tap opens the picker") {
