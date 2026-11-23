@@ -1322,27 +1322,28 @@ impl ScrawlCoordinator {
                 // Esc can cancel before the picker or a recording exists.
                 self.playback.take();
             }
-            Action::RecordScreen => self.start_by_tap(cx),
+            Action::RecordScreen => self.start_by_tap(crate::handoff::tap_chooses(), cx),
             Action::RecordSelected => self.record_selected_mode(cx),
             Action::Finish => self.finish_recording(cx),
         }
     }
 
-    /// The menu's Record Screen item, the review window's Record button and `app --record`.
+    /// The menu's Record Screen item and the review window's Record button. They follow the last
+    /// mode (`tapUsesLastMode`) but not `tapChooses`, which stays on the shortcut and the pill.
     pub fn record_or_finish(&mut self, cx: &mut Context<Self>) {
         if self.is_recording() {
             self.finish_recording(cx);
         } else if self.is_selecting() {
             self.record_selected_mode(cx);
         } else if !self.is_processing() {
-            self.start_by_tap(cx);
+            self.start_by_tap(false, cx);
         }
     }
 
     /// What a tap of the record shortcut starts (see `tap_start`).
-    fn start_by_tap(&mut self, cx: &mut Context<Self>) {
+    fn start_by_tap(&mut self, tap_chooses: bool, cx: &mut Context<Self>) {
         match tap_start(
-            crate::handoff::tap_chooses(),
+            tap_chooses,
             crate::handoff::tap_uses_last_mode(),
             self.last_mode,
         ) {

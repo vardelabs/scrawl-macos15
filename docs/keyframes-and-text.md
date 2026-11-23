@@ -38,7 +38,7 @@ Each app reserves the model for itself through `AssetInventory` (attributed to `
 
 ## Optional: `tapUsesLastMode` (`handoff::tap_uses_last_mode`, `tap_start` in `src/ui.rs`)
 
-Off by default. A press of the record shortcut (and the menu's Record item and the pill) starts the mode the last recording used: Screen records at once, Area, Window and iPhone open the picker on that mode. `tapChooses` wins when both are on. A tap that records the screen saves Screen as the last mode whatever the switch says.
+Off by default. A press of the record shortcut (and the menu's Record item and the pill) starts the mode the last recording used: Screen records at once, Area, Window and iPhone open the picker on that mode. The menu's Record Screen item and the review window's Record button follow it too. `tapChooses` wins on the shortcut and the pill when both are on, and has no effect on the menu item or the button. A tap that records the screen saves Screen as the last mode whatever the switch says.
 
 ## Optional: `agentContext` (`src/agent_context.rs`)
 
