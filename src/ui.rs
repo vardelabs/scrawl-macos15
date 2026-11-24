@@ -2076,12 +2076,6 @@ impl ScrawlCoordinator {
         self.dictation_shown = None;
         if crate::handoff::tap_chooses() {
             self.begin_target_selection(cx);
-        } else if crate::handoff::follow_last_mode()
-            && !self.is_recording()
-            && !self.is_selecting()
-            && !self.is_processing()
-        {
-            self.record_last_mode(cx);
         } else {
             self.record_or_finish(cx);
         }
