@@ -204,7 +204,7 @@ Preview every pane, dark and light, with the recorder listening and a combinatio
   window or drag an area); iPhone opens the picker on the phone (press again to record); Screen
   records at once, as below.
   Settings › Shortcuts › **Use the last mode** (`"followLastMode"`) turns this off, and then a press always
-  records the screen. Screen: record the display under the pointer as soon as you let go, however long you
+  records the screen. The menu's Record Screen item and the review window's Record button follow the same setting. Screen: record the display under the pointer as soon as you let go, however long you
   held it, auto-cropped (see below). Press it again to finish; a press within 0.4 s of the start is
   ignored, so a double press doesn't leave an empty capture. `⌃⌥⇧S` also works (only while `⌥⇧S` is the
   shortcut; see [Settings](#settings) to change it). As it starts, the island opens onto the modes (Area · Window ·

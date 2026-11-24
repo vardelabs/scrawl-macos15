@@ -1325,14 +1325,19 @@ impl ScrawlCoordinator {
         }
     }
 
-    /// The menu's Record Screen item, the review window's Record button and `app --record`.
+    /// The menu's Record Screen item and the review window's Record button. With
+    /// `followLastMode` on they start the mode the last recording used, as the shortcut does.
     pub fn record_or_finish(&mut self, cx: &mut Context<Self>) {
         if self.is_recording() {
             self.finish_recording(cx);
         } else if self.is_selecting() {
             self.record_selected_mode(cx);
         } else if !self.is_processing() {
-            self.record_screen_now(cx);
+            if crate::handoff::follow_last_mode() {
+                self.record_last_mode(cx);
+            } else {
+                self.record_screen_now(cx);
+            }
         }
     }
 
@@ -2071,12 +2076,6 @@ impl ScrawlCoordinator {
         self.dictation_shown = None;
         if crate::handoff::tap_chooses() {
             self.begin_target_selection(cx);
-        } else if crate::handoff::follow_last_mode()
-            && !self.is_recording()
-            && !self.is_selecting()
-            && !self.is_processing()
-        {
-            self.record_last_mode(cx);
         } else {
             self.record_or_finish(cx);
         }
@@ -5543,7 +5542,7 @@ pub fn run_app(
         }
         if start_recording_immediately {
             let coord_clone = coordinator.clone();
-            coord_clone.update(cx, |coord, cx| coord.record_or_finish(cx));
+            coord_clone.update(cx, |coord, cx| coord.record_screen_now(cx));
         }
         if start_iphone_immediately {
             coordinator.update(cx, |coord, cx| coord.start_recording_iphone(cx));
